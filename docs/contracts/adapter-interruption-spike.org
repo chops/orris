@@ -1,0 +1,168 @@
+#+TITLE: Adapter-interruption mechanism spike - test-only evidence
+#+PROPERTY: status test-only spike
+
+* Implementation status
+This document is a test-only spike: its mechanism lives in =test/run/adapter_interruption_spike_test.exs=
+(test-local =SpikeOwner=, allocation authority and harness) and nothing in it is a product module. The
+production counterparts it argued for ship separately: =AiOrchestrator.Effects= accepts an =:adapter_runner=
+seam (=lib/ai_orchestrator/effects.ex=, =lib/ai_orchestrator/effects/adapter_runner.ex=) for Observe, Dispatch
+and ReconcileSend; =AiOrchestrator.Run.Worker= starts a linked =Task.Supervisor=, runs those three effects in a
+task under a =Run.DeadlineFence= armed at dequeue, brutally kills the task at the due fence and answers that normal expiry as an
+=effect_result= carrying the closed expired observation (=TimedOut= for Observe, =DispatchFailed= for Dispatch,
+=SendReconcileFailed= for ReconcileSend; =lib/ai_orchestrator/effects.ex=), while a trappable adapter fault or
+malformed adapter behaviour answers a closed =effect_failed= (=lib/ai_orchestrator/run/worker.ex=); =AiOrchestrator.Run.Server= arms the fence for =AwaitGate=
+and actuates the owner (=lib/ai_orchestrator/run/server.ex=). Their contracts are =observe-deadline.org=,
+=delivery-deadline.org= and =gate-async-await-proposal.org=; this spike's measurements are evidence for that
+design, not the specification of the shipped modules.
+
+* Scope
+TEST-ONLY: this document plus =test/run/adapter_interruption_spike_test.exs=. The spike changes no lib, schema
+or fixture and wires no product policy or vocabulary. Its goal is a MEASURED viable mechanism or a truthful
+no-go, not product deadline enforcement (that is the subject of the delivered consumers named under
+"Implementation status"). Real OTP =Task= / =Task.Supervisor= and the delivered =Run.DeadlineFence= are used,
+never reimplemented. The scope constraints (AM-S1..S6) and the review corrections (AM-M1..M7) named in the
+section headings are this document's own row labels; the shipped test cites them.
+
+* Eligibility / source table (AM-S1)
+| effect | call site at spike time | side effects | retained handle/memo | runner candidate? |
+|--------+-------------------+--------------+----------------------+-------------------|
+| assignment deliver (=Effect.Dispatch=, NO =deadline_unix= on the struct) | =Effects= -> =dispatch_module.deliver/2= -> PaneClient =System.cmd= (the =:runner= seam) | YES (tmux send, temp stdin file) | none across the call | YES for the mechanism; its deadline source and the delivery-unknown record are open (P2) |
+| assignment observe (=Effect.Observe=, carries =deadline_unix=) | =dispatch_module.observe/2= | YES (tmux capture) | none | YES |
+| =Effect.Timer= | NOT an adapter call: the host SLEEPS owner-side until the deadline by its own clock (=Process.sleep= in the =Effect.Timer= adapter) | none | none | NO (owner-side wait; a fence here is the owner's own timer, not a task) |
+| assignment reconcile (=Effect.ReconcileSend=, NO =deadline_unix= on the struct) | =dispatch_module.reconcile/2= | YES | none | YES for the mechanism; deadline source open |
+| PrepareGate / ReleaseGate / AwaitGate / ReconcileGate | =Execution.prepare/release/await/expire= in the OWNER | Port + process-dictionary memos | YES (Port owner, memos) | NO: owner-side only (expire/1 later) |
+| SnapshotArtifact | =Effects= artifact path | file I/O | none | EXCLUDED from this spike: a known unsolved deadline site |
+| Notify | =Effects.execute= raises =Unreachable= | n/a | n/a | NO |
+Assignment deliver/observe/reconcile are SIDE-EFFECTING calls, not pure functions; interrupting one leaves its
+remote outcome UNKNOWN.
+
+* Mechanism under test (revision 2)
+=SpikeOwner= (test-local GenServer shaped like the Worker's protocol, no =trap_exit=) owns, for the whole test:
+a NONEMPTY =Effects.Runtime= (one =:prepared= entry whose handle is a LABELLED FAKE carrying the owner's Port; it
+is an ownership witness, not a real =Execution= handle or gate proof), a real owner-opened Port (=/bin/cat=)
+and a process-local sentinel. In =init/1= it starts a =Task.Supervisor= LINKED to itself (the candidate lifetime
+mechanism; the production supervision tree is untouched and its approval is not implied).
+
+** Runner boundary (AM-M1)
+Every adapter runs INSIDE a task-side runner: the task first waits for the owner's GO token, then evaluates the
+adapter under =try/catch=; a raw =raise= / =throw= / =exit= from ANY adapter is closed inside the task as
+={:closed_failure, kind, Diagnostic.describe(reason)}= (existing closed vocabulary, digest only) before OTP could
+log a Task crash; a normal value is returned as ={:ok, value}=. Fake adapters fail RAW (no self-catching). Death
+reasons are recorded as a CLOSED class (=:normal= / =:killed= / =:shutdown=, anything else =:other=): no adapter
+atom is transferred as if it were vocabulary.
+
+** Admission and handshake (AM-M2)
+ONE operation in flight: =start_op= is refused with =operation_outstanding= while the current operation is not
+death-proven (its independent monitor DOWN not yet observed); no implicit interruption or resend. Admission
+order: allocate the task (=async_nolink=, which owns =Task.ref= as monitor and reply tag), install the
+independent death monitor, register the operation with a sequence number, THEN send the GO token; the adapter
+never runs before its owner can observe it, so an immediate completion cannot race the monitor. Every fact is
+tagged with the operation's sequence; =op_started= and every death fact carry the logical identity's =Task.ref=,
+task pid and death ref. Facts arriving on a retired =Task.ref= or death ref are recorded as =old_task_fact= with
+the OLD sequence and change nothing; a second message on the CURRENT =Task.ref= after its reply is recorded as
+=duplicate_reply= and classified =duplicate_completion= by the fence.
+
+** Facts and decisions
+Facts are dequeued by the GenServer loop (no nested selective receive; the only bounded inner receive is a Port
+round-trip inside a call). FENCE and RESULT facts go through =Run.DeadlineFence.observe/2=; admission, death,
+old-fact, settle-shaped and unknown-message facts are recorded without it.
+- reply dequeued first -> =observe {:result}= -> =:completed= / =:retain_result=; a later fence on the closed op
+  is =ignored_fence :closed_op=.
+- due fence dequeued first (from a REAL owner-armed monotonic timer with the owner-read clock and the retained
+  canonical fence, or a hand-sent wake in ordering cases; arming inputs captured from ONE =unix_now= read) ->
+  =:timeout_selected= / =:request_expiration= -> ONE kill request -> =Task.shutdown(:brutal_kill)= -> the return
+  recorded as its own fact: ={:ok, reply}= -> =observe {:result}= -> =:completed_after_timeout= /
+  =:retain_late_result= (timeout stays the winner, never settlement); =nil= -> harness-local
+  =delivery: :unknown=; ={:exit, class}= -> the task had already died.
+- early wake -> =next/2= re-arms the timer, no kill; duplicate fence while open -> stale, no second kill.
+Kill REQUEST, shutdown RETURN, observed DEATH (closed class from the independent monitor, with all three
+references) and result PRESENCE are separate recorded facts; =:killed= is never forced on a task that exited
+normally.
+
+** OS descendants (AM-M3, AM-M5, AM-M6)
+An OS child is allocated by an ALLOCATION AUTHORITY, a test-tracked process started BEFORE any allocation, that
+owns the child's Port (the requesting task's death never loses it) and writes the record into
+=:persistent_term= at every transition: =:not_started= (written at registration) -> =:allocating= (written
+BEFORE =Port.open=) -> ={:identified, pid, start}= or ={:allocated_unidentified, reason}= -> =:proven_absent=.
+The oracle for the record is pushed into the ordered harness (=OwnedHarness.os_oracle!=, after BEAM reaping,
+before directory removal) at registration; it answers =true= ONLY for the explicit =:not_started= or
+=:proven_absent= states; a MISSING record, =:allocating=, an unidentified allocation or an unknown reap all stay
+=false= (fail-closed: evidence retained, records erased only after proven closure). Seams: a =before_identity=
+barrier after =Port.open= and before identity capture (the requester can be killed there; the authority still
+captures the identity late), and =identity_failure= (a late identity-capture failure records the allocation as
+unidentified). Negative controls use bounded helpers (seconds, not minutes) so nothing is orphaned beyond its
+own lifetime.
+OS probes return STRUCTURED outcomes ={:ok, out}= / ={:exit, code, out}= / =:timeout= / ={:raised, class}=,
+each under a 2 s bound (a raise inside the command is caught inside the probe task; killing the probe task
+after the bound is NOT a claim that the external command closed). Liveness combines two probes: =kill -0= gives
+=:alive_signal=, =:esrch= (the kernel's "No such process": positively established absence) or =:unknown=
+(permission, usage, timeout, raise); =ps -o lstart= gives =:same= / =:different= / =:empty= / =:unknown=.
+=:alive= = signal + same identity; =:absent= = ESRCH, or the pid now carries a different identity; everything
+else =:unknown=. COMMAND FAILURE IS NEVER ABSENCE. A command-runner seam lets a control inject each failure class
+while a REAL tracked child is alive. Cleanup kills only =:alive=, joins to =:absent= under a bound, and returns
+=:unknown= otherwise.
+
+** Early observation (AM-M7)
+The owner reports each early wake to a registered observer AT handling time with the state and kill count as
+they are at that instant (={:early_observed, seq, state, kills, wait_ms}=); the test asserts on those captured
+values, and a deliberately delayed observer that reads only after the due wake killed still sees every early
+observation carrying =:running= and zero kills.
+
+* Witnesses (all executable today; the spike is evidence, not RED)
+| id | witness |
+|----+---------|
+| S-0 | baseline Task API semantics: reply then DOWN =:normal=; =shutdown(:brutal_kill)= on a blocked task returns =nil=, consumes its DOWN, the independent monitor sees =:killed=; on an arrived-but-undequeued reply returns ={:ok, reply}=; on an already-exited task returns ={:exit, reason}= |
+| S-1 | ownership (AM-S1): nonempty runtime entry, =Port.info(port, :connected)= = owner, sentinel; Port I/O round-trip BEFORE; blocking adapter interrupted by a REAL timer-armed due fence; round-trip AFTER; runtime entry, sentinel and connected pid unchanged; task supervisor has no children |
+| S-2 | ordering (AM-S3): (a) result-first: no kill, task DOWN =:normal=, later fence stale =:completed=; (b) due-fence-first, genuinely no result: =:timeout_selected=, delivery =:unknown=, death =:killed=, NEVER =:completed_after_timeout=; (c) due-fence-first with a real raced reply queued behind it (owner suspended, fence queued, reply queued, resumed): =shutdown= returns ={:ok, reply}= -> =:retain_late_result=, timeout remains winner, no settlement inference; (d) early wakes from a real timer re-arm and cannot kill; (e) duplicate fence after selection and a foreign fence: no second kill |
+| S-3 | lifetime/failure (AM-S4, AM-M1): orderly owner stop and hard owner kill while the task is blocked: third-party monitors join owner, task supervisor and task, and the Port is closed; task-supervisor death takes the owner (linked, no trap); RAW adapter =raise= / =throw= / =exit= closed by the RUNNER (closed reply, death =:normal=, no canary in facts, status or captured log); pre-readiness raw failure closed before any ack; two review probes imported verbatim in meaning (raw throw closed before Task crash logging; a second start cannot orphan a running predecessor) |
+| S-4 | external child (AM-S5, AM-M3, AM-M5, AM-M6): liveness controls (positive live, proven dead, ESRCH absence, unknown without identity); command-failure controls while a REAL child is alive (permission, usage, timeout, raise, ps failure, empty identity: all =:unknown=, oracle stays false, the child untouched; a double-failure decision probe imported from review); record lifecycle (a missing record never settles: an unreported-allocation probe imported from review; =:not_started= settles; requester killed after =Port.open= before identity: the authority captures late and cleanup is proven; late identity failure: unidentified, oracle refuses, bounded helper); then the adapter allocates THROUGH the authority (=sleep 300=), reports and blocks; after task interruption the structured verdict is RECORDED, then identity-bound cleanup joins to =:absent=; failure-before-report (allocate then raw raise) settles through the record alone. Task DOWN is never claimed to contain a process tree |
+| S-5 | uncertainty (AM-S5): marker-before-block and block-before-marker both end with harness-local =delivery: :unknown=, no observed result, exactly ONE invocation (call counter; positive control shows a second operation increments it) and no resend |
+| S-6 | hygiene/distinction (AM-S6): BEAM owners tracked by the harness from start; OS children recorded at allocation with the oracle registered before the operation; ack gates fail closed; M-1 distinction: the real Worker synchronously blocked (control C-1 of =deadline-fence.org=, cited) cannot service settle at all, whereas =SpikeOwner= dequeues a settle-shaped message while its TASK is blocked and records it as ignored: the adapter stays blocked, so dequeuing is NOT interruption |
+| S-2x | admission (AM-M2): a second start is refused while the first is outstanding (task supervisor keeps one child) and admitted after death proof; INJECTED REPLAYS (synthetic messages on real retired refs, not genuine delayed OTP arrivals) of an old reply, old DOWN and old fence after the second admitted op are recorded as old facts with the OLD sequence and leave the current op unchanged; a duplicate result on the current ref is stale; =op_started= and death facts carry the native =Task.ref=, task pid and death ref, linked to the logical ={cap, gen, ref}= by sequence (they are different references) |
+
+* Final-revision corrections (applied after review)
+- The =:proven_absent= previously written after a sleep was INVENTED evidence and is deleted. Authority-owned
+  Ports are opened with =:exit_status=; the authority stores the OBSERVED exit as ={:exited, pid, status}= /
+  ={:exited_unidentified, status}= and only that proof (or an identity-bound reap) admits absence.
+- Two S-4 topologies are kept and labelled: TASK-OWNED Port (the original measurement: the task marks
+  =:allocating= with the authority before =Port.open=, opens the Port itself, reports pid + start identity to
+  the authority, then blocks; after the task kill the child measurably survives) and AUTHORITY-OWNED Port (a
+  different topology; exit-proof capable). Neither is described as the other.
+- The requester-kill seam is a two-way acknowledged barrier (the authority reports =:allocating= and waits,
+  without timeout, for the test's proceed token); the requester is tracked and joined (DOWN observed).
+- Eligibility table corrected: =Effect.Timer= is an owner-side sleep, not =dispatch.observe=; only
+  =Effect.Observe= carries =deadline_unix=; =Dispatch= / =ReconcileSend= do not.
+
+* Measured results (reproduced by the shipped test)
+- S-4 external descendant after task =:brutal_kill=: MEASURED =:alive= in BOTH topologies (task-owned Port and
+  authority-owned Port); identity-bound cleanup then joined it to =:absent=.
+  Limitation stands: BEAM task death proves only that task's death; it never contains an OS process tree.
+- S-0 semantics measured as documented: =shutdown(:brutal_kill)= returned =nil= on a blocked task and consumed
+  its monitor DOWN (the independent monitor reported =:killed=), ={:ok, reply}= on an arrived-but-undequeued
+  reply, ={:exit, :normal}= on an already-exited task.
+- S-1: the owner's Port I/O round-trip succeeded before and after the interruption; runtime entry, sentinel and
+  =Port.info(:connected)= unchanged; the real timer produced early chunks before the due wake.
+- S-2 (c): with the owner suspended, the fence wake queued first and the runner's ={:ok, {:ok, :delivered}}=
+  reply queued behind it, =shutdown= returned ={:ok, reply}=; final state =:completed_after_timeout= with
+  =:retain_late_result=, the kill request recorded, and the independent death reason =:normal=.
+- S-2 (d): two early observations captured AT handling with =:running= and zero kills, then the due wake killed;
+  the delayed observer read the same captured values after the kill.
+- S-4 command-failure controls: permission, usage, timeout, raise, ps failure and empty identity each produced
+  =:unknown= while the real child stayed alive; the requester killed after =Port.open= left the authority to
+  capture the identity late and cleanup was proven; the late identity failure was recorded unidentified and the
+  oracle refused.
+- Both imported review probes pass (the raw throw is closed before Task crash logging; the
+  second start is refused and the task supervisor keeps exactly one child).
+- Harness findings disclosed: (1) a hand-sent fence must be armed in the OWNER's clock domain (revision 1's
+  first draft armed at monotonic 0 and was perpetually early); (2) the owner is started UNLINKED from the test
+  process; (3) revision 1's fakes caught their own failures and its =start_op= silently retired a running
+  predecessor: both were harness defects, fixed by the runner boundary and the admission rule.
+
+* API extension proposed by this spike (delivered later, outside the spike)
+The spike proposed: an =adapter_runner= seam on =Effects= inputs (default in-process) supplied by the Worker for
+deliver/observe/reconcile only; the Worker's own linked =Task.Supervisor=; a closed =effect_failed= reply for an
+interrupted adapter with delivery unknown; and a deadline authority arming =Run.DeadlineFence= for the gate
+await. The shipped source carries each of these (see "Implementation status"); the journaled form of a
+delivery-unknown outcome remains a vocabulary decision outside this document. Ownership conflict named: any
+adapter that must retain a Port, gate handle or memo across its call cannot run in the task; none does, and
+gate work must not.

@@ -1,0 +1,266 @@
+#+title: Effect owner lifecycle (Run.Worker): contract
+#+options: toc:nil
+#+PROPERTY: status delivered contract
+
+* Implementation status
+Delivered. =AiOrchestrator.Run.Worker= is the single temporary effect owner born by =Run.Server= under
+=Run.Work.Supervisor= (=lib/ai_orchestrator/run/worker.ex=): it holds the =Effects.Runtime=, executes
+=release_terminal= / =execute= / =settle= on the Server's admit/execute/settle protocol with claimed-sender
+replies, and owns every Port and memo. =Lifecycle.Host= exposes the staged record =Host.Stage= with
+=commit_step/1=, =resume_step/2=, =close_step/2= and =reject_step/2= beside the unchanged =advance/1=
+(=lib/ai_orchestrator/lifecycle/host.ex=, =host/stage.ex=). =Run.Server= implements birth, the acknowledged
+handoff (=config.owner_handoff=), admission with the loop's resolved options, the outstanding-operation record with
+per-operation refs, drop accounting, settle-before-exit and the five-key closed diagnostic
+(=lib/ai_orchestrator/run/server.ex=); =Run.Supervisor= validates =owner_handoff=, traces the Worker's birth through
+=record_child/4= and carries its init argument as an opaque closure (the F-1 root hardening);
+=Run.Executor.Owner= acknowledges the handoff before its =:subtree_started= barrier. Rows live in
+=test/lifecycle/host_staged_red_test.exs= (S rows), =test/run/effect_owner_red_test.exs= (R and F rows),
+=test/run/effect_owner_standalone_red_test.exs= (L rows, F-1c), =test/run/effect_owner_native_red_test.exs= (N
+rows); the harness is =AiOrchestrator.Test.OwnedHarness= with its controls in
+=test/run/owned_harness_control_test.exs=, and the two-process parity oracle is =AiOrchestrator.Test.OwnerOracle=
+(=test/support/=). Later units extended the Worker (fenced adapters, retention, the owner-resident AwaitGate);
+this document describes the ownership contract they build on.
+
+* Test partition rule
+Every row is late-bound on =AiOrchestrator.Run.Worker= or on the staged Host functions; every control is
+INVARIANT - it held before the implementation AND under it. Before-state measurements that the implementation had
+to change are HISTORICAL evidence (table below), not tests. Nothing is skipped and no production legacy mode
+exists; the synchronous =Host.advance/1= path is what the pure controls exercise.
+
+* Baseline-control transition
+| Former control | Status | Historical measurement (pre-implementation suites) |
+|----------------+--------+----------------------------------------------------|
+| R-1 "effect executes in the Server; Work empty; facts without worker" | HISTORICAL; replaced by invariant "exactly one owned executing process, gone after" | executing pid == facts.server; =DynamicSupervisor.which_children(work) == []=; no =:worker= key |
+| R-2 "status blocked while the effect is held" | HISTORICAL (motivation for the worker); no invariant control exists | =Task.yield(status, 1_000) == nil= |
+| R-3 "kill executing Server -> run_server_down" | invariant: closed clause, no second gate entry, all joined (clause pinned only by the row) | clause =run_server_down=; subtree exhausted |
+| native "Server executes; run_server_down" | invariant: closed crash + unchanged-production recovery pinned exactly; identity/clause only in the row | executing == traced :server pid; clause =run_server_down= |
+| R-8 "four-key diagnostic" | invariant: kind/digest + one abandon (key count only in the row) | =map_size(diagnostic) == 4= |
+| R-5 "root discloses (F-1)" | HISTORICAL + a direct no-disclosure row (F-1) | root =:sys.get_status= printable output contains the adapter sentinel |
+
+* Topology and ownership (order preserved)
+=Run.Supervisor= (rest_for_one, max_restarts 0): =Journal.Writer= -> =Run.Server= -> =Run.Work.Supervisor=
+(DynamicSupervisor) -> exactly one =Run.Worker= (=:temporary=, =shutdown: 1_000=) born by the Server.
+| Stage | Owner | Notes |
+|-------+-------+-------|
+| Writer append of the committed suffix, receipt selection | Server | unchanged Host stages, exposed as a staged record |
+| =Effects.release_terminal/2=, =Effects.execute/3=, =Effects.settle/1=, Ports, memos | Worker | the =Effects.Runtime= lives ONLY in the worker; =Interrupted= never leaves it |
+| observer notification, =Reducer.step/2=, loop state | Server | unchanged |
+| capability (private ref), generation, the outstanding operation record | Server | minted at birth; seams travel in ONE admit message |
+| closing the run (cached closed result, or a closed exit) | Server | the Server never stops the root |
+| tearing down the subtree | the starter (=Run.Executor.Owner=, or the process that started =Run.Supervisor=) | a temporary worker's death does NOT exhaust the root |
+Executor delivery: =Run.Executor.Owner= collects the Server's result through =await=; only an ={:ok, result}=
+receives the explicit observed =Writer.close=; an error result keeps its primary error and goes straight to the
+orderly stop + reap. No blanket "every error closes the Writer first" claim.
+
+* Staged interface
+#+begin_src elixir
+%Host.Stage{kind: :effect | :done, loop: %Loop{runtime: nil}, intent: struct() | nil,
+            suffix: [map()],    # the IMMUTABLE persisted suffix of this commit (release_terminal input)
+            receipt: map() | nil, ref: reference()}   # ref = stage identity (NOT the per-operation op_ref)
+#+end_src
+| Function | Result domain |
+|----------+---------------|
+| =Host.commit_step(loop)= | ={:effect, stage}= / ={:done, stage, result-without-cleanup}= / ={:rejected, rejection}= (gap, sink refusal, partial suffix, reducer rejection step); a sink error/throw/exit escapes UNCHANGED, nothing settled |
+| =Host.resume_step(stage, observation)= | ={:continue, loop}=; an observer error/throw/exit escapes unchanged |
+| =Host.close_step(result, cleanup)= / =Host.reject_step(rejection, cleanup)= | merge =gate_cleanup= / ="gate_cleanup"= only when non-empty; =reject_step(rejection, cleanup) == {:error, Map.put(rejection, "gate_cleanup", cleanup)}= |
+A ReleaseGate whose receipt is missing is NOT rejected by commit_step - the nil receipt reaches the executor,
+whose ack refuses; release is never called; the closed release-failure observation is journaled exactly as before
+(S-5 control measured 0 release calls). Retained-handle witnesses: the terminal suffix (gate_passed / gate_failed)
+is RELEASED, never abandoned (S-2b: 0 abandons; handle gone after release_terminal; settle finds nothing); a FINAL
+refusal with a retained handle abandons it once and reports it (S-4b: the closed reason is =journal_append_failed=
+with a settle carrying the executor's proof); sink error/throw/exit with a retained handle: advance settles once
+then re-raises the original (S-8, asserting the ORIGINAL value - exact message / exact thrown or exited term - at
+the origin); observer error/throw/exit (S-6, S-9). Parity: S-7 (:run fixtures), S-7b (:resume / :cancel fixtures
+via =Host.open= against =Host.resume= / =Host.cancel=); =:continue= is reached only through the Server's admission
+path (the executor rows). Reducer-origin rejection: no fixture reaches an ={:error, rejection}= reducer step
+through a legitimate observation (every adapter/executor answer is mapped to a closed observation first): surfaced
+as unreachable, not faked.
+
+* Worker protocol and correlation
+Every operation after admission carries its OWN =op_ref= (minted per operation; the Stage.ref is not reused); every
+reply carries =(cap, gen, op_ref)= and the replying pid as a CLAIMED sender (intra-BEAM correlation, not
+authentication; same-BEAM introspection can read the cap). Admission is the deliberate exception: no op_ref -
+correlated by =(cap, gen)= and the =:registered= phase.
+| Request (Server -> worker) | Reply |
+|---------------------------+-------|
+| ={:admit, cap, gen, seams}= | ={:admitted, cap, gen, from}= |
+| ={:release_terminal, cap, gen, op_ref, suffix}= | ={:released, cap, gen, op_ref, from}= |
+| ={:execute, cap, gen, op_ref, intent, receipt}= | ={:effect_result, cap, gen, op_ref, from, observation}= / ={:effect_failed, cap, gen, op_ref, from, closed}= |
+| ={:settle, cap, gen, op_ref}= | ={:settled, cap, gen, op_ref, from, cleanup}= |
+Outstanding record: =nil | %{op, ref, since}=; exactly one. Dequeue: applied only if an operation is outstanding,
+the reply kind matches =op=, cap/gen/op_ref equal the record and =from == worker.pid=; else dropped and counted:
+=:no_outstanding | :op_mismatch | :cap_mismatch | :generation_stale | :ref_mismatch | :sender_mismatch=. Budgets:
+admit-ack 5_000 ms and settle 5_000 ms (exceeded -> =run_worker_start_failed= / cleanup UNKNOWN); there is NO
+release budget: a stage whose ack never arrives is a hung effect, exactly like a hung effect before (L-6b pins:
+dropped, =:driving=, no execute requested). Test-only traces (only when =config.trace= is a pid; no payload):
+={:run_effect_requested, server, %{op, kind, cap, gen, ref, worker}}= (=kind= = the intent's struct module),
+={:run_effect_applied, server, {op, cap, gen, ref}}=, ={:run_effect_reply_dropped, server, reason}=.
+R-4 selects the CURRENT outstanding operation of THIS run: the last =:execute= request of kind =AwaitGate= by this
+run's Server after the collector flush, with the baseline oracle that no =applied= trace exists for it; one-field
+mismatches (sender, gen, ref, cap) and a wrong-op reply (a duplicate released for the stage) are dropped; the
+positive control asserts every request applied exactly once under unique ={op, ref}= keys; the R-4 rows keep the
+FULL correlated trace record in the mailbox (nothing consumed) and the counting oracle
+=observer_matches_applied?/2= is pure and self-tested (complete / duplicate / missing / wrong server). Duplicates in
+a KNOWN state live in the standalone suite (L-6d: Server =:finished=, no outstanding -> =:no_outstanding=, cached
+result unchanged; it replays ONE specific already-applied execute from the non-empty applied set); admit/settle/
+release one-field mismatches come from the worker side (L-6a/b/c), with a protocol-FAITHFUL double
+(=ProtocolWorker=: runtime from the seams; real release/execute/settle; replies carry cap/gen/op_ref/self) and L-6c
+corrupting ONLY the settle ref after a REAL Server-stage failure (observer raise with a transferred handle); no
+extra production settle.
+
+* Birth, handoff, boundaries
+- Child start MFA carries only the server pid (or, with birth seams configured, the server pid and a zero-arity
+  bootstrap closure; see =observe-deadline.org=); seams travel in the admit message. Phases =:pending= ->
+  =:registered= -> =:admitted= -> =:closed=.
+- Handoff: =config.owner_handoff :: {pid, ref} | nil=. The Server sends ={:run_worker_registered, ref, worker,
+  server}= after registration and admits ONLY after ={:run_worker_acknowledged, ref}=; ={:run_worker_absent, ref,
+  clause}= when no worker will exist. =Run.Executor.Owner= acknowledges BEFORE its =:subtree_started= barrier and
+  extends its facts with =worker=. Standalone: no handoff; closure by the starter's orderly stop.
+- Acknowledged test barriers: Server-side =opts[:birth_barrier]= at =:before_birth= and =:registered=; Owner-side
+  =opts[:barrier]= at =:handoff_received= (before the ack) in addition to =:subtree_started=. Rows R-11a..d prove:
+  no worker before birth; a registered-unacked worker dies with Work when the Server dies; NO effect is requested
+  or executed while the reaper has not acknowledged; the Owner's death takes the linked subtree with it.
+- The barrier contract is TOTAL: a barrier (test-only; =nil= = no barrier) is called with exactly two names,
+  =:handoff_received= (after the worker's identity reached the reaper, before the acknowledgement) and
+  =:subtree_started= (before the await), and must answer =:ok= to both; every fault - a missing clause included -
+  is an owner failure under the closed boundary. No absence is inferred from compiler names, stack frames or
+  exception shapes.
+- Budget values are REQUESTED bounds; the rows prove observed teardown truth, never that every phase fits a
+  number.
+
+* Closed clauses, error priority, cleanup domain
+| Origin | Server outcome | Executor sees |
+|--------+----------------+---------------|
+| birth/admission failure (start error, DOWN before admitted, admit/handoff budget, admitted mismatch) | =:failed=, ={:error, %{clause: "run_worker_start_failed"}}= | that clause |
+| worker DOWN after admitted (idle or any outstanding op) | =:failed=, ={:error, %{clause: "run_effect_owner_down"}}= (with =writer_generation= when known); no replacement, no replay | that clause; the Owner tears down after |
+| =effect_failed= (error/throw/exit inside the worker's effect, settled in-invocation) | EXIT ={:run_step_failed, closed}= | =run_server_down= (parity) |
+| Server-stage failure (sink/observer error/throw/exit) with a transferred handle | settle (bounded) then EXIT closed + cleanup | =run_server_down= |
+| commit refused | settle (bounded), =:failed= with the rejection (+ ="gate_cleanup"=) | the rejection |
+| Writer loss / Work loss / Server loss | rest_for_one exhausts | =run_server_down= |
+Priority: a cached result wins over later DOWNs; a worker DOWN wins over queued replies; Writer loss above all.
+Closed diagnostic: =%{kind, class, digest, frames, cleanup}= where =cleanup :: %{attempts: n | :unknown, settled:
+n, unproven: n | :unknown}= (n a non-negative integer). Cleanup count AUTHORITY is the worker's =settled= reply;
+when no reply arrives (budget, DOWN after transfer) the Server reports =%{attempts: :unknown, settled: 0,
+unproven: :unknown}= - never invented counts (R-10, L-2c, L-6c). =closed_diagnostic?/1= accepts ONLY that five-key
+shape with that value domain; any other cleanup value, adapter atom, exception, raw reason or stack behind the
+=:run_step_failed= tag is re-diagnosed (standalone F-1 control: the forged tag prints as a closed exit diagnostic;
+F-1c pins the well-formed shape printing intact; validator negatives: extra cleanup key, missing cleanup key,
+negative count, float count, outer extra key -> re-diagnosed). A non-trapping worker blocked inside a sleep
+terminates on the supervisor's =:shutdown= signal at once (spike measurement): R-10 pins DOWN =:shutdown=;
+=:killed= is reserved for an explicit forced-stop witness. R-8 is parameterized over observer error/throw/exit
+(exact primary digest, one worker-side abandon, cleanup 1/1/0); R-9/R-10 are the shared failure/unknown controls.
+Server-origin SINK failures: the Server's sink is the Writer call; its only trappable failure is an exit from
+Writer death, covered by R-6 (disclosed limit).
+
+* F-1: root diagnostic hardening (delivered)
+Before the change the root =Run.Supervisor='s printable =:sys.get_status= carried its init argument (the run
+config, adapter opts included). Rows: F-1 (direct, no worker guard): the root's printable status carries no
+sentinel while the adapter holds it; invariant controls: the child-termination report prints closures, not the
+config (measured: no sentinel); Writer/Work statuses sentinel-free. The root joins the R-5 non-disclosure set.
+Delivered as a minimal opaque init thunk consistent with the existing closure-wrapped child starts; the proof is
+the printable OTP surfaces (status, reports), never a claim that closures hide same-BEAM introspection. No global
+log filtering, no trap_exit workaround. Topology, start failure and validation parity: the foundation suite's rows
+stay the controls.
+
+* Native boundaries - expectations DERIVED from unchanged production recovery
+Gate =echo ran >> ran; echo ran; sleep 3=; per-attempt GO evidence is the guardian's own stdout file
+=gates/gr_0001.<attempt>.out= (the shared marker keeps the legitimate attempt-1 race at :after_go).
+| Boundary | crash prefix | consistent clock (real clock both runs): recovery | fixed clock on recovery (negative control) |
+|----------+--------------+-----------------------------------------------------+--------------------------------------------|
+| :after_claim | ends =gate_requested=; no =gate_started= | blocked, =human_attention_required= reason =gate_prepare_failed=; no start; no reconcile | same |
+| :after_ack | =gate_started= attempt 1 | =ReconcileGate= once with =expected= == journaled =gate_started= data + run_id + journaled -> dead within the original deadline -> the SAME gate reruns at attempt 2 -> =gate_passed= once -> run completed; attempt-2 stdout ="ran\n"=; attempt-1 evidence unchanged; shared marker +1 | reconcile dead, then =gate_recovery_clock_skew=; blocked; nothing reruns |
+| :after_go | =gate_started= attempt 1; attempt-1 GO race (marker 0 or 1) | as :after_ack | as :after_ack |
+Every row: prefix BYTES preserved; distinct new Writer; the OS group settled before recovery (harness OS oracle,
+run after the BEAM reaper); executing identity + clause pinned only by the rows (worker,
+=run_effect_owner_down=). No production recovery-policy change was made to satisfy these rows.
+
+* Harness
+=AiOrchestrator.Test.OwnedHarness=: callers are registered BEFORE a start permit is sent (control: the caller
+observes itself owned at its first instruction; a caller that dies at once is still owned); the collector registers
+every pid a trace names before forwarding; teardown = reap -> flush -> reap until closed, then OS-absence oracles
+(registered through the harness, consumed once), then directories; a never-settling oracle is a failure. Tasks are
+tracked. Controls in =test/run/owned_harness_control_test.exs=.
+Ordering gate for the L-2c early-death row (test support only): the =effect_observer= closure, which runs IN the
+Server (=Host.notify_observer=) and raises on the PrepareGate observation, is the pre-failure GATE: with a
+controller it reports ={:failure_ready, server, ref}= and blocks until ={:release, ref}=, so nothing on the
+failure/settle path can run before the release; L-2c installs its monitor and observes the exact live Server
+behind that gate, captures the timing origin BEFORE releasing, then release -> direct abandon entry from the exact
+Worker (=AbandonGate= ={:hang_ack, controller}=) -> kill -> the exact Server's diagnostic DOWN, with a strict
+measured bound of under 2000 ms over the ENTIRE post-release sequence, a test witness bound asserted by
+=early_death/4= and the L-2c row in =test/run/effect_owner_standalone_red_test.exs= rather than a runtime SLA (the
+5 s settle budget begins only after the release and cannot explain a pass).
+The positive checker (=early_death/4=) REJECTS a Server not alive at the kill, any other DOWN, or a sequence beyond
+the bound; a deterministic late-kill negative row asserts that rejection; the missed-monitor control keeps its
+early monitor behind the same gate and pins =:noproc= for a late monitor.
+
+* Row inventory
+| Suite | Controls (invariant) | Rows |
+|-------+----------------------+------|
+| test/lifecycle/host_staged_red_test.exs | S-1, S-2, S-2b, S-3, S-4, S-4b, S-5, S-6, S-7, S-7b, S-8 x3, S-9 x3 | S-1, S-1b, S-2, S-2b, S-3, S-4, S-4b, S-5, S-6, S-7, S-7b, S-8 x3, S-9 x3 |
+| test/run/effect_owner_red_test.exs | oracle self-test, R-1, R-3, R-4, R-5 (two), R-6, R-7 x3, R-8 x3 | R-1, R-2, R-3, R-4a..e, R-4f, F-1, R-5, R-7 x3, R-8 x3, R-9, R-10, R-11a..d |
+| test/run/effect_owner_standalone_red_test.exs | L-0, L-4, L-5, F-1 malformed + 5 one-field negatives | L-1, L-2a..c, L-3a..b, L-6a x2, L-6b..d, F-1c |
+| test/run/effect_owner_native_red_test.exs | N-0, consistent x3, skew x3 | N-A/B/C |
+| test/run/owned_harness_control_test.exs | 4 | - |
+(The R-5 and R-7 x3 rows were later re-pinned to the Worker's TASK when deliver adapters became fenced; see
+=delivery-deadline.org=.)
+
+* As built (slice 1 = staged Host; slice 2 = worker / Server / handoff) - deltas from the interface
+- Admission AFTER the loop opens: the seams the owner executes with are the loop's RESOLVED options (the
+  Writer-bound sink, run directory, identity), which exist only once =Host.open= ran. Order in =:opening=:
+  discover -> birth (=:before_birth= / =:registered= barriers) -> handoff (acknowledged) -> open the loop (no
+  effect runs) -> admit with =loop.opts= -> =:admitted= -> =:driving=. Status answers =:opening= until admitted.
+- An un-admitted owner is not kept: on the admit budget the Server terminates it under Work before closing
+  =run_worker_start_failed= (L-3b).
+- Worker lifetime at =:finished=: an owner born for the run stays alive under Work until the starter's shutdown;
+  there is NO post-settle retirement (so nothing can race into =run_effect_owner_down=). L-0 pins
+  =which_children(work) == births=; L-5 drains the acknowledged initial births before the death and refutes any
+  post-death birth.
+- The Server's blocking settlement (Server-stage failure) classifies and counts mismatched settle replies and
+  keeps waiting within the budget; the done/rejected legs arm the settle budget as a state timeout; an unanswered
+  settle on those legs reports =[%{"settle" => %{"clause" => "settle_unknown"}}]= as the cleanup list.
+- =Run.Supervisor.record_child/4=: the worker's birth is traced by its birth authority (the Server) under the Work
+  supervisor with the same closed shape ={:run_child_started, work, :worker, pid}=.
+- Boundary: =AiOrchestrator.Run= depends on =AiOrchestrator.Effects= ONLY through =Run.Worker= and exports it; the
+  foundation pin was migrated accordingly (Server / Executor / Supervisor reference no Effects module).
+
+* Parity delta (test-support oracle for the two-process design)
+The foundation and executor parity rows compared a two-process Server run against a SINGLE-process =Host.run=
+under the per-process =FixedClock=. With effects executed in the worker the clock reads are split between two
+processes, so timestamps AND clock-derived data (=deadline_unix=) differ deterministically from a single-process
+run - not only =ts=. Measured first divergence (case 1 gated_run_seed): seq 5 =assignment_requested=
+=deadline_unix= vs the oracle's value. A shared-domain clock was tried and WITHDRAWN: any other process of the
+tree (the Writer) joining the sequence shifts it and broke passing suites elsewhere. The honest repair is
+=AiOrchestrator.Test.OwnerOracle= (test/support): same signatures as =Host.run/resume/cancel=; the loop runs in
+the caller while release_terminal / execute / settle run in a separate owner process with its own clock - the
+Server/Worker distribution exactly. Fixture BYTES are unchanged (fixtures are prior inputs, never expected
+outputs); the executor's own acceptance-stamp oracle and the foundation parity oracle use =OwnerOracle=. Two
+executor rows that still compare against =Host.resume= / =Host.cancel= suffix TYPES (not clock-derived values)
+are unchanged and pass.
+
+* Migrated pins in the integrated suites (historical -> current; all disclosed)
+| Suite | Pin | Migration |
+|-------+-----+-----------|
+| foundation | Work has no children during the run | exactly one =Run.Worker= child |
+| foundation | Run is a root boundary without Effects | Effects only through Run.Worker; Server/Executor/Supervisor reference none |
+| foundation | R-K gate entered by the Server; release to the Server | the traced worker (=executing!/0=) |
+| foundation | R-C..R-F READY / Port owner / after_go = the Server | the worker; one owner per run (the rework's gate reuses it) |
+| foundation | R-H genuine closed reason has four keys | five keys with the cleanup summary |
+| executor | E-6 exactly the named traces | + the worker birth and the run's correlated protocol traces (requested == applied, no drop) |
+| executor | E-6 held gate entered by the Server | by the worker |
+| executor | E-3 / E-5 oracles = Host.run | OwnerOracle |
+The integrated suites' one-clause barriers were migrated to explicit =:handoff_received -> :ok= clauses.
+
+* Delivered dependencies
+1. =Host.Stage= + commit_step/resume_step/close_step/reject_step; =advance/1= kept.
+2. Server: birth/handoff/admission with =opts[:birth_barrier]= (test-only), outstanding record with per-op refs,
+   dequeue/drop accounting, settle-before-exit, five-key closed diagnostic with the validated cleanup domain,
+   traces carrying =kind=, =opts[:worker_module]=, =config.owner_handoff=.
+3. =Run.Executor.Owner=: handoff ack before =:subtree_started=, the =:handoff_received= barrier name, facts.worker.
+4. =Run.Worker= (temporary, shutdown 1_000): admit/release/execute/settle with claimed-sender replies.
+5. =Run.Supervisor=: =owner_handoff= validation; F-1 root init hardening.
+
+* History
+The contract went through five reviewed revisions (a staged-Host interface, a protocol/correlation revision, a
+harness revision, a corrections revision and the as-built revision) plus a later test-only follow-up that
+replaced a timing-dependent early-death witness (L-2c) with the observer-gated ordering described under Harness.
+Every correction is folded into the text above; the revision ledger is not reproduced here.

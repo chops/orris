@@ -1,0 +1,183 @@
+#+TITLE: Gate execution: prepare / record / release, durable claim, recovery
+#+PROPERTY: status delivered contract (gate execution: claim, ack, release, await, expire, reconcile)
+
+* Implementation status
+Delivered: =AiOrchestrator.Gate.Execution= (=lib/ai_orchestrator/gate/execution.ex=) with =prepare/3=, =ack/2=,
+=release/3=, =await/2=, =expire/1=, =abandon/1=, =pass?/1= and =reconcile/4= as specified below, the claim file
+and publication path, the native =--probe= verb in =native/gate_guardian/gate_guardian.c=, and the v2
+=gate_started= / =gate_failed= event schemas in the journal. Tests: =test/gate/gate_execution_test.exs= and
+=test/gate/gate_guardian_unit2_test.exs= (the barrier and FaultFs rows), with the reducer/Effects route covered
+by =gate-execution-wiring.org=. The =expire/1= primitive ships but has no lib caller: on the supervised route the
+Server actuates the owner through =Effects.settle_await/3= (=gate-async-await-proposal.org=), and the owner-side
+await enforces the deadline through =await_until_deadline/3=.
+
+* Purpose
+The guardian (=gate-guardian-protocol.org=) owns one worker group and settles it whenever its
+owner is lost. This contract is what the BEAM side owes on top of it: a durable execution
+claim before any release, the versioned =gate_started= identity event persisted by the
+journal writer before the go-token, a time fence that no consumer can forget, deterministic
+crash barriers at every window, and a cold recovery that can only PROVE death from read-only
+kernel facts. It introduces no broker, no adoption, no auto-restart, and no fresh helper
+that signals on a historical identity. Reducer/Effects wiring is =gate-execution-wiring.org=.
+
+* Seams (honest statement)
+BEAM-side claim reads and writes go through =Journal.Fs= (FaultFs injects there). The
+guardian's own output syscalls are a separate native seam (=gate-guardian-protocol.org=). The guardian
+binary path is =opts[:helper]=; packaging is a separate concern. Test-only seams, pinned: FaultFs hooks at
+Fs operations, and =opts[:barrier]= (a fun called with a barrier name at the points below;
+production passes none and the default is a no-op).
+
+Malformed startup records close the Port without writing a command to a helper
+whose input may already be closed. The native guardian treats control EOF as
+owner loss; the caller still reports =settle_unproven=, never verified settlement.
+This startup rejection does not alter GO/TERM handling for retained handles.
+
+* Claim (D1, MUST-2, MUST-11)
+Location =<run_dir>/gates/<gate_run_id>.claim.<attempt>=: outside the =run.lock= family,
+inside the run namespace the Writer exclusively owns.
+- Domains: =attempt= in {1, 2}; =gate_run_id= matches =\A[A-Za-z0-9_-]{1,64}\z= (absolute
+  anchors: a trailing newline, a NUL, an empty string are all refused); every derived path is
+  contained in =run_dir/gates= (no =..=, no absolute component); =lstat= must say regular
+  file for a claim and real directory for =gates= (a symlink or a directory at a claim name
+  fails closed); claim files are regular, mode 0600; the directory is created 0700.
+- The canonical claim DOCUMENT, version 1, is the binding. It is pinned as ORDERED BYTES:
+  ={"attempt":A,"command_argv":[...],"cwd":"...","deadline_unix":D,"gate_run_id":"...",
+  "run_id":"...","schema":"ai-orchestrator/gate-claim","schema_version":1}= (keys in that
+  byte order, no whitespace, JSON string escaping); =claim_hash= = sha256 of exactly those
+  bytes. A content binding, not mathematical injectivity: tests vary ONE field each.
+- The persisted claim FILE has EXACTLY these keys, no more, no fewer: =schema=,
+  =schema_version=, =run_id=, =gate_run_id=, =attempt=, =command_argv=, =cwd=,
+  =deadline_unix=, =claim_hash=, =identity= (exactly =guardian_pid=, =worker_pid=, =pgid=,
+  =start=), =stdout_path=, =stderr_path=, =supervisor_instance=, =token=, =claimed_at=.
+  On read the document is recomputed from the decoded fields and must reproduce =claim_hash=
+  (=claim_unreadable= otherwise); unknown keys, unknown =schema_version=, missing keys, wrong
+  types, mode other than 0600, or a size above 8192 bytes (checked BEFORE parsing) fail
+  closed.
+- Reading: a listing error, a malformed family name, a symlink, a directory, an oversize
+  file, an unknown version, an unreadable or malformed file, or a HIGHER attempt than the
+  journal expects all fail closed (=claim_unreadable= / =claim_unexpected=), never "no claim".
+
+* Ack (MUST-1, MUST-10)
+=Execution.ack(prepared, persisted)= is the only constructor of =%Execution.Ack{}=; it checks
+=persisted= is the Writer's own append result for THIS start: the writer stamps
+(=schema_version 2=, =prev_line_sha256= present, positive integer =seq=), =type
+"gate_started"=, =event_version 2=, =run_id= = the request's, and EVERY field of the
+handle's =started_data= equal in the persisted =data= (=gate_run_id=, =command_argv=,
+=stdout_path=, =stderr_path=, =attempt=, =deadline_unix=, =execution.pid=, =execution.pgid=,
+=execution.start=, =execution.claim_hash=), with no extra keys. It returns ={:error,
+ack_mismatch}= naming the first disagreeing field otherwise. =release/3= accepts only an Ack
+whose binding equals the handle's and releases a handle ONCE (=already_released=). An
+in-memory or absent sink never yields a persisted map with the writer's stamp, so it never
+yields an Ack; a Writer append that fails at write, sync or receipt stage yields no persisted
+map either, and the handle is abandoned with proof. Internal consistency contract, not an
+unforgeable capability.
+
+* Time fence (MUST-4)
+One clock (=opts[:clock]=, =unix_now/0= and =monotonic_ms/0=) is injected into prepare,
+release, expire and await. =deadline_unix= is the ORIGINAL absolute deadline: persisted in
+the claim, journaled in =gate_started= v2, reused unchanged on attempt 2, never refreshed.
+Expiry is checked before any work in prepare (=deadline_expired=, nothing spawned, nothing
+claimed), again immediately before the go-token in release (=deadline_expired=, handle
+abandoned with proof), and in await.
+On the supervised route, =Run.Server.arm_gate/3= owns the live =AwaitGate= deadline and correlated timer
+wake-ups. The Worker retains the Port and settlement state and acts on the Server's correlated wake.
+The synchronous =Lifecycle.Host= route instead enforces the deadline inline through =Execution.await/2=;
+it does not arm the Server timer. The Observe / Dispatch / ReconcileSend adapter fences belong to
+=Run.Worker= (=execute_fenced/4=, =delivery-deadline.org=), and the native guardian keeps its separate
+backstop timer (=gate-guardian-protocol.org=). The harness arms one timer at the
+original deadline and, when it fires, calls =Execution.expire(running)=: TERM to the ORIGINAL
+guardian through the retained handle, =DEAD reason=command= awaited, ={:timeout,
+termination}= returned; a later =await= on that handle reports the same termination, never a
+fresh run. The guardian's =--timeout-ms= (remaining time at prepare plus a fixed grace of 2 s, measured
+by the guardian's monotonic clock from its own start, never refreshed on GO; supported range
+100 ms to 24 h, and a request whose remaining time plus grace exceeds it is refused before
+anything is spawned as =deadline_unsupported= naming the range, never silently shortened, never
+a generic =prepare_failed=) is a bounded cleanup BACKSTOP for an owner that is alive but stuck: it settles the group and
+reports =DEAD reason=deadline=, which await/expire surface as ={:timeout, termination}= with
+=backstop true=. The backstop is not a policy scheduler and never shortens or extends the
+deadline; it only guarantees cleanup. A clock that fails (=clock_unavailable=) means no
+release.
+
+* Publication truth (MUST-3, MUST-8)
+Publish = mkdir 0700 (if absent), exclusive private temp (0600), write, fsync, close, hard
+link to the final name (never replaces), remove temp, directory fsync. A rejection states the
+ORIGINAL publication error and the cleanup outcome SEPARATELY, as the Writer/RunLock
+vocabulary does:
+- =clause=: =claim_unpublished= (the PUBLICATION failed: the claim was never proven durable;
+  what remains on disk is stated ONLY by =cleanup= / =residue=, which are authoritative) or
+  =claim_conflict= (=eexist= on the final; the foreign final untouched);
+- =stage=: =mkdir | open | write | sync | close | link | rm_temp | dir_sync=;
+- =class=: closed errno class =eio | enospc | eacces | eexist | enoent | erofs | other=;
+- =cleanup=: =none= (nothing was created, so no removal was attempted) | =removed= (our
+  object removed AND the directory fsynced afterwards) | =removed_unsynced= (removed, but the
+  fsync after removal failed: durability unproven) | =absent= (our object was already gone,
+  a real =enoent=, and the directory was fsynced: the absence is durable) | =absent_unsynced=
+  (already gone, but that fsync failed) | =cleanup_required= (an object of ours could not be
+  removed; =residue= names each, temp and final identified by safe relative path) |
+  =foreign_final_untouched= (the final present is not ours by token: never removed); =temp=
+  and =final= carry the same removed/absent vocabulary when a compound outcome needs them;
+- =settle=: the guardian settlement (=settled/leftovers/proof/reason=) or its failure clause
+  (=guardian_gone | settle_unproven=), always present after READY, never lost;
+- =outputs=: =removed | left= for the never-released, empty output objects of this attempt.
+Trace order pinned: after a failed dir fsync the retraction is =rm(final)= then =dir_sync=,
+and only a SUCCESSFUL dir_sync after the final's removal earns =removed=.
+
+* Await, evidence, D3
+={:exit, outcome}=: =kind exited|signaled=; =exit_status= integer only when exited; =signal=
+only when signaled; =settled/leftovers/proof/escaped=; =duration_ms= from RELEASED;
+=stdout_hash=, =stderr_hash= (computed by streaming the private files, never retained whole),
+=stderr_merged false=; =failure_summary= (existing bounded summariser) whenever not exit 0.
+Unreadable output files are =output_unreadable= with the closed class; no hash is invented.
+=Execution.pass?(outcome)= is true only for exit 0 AND settled AND proof gone; exit 0 with an
+unsettled or unknown group is never a pass and never an automatic retry (attention).
+={:timeout, termination}= and DEAD-by-deadline: =termination{kind "timeout", settled,
+leftovers, proof}=; unknown cleanup is carried as =settled false / leftovers unknown= and the
+reducer parks on attention, never a terminal that permits later work.
+Journal (wired in =gate-execution-wiring.org=): =gate_started= v2 adds required =attempt=, =deadline_unix=,
+=execution{pid, pgid, start, claim_hash}=; v1 raw unchanged on read, view =execution
+{"status":"unrecorded"}=. =gate_failed= v2: =exit_status= integer for a normal non-zero exit,
+=null= otherwise with required closed =termination{kind timeout|signal|recovery, signal only
+when kind=signal, settled, leftovers, proof}=; =duration_ms=, =stdout_hash=, =failure_summary=
+stay required; the existing stderr evidence UNION is preserved unchanged in v1 and v2: at
+least one of =stderr_hash= or =stderr_merged= is required, both admitted; v1 view =termination
+{"status":"unrecorded"}=. =gate_passed= unchanged.
+
+* Cold reconcile (D2, read-only)
+=reconcile(fs, run_dir, expected, opts)= where =expected= = the journaled =gate_started= v2
+data plus =run_id= (never a recomputed current intent). Reads the claim for
+=expected.attempt= (a higher attempt than expected: =claim_unexpected=); compares run, gate,
+attempt, claim_hash, identity, deadline (=claim_mismatch= names the field). Then asks the
+same native binary for READ-ONLY facts: =gate_guardian --probe PID PGID= prints one record
+=PROBE leader=gone|alive|unknown start=<identity>|- group=gone|alive|unknown members=N|unknown=
+from =kill(pid,0)=, =kill(-pgid,0)= (the independent =group= field) and the kernel fact
+readers; it NEVER sends TERM or KILL. =dead= requires =leader=gone= (or alive with another
+start) AND =group=gone= AND =members=0=; an =EPERM= or =unknown= on any of the three is
+=unknown=, so an empty enumeration alone can never make a group dead.
+Verdicts: =:no_claim= (no claim for expected attempt; attention); ={:orphan_claim, claim}=
+(caller states no =gate_started= was journaled for this attempt: a pre-ack claim; attention,
+never rerun by itself); ={:dead, facts}= only when the leader is gone by kernel identity
+(absent, or alive with a different start = pid reused) AND =members == 0=; ={:unknown,
+facts}= for everything else: leader alive with the SAME start, leader gone but group
+non-empty, any =unknown= fact, or an original guardian missing while its group remains.
+No ={:terminated, ...}= exists in cold reconcile. Settling a live group is only ever done
+through the original guardian's retained handle in the same BEAM (=abandon/1= or the
+running handle's TERM path); no reopened Port, no reconnect path. Reconcile never bypasses
+the Writer ownership transaction.
+Rerun policy (reducer; =gate-execution-wiring.org=): same =gate_run_id= at =attempt + 1= only after ={:dead}=,
+while =attempt < 2= and =now < deadline_unix=; otherwise the versioned terminal with
+=termination.kind "recovery"=.
+
+* Barriers (MUST-5): names and what each proves
+| barrier / fault point                        | window                               | evidence                                                        |
+| =:before_spawn= (barrier)                    | pre-READY                            | nothing spawned, no claim, no output objects                     |
+| =:after_ready= (barrier, carries identity)   | post-READY / pre-claim               | worker gone (guardian settled on port close), no temp, no final  |
+| FaultFs hook =rm= 1                          | post-link / pre-dir-sync             | final present (claim), worker gone, temp is residue named by recovery |
+| =:after_claim= (barrier)                     | post-claim / pre-ack                 | worker gone, claim present, reconcile (journaled: false) => orphan_claim |
+| =:after_ack= (barrier)                       | durable ack / pre-GO                 | worker gone, never released (no marker file)                      |
+| =:after_go= (barrier)                        | GO sent / before RELEASED read       | released group settled by the guardian; marker may or may not exist; reconcile => dead |
+| =:after_exit= (barrier)                      | completion / before terminal         | outputs intact, reconcile => dead, no terminal (reducer reruns or terminates lawfully) |
+| harness timer -> =expire/1=                  | consumer never awaits                | original guardian settles, ={:timeout}=, proof gone; later await agrees |
+| owner stuck, no harness                      | backstop                             | guardian =DEAD reason=deadline=, ={:timeout, backstop true}=, proof gone |
+Oracles: kernel absence of the leader by identity AND an empty group (=kill -0 -PGID= ESRCH
+plus a member listing), never =kill -0 PID= alone; a TERM-ignoring descendant is escalated
+to KILL; a =members_fail= seam fault yields =unknown= and never a pass.

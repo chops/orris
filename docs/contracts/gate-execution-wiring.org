@@ -1,0 +1,174 @@
+#+TITLE: Gate execution wiring: the orchestrated gate route through Execution
+#+PROPERTY: status delivered contract (gate execution wiring)
+
+* Scope
+Fresh and resumed orchestrated gates run through =AiOrchestrator.Gate.Execution= instead of
+the legacy =Gate.Runner= route. The reducer stays pure; the Host owns every runtime object
+(Ports, prepared/running handles, Ack state) and the live deadline; the journal carries only
+the v2 facts. No Run.Server, no automatic restart, no host-root recovery, no caller
+migration, no daemon scope. =Gate.Runner= remains a standalone API; the orchestrated route
+never falls back to it.
+
+* Contract additions (exact shapes)
+Effects (correlation key =gate_run_id=, as every gate effect today):
+| =Effect.PrepareGate{gate_run_id, attempt, requested, deadline_unix, repo_root, run_dir}= | prepare + durable claim; =requested= is the journaled =gate_requested= data |
+| =Effect.ReleaseGate{gate_run_id, attempt, started_seq}=                              | =started_seq= is the seq of the committed =gate_started= v2 event: a pure reference |
+| =Effect.AwaitGate{gate_run_id, attempt, deadline_unix}=                              | evidence, bounded by the ORIGINAL deadline                                       |
+| =Effect.ReconcileGate{gate_run_id, attempt, expected}=                               | cold, read-only; =expected= = journaled start data + =run_id= + =journaled= flag |
+Observations:
+| =Observation.GatePrepared{gate_run_id, attempt, started, now}=        | =started= is the complete =gate_started= v2 payload the reducer emits verbatim |
+| =Observation.GatePrepareFailed{gate_run_id, attempt, reason, now}=    | closed reason map: exactly the diagnostics mapping below (clause, stage, class, cleanup, temp, final, residue, settle, outputs, field, missing, max_ms) |
+| =Observation.GateReleased{gate_run_id, attempt, now}=                 |                                                                                 |
+| =Observation.GateReleaseFailed{gate_run_id, attempt, reason, now}=    | closed reason map                                                               |
+| =Observation.GateFinished{gate_run_id, result, now}=  (existing)      | ONLY a proven pass: exit 0 AND settled AND proof gone; =result= is =gate_passed= data |
+| =Observation.GateFailed{gate_run_id, result, now}=    (existing)      | =result= is =gate_failed= v2 data: integer exit, or null + closed termination   |
+| =Observation.GateUnsettled{gate_run_id, attempt, result, now}=        | ANY outcome (exit 0, non-zero, signal, timeout) whose settlement is unproven (=settled false= or =proof != gone=): attention, never a pass, never a retry while the group may still run |
+| =Observation.GateError{gate_run_id, reason, now}=     (existing)      | unreadable evidence etc.: closed reason                                          |
+| =Observation.GateReconciled{gate_run_id, attempt, verdict, facts, now}= | =verdict= in =:dead | :unknown | :no_claim | :orphan_claim=; =facts= closed     |
+| =Observation.GateReconcileFailed{gate_run_id, attempt, reason, now}=  | =claim_unreadable | claim_mismatch | claim_unexpected | probe_invalid | helper_missing= |
+Admissibility: PrepareGate -> GatePrepared | GatePrepareFailed; ReleaseGate -> GateReleased |
+GateReleaseFailed; AwaitGate -> GateFinished | GateFailed | GateUnsettled | GateError;
+ReconcileGate -> GateReconciled | GateReconcileFailed. =RunGate= keeps its rows for the
+standalone API; the orchestrated route never yields it.
+
+* Reducer transitions (pure)
+Fresh gate: =gate_requested= -> =Effect.Clock= (purpose "gate_deadline") -> =deadline_unix =
+now + timeout_s= -> =PrepareGate{attempt 1}=. =GatePrepared{started}= -> emit
+=gate_started= (v2, data = =started= verbatim) -> =ReleaseGate{started_seq}=. =GateReleased=
+-> =AwaitGate=. =GateFinished= -> =gate_passed= (version 1, unchanged: exactly ONE stderr evidence field; the
+Host normalizes the Execution outcome to =stderr_hash=, never =stderr_merged=). =GateFailed= -> =gate_failed= v2 (data = result) then the existing
+retry policy. =GateUnsettled= (any exit/signal/timeout with unproven settlement) -> =human_attention_required=
+reason =gate_settlement_unknown= (detail: kind, settled, leftovers, proof), run parks: no retry
+while the original group may still run, no fabricated dead or settled evidence. =GatePrepareFailed=
+/ =GateReleaseFailed= / =GateError= -> attention =gate_prepare_failed= /
+=gate_release_failed= / =gate_evidence_unreadable= with the closed reason as detail; a
+=helper_missing= clause is =gate_helper_missing=.
+Resumed gate with a =gate_started= v2 and no terminal: -> =ReconcileGate{expected}= with
+=journaled: true=. Verdicts: =:dead= and =attempt < 2= and =now < deadline_unix= (clock read)
+-> =PrepareGate{attempt + 1}= with the SAME =gate_run_id= and the SAME =deadline_unix=;
+=:dead= otherwise -> =gate_failed= v2 with =termination{kind "recovery", settled true,
+leftovers "0", proof "gone"}=, =exit_status null=, evidence hashed from the attempt's
+private output files by the Host (=GateReconciled= carries =evidence= when readable;
+unreadable -> attention =gate_evidence_unreadable=, no terminal); =:unknown= -> attention
+=gate_recovery_unknown= (facts as detail); =:no_claim= -> attention
+=gate_start_unresolved=; =:orphan_claim= -> attention =gate_claim_orphaned= (residue names
+as detail). Legacy v1 =gate_started= (view =execution unrecorded=) with no terminal ->
+attention =gate_start_unresolved=, no effect of any kind for that gate.
+Reducer state adds =gate_attempt= per =gate_run_id= (from the v2 data) and nothing else.
+
+* Host transaction (runtime objects stay here)
+=Host.execute(PrepareGate)= -> =Execution.prepare(fs, request, gate_opts)= where the request
+is built from the effect and the resolved helper path; the prepared handle is registered in
+the Host process (keyed =gate_run_id/attempt=). The reducer's =gate_started= is committed by
+the existing =drive= order (commit precedes execute), so when =ReleaseGate{started_seq}=
+arrives the Host looks up the committed persisted map at =started_seq= (the sink's returned
+map: a real Writer returns its stamped event; a =nil= or =:ok= sink returns no stamped map)
+and calls =Execution.ack(prepared, persisted)=; only an =:ok= Ack releases, once. A failed
+commit never reaches the release effect: =drive= halts, and the Host's =after= clause
+abandons every registered handle (settlement proof logged in the rejection). =AwaitGate= ->
+=Execution.await(running, clock)=: the Host is sequential, so awaiting IS its work; the
+deadline is serviced inside that await by the injected clock (remaining time bounds the
+receive, then =expire= through the original channel), with the guardian backstop underneath;
+nothing schedules elsewhere. =ReconcileGate= -> =Execution.reconcile(fs, run_dir, expected,
+gate_opts)=; a =:dead= verdict's evidence is the Host hashing the attempt's private files
+when readable. Registry lifecycle: entry created at PrepareGate, replaced by the running
+handle at ReleaseGate, RETAINED until the corresponding terminal event's commit succeeds
+(a sink rejection or exception after the terminal observation still finds the handle and
+abandons it); removed after that commit; on any =drive= error or exception the remaining
+handles are abandoned through their retained channels and each settlement (or its failure) is
+carried as =gate_cleanup=; on Host process death the Ports close with the process and
+settlement is the guardian's control-EOF path (nothing is reported then).
+
+* Diagnostics
+New closed attention reasons: =gate_helper_missing=, =gate_prepare_failed=,
+=gate_release_failed=, =gate_settlement_unknown=, =gate_recovery_unknown=,
+=gate_start_unresolved=, =gate_claim_orphaned=, =gate_evidence_unreadable=,
+=gate_recovery_clock_skew= (reconcile clock read earlier than the journaled start: closed facts
+=recorded_start_unix=/=observed_now_unix=, never an invented duration); detector
+=gate_execution=. Details carry only closed classes and facts (never paths off the run,
+never records).
+
+* Parity and archived journals
+Archived source journals (the scenario fixtures and kill9 priors) are immutable and unchanged.
+The parity oracles (=test/fixtures/contracts/parity=) are EXPECTED NEW-EVENT outcomes and were
+regenerated for the orchestrated route from the pre-stamp reducer events: the comparison is
+pre-stamp/event parity (the harness journals through an in-memory receipt sink; =schema_version=
+and =prev_line_sha256= are dropped on both sides), not persisted-byte parity; a separate
+assertion checks every appended event carried a well-formed version-2 receipt, so the
+normalization cannot hide a wrong Writer receipt. Delta, 7 of 11 oracles:
+- 01, 06, 07, 08, 09: =gate_started= at version 2 with =attempt=, =deadline_unix=, =execution=
+  (the double's deterministic identity), attempt-specific output paths
+  =gates/<id>.<attempt>.out|err=; =gate_passed= unchanged (version 1, one stderr evidence field).
+- 05: the same for both starts, and =gate_failed= at version 2 (=stderr_merged= false).
+- 10 (kill9 resume before a gate result): the prior holds a VERSION 1 =gate_started= with no
+  terminal; its read view upcasts to version 2 with =execution.status unrecorded=, so the
+  resumed owner cannot know whether that gate still runs. The lawful outcome is
+  =human_attention_required= =gate_start_unresolved= (blocked), never a silent rerun: 39 -> 35
+  events, summary completed -> blocked. Three legacy-resume tests assert this outcome.
+- 02, 03, 04, 11: byte-identical.
+Unrelated dispatch/recovery parity is untouched.
+
+* Cleanup settlement (the executor's abandon answer, normalized)
+Every abandonment (release rejection, sink error, exception, attention exit at the Host's return
+boundary, stragglers at entry) reports one closed =settle= shape, on the release-attention path
+(=detail.settle=) and in =gate_cleanup=: =:ok= -> ={settled true, proof gone}=;
+={:error, abandon_unsettled + DEAD facts}= -> ={clause abandon_unsettled, settled false, leftovers,
+proof, reason}= (the record's own facts, preserved); ={:error, guardian_gone}= -> ={clause
+guardian_gone}=; ={:error, settle_unproven}= -> ={clause settle_unproven [+ facts]}=; any other
+answer -> ={clause settle_unproven}=. An unproven group is never reported gone.
+
+* Evidence, duration, cleanup (C4-M5)
+- One owner of output evidence: =Execution.evidence(run_dir, gate_run_id, attempt)= (streamed
+  sha256 of both private files; =output_unreadable= with a closed class otherwise). =await/2=
+  uses it for exits; the Host calls it for timeouts, signals and cold recovery; nothing else
+  hashes gate output. Unreadable evidence is =GateError= -> attention
+  =gate_evidence_unreadable=, never a terminal with invented hashes.
+- Duration: =duration_ms= is measured by Execution from the recorded release (exit, signal,
+  expire, backstop terminations all carry it; a handle never released carries none). On cold
+  recovery no live measurement exists: the recovery terminal's =duration_ms= is the
+  journal-derived span from the =gate_started= event's =ts= to the reconcile clock read, both
+  journal facts, stated as such in the wiring doc and never presented as a live measurement.
+- Owner deadline: the Host's await expires the running handle through the ORIGINAL channel at
+  the deadline (=DEAD reason=command=, no backstop flag) BEFORE the guardian's =--timeout-ms=
+  backstop (deadline + 2 s) can fire; the backstop is only reached by an owner that is alive
+  but stuck.
+- Cleanup on error or exception: the Host wraps =drive= so that on a rejection or a raised
+  exception every registered handle is abandoned through its retained channel and each
+  settlement (or its failure, =settle_unproven= / =guardian_gone=) is carried in the rejection
+  as =gate_cleanup: [%{gate_run_id, attempt, settle}]=; the exception is re-raised after
+  cleanup. This is distinct from an untrappable owner =:kill=: no after-clause runs, the Ports
+  close with the process, and settlement is the guardian's control-EOF path plus the
+  backstop; nothing is claimed to be reported in that case.
+
+* Diagnostics mapping (C4-M6, C4-R2)
+The Host maps an Execution rejection into an observation =reason= by VALUE DOMAIN, not by
+dropping keys: =clause= from the closed clause set (else =unknown=); =stage= from the closed
+stage set (else dropped); =class= from the closed class set: the errno classes plus the guardian's SETUP_FAILED classes
+  (open_stdout open_stderr pipe fork chdir setsid ready_timeout identity usage protocol unknown) (else =other=); =cleanup=
+in =none|removed|removed_unsynced|absent|absent_unsynced|cleanup_required|foreign_final_untouched=;
+=temp= and =final= in =removed|removed_unsynced|absent|absent_unsynced= (the C3 durability facts,
+retained: =none= means nothing was created so no removal was attempted; =removed= means we
+removed our object and fsynced; =absent= means our object was already gone when we went to
+remove it and the directory was fsynced; the =_unsynced= forms mean that fsync failed); =residue= only
+entries matching =^gates/(?!\.\.?(?![\s\S]))[A-Za-z0-9_.-]{1,200}(?![\s\S])= (absolute end; dot and
+dot-dot basenames, a trailing newline, absolute, traversal, oversize or non-string entries
+dropped), the list bounded to 8 entries; =settle= exactly =settled= (boolean), =leftovers= (count|unknown),
+=proof= (gone|alive|unknown), =reason= (closed) or =clause= (guardian_gone|settle_unproven),
+nothing else; =outputs= in =removed|left=; =field=, =missing= (boolean), =max_ms= (integer).
+Every other key and every off-domain value (raw bytes, records, terms, paths off the run) is
+gone. A non-map adapter return is =%{clause: "invalid_return"}=. Attention =detail= is that
+same closed map. Helper resolution: =Config.Runtime.resolve/1= yields =gate_guardian= from
+the flag, else =AI_ORCHESTRATOR_GATE_GUARDIAN=, else the local config file, else =nil=;
+the CLI routes the resolved value to the Host as =gate_helper=; the Host refuses a nil,
+missing or non-executable helper at PrepareGate with =helper_missing= (attention
+=gate_helper_missing=) and never falls back to =Gate.Runner=.
+
+* Implementation status
+Delivered: the orchestrated gate route runs through =AiOrchestrator.Gate.Execution= from
+=AiOrchestrator.Effects= (=lib/ai_orchestrator/effects.ex=, gate stages and the closed clause set); the Host
+refuses a missing helper with =helper_missing=; =Config.Runtime.resolve/1= resolves =gate_guardian=; the v2
+=gate_started= / =gate_failed= facts are in the journal schemas; =Gate.Runner= remains a standalone API.
+Tests: =test/gate/gate_execution_test.exs=, =test/gate/gate_guardian_unit2_test.exs= and the effects suite
+under =test/effects/=. The synchronous statement about awaiting in this document describes the =Lifecycle.Host=
+route; on the supervised route (=Run.Server= / =Run.Worker=) the await is owner-resident and asynchronous with
+a Server-armed deadline, as specified in =gate-async-await-proposal.org=.

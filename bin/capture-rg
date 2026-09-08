@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -lt 2 ]]; then
+  printf 'usage: bin/capture-rg LABEL RG_ARGS...\n' >&2
+  exit 2
+fi
+
+label="$1"
+shift
+
+set +e
+output="$(rg "$@")"
+status=$?
+set -e
+
+case "$status" in
+  0|1)
+    printf '%s' "$output"
+    ;;
+  *)
+    printf '%s scan failed (rg exit %d)\n' "$label" "$status" >&2
+    exit 2
+    ;;
+esac

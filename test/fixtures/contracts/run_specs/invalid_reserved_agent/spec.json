@@ -1,0 +1,11 @@
+{
+  "schema": "ai-orchestrator/run-spec",
+  "schema_version": 1,
+  "goal": "Example seed run for fixture purposes",
+  "repo_root": "/tmp/example-repo",
+  "allowed_roots": ["lib", "test"],
+  "agents": [{"name": "orchestrator", "role": "writer"}, {"name": "reviewer_agent", "role": "reviewer"}],
+  "gates": {"tests": ["mix", "test"]},
+  "budgets": {"max_wall_clock_s": 3600, "max_attempts_default": 3},
+  "stop_policy": {"max_no_progress_attempts": 2, "wedge_stale_ms": 180000}
+}

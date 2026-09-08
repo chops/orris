@@ -1,0 +1,106 @@
+#+title: Recovery reservation vocabulary
+#+options: toc:nil
+#+PROPERTY: status delivered contract
+
+* Implementation status
+Delivered as vocabulary only. =run_recovery_reserved= is a reserved, typed event: its version 1 schema is in
+=lib/ai_orchestrator/journal/schemas/event_data.ex=, its reserved membership in =Journal.Event= and
+=Journal.Vocabulary=, and the fold count with both refusal clauses in =lib/ai_orchestrator/journal/fold.ex=
+(=Fold.State.recovery_reservations=). The fixture is =test/fixtures/contracts/journals/fold_recovery_reserved=
+with the measured baseline =test/fixtures/contracts/journals/BASELINE-FOLD-PROJECTIONS.json=; the rows are
+=test/journal/recovery_reservation_red_test.exs= (R-7/R-7b in =test/run/command_executor_red_test.exs=), and the
+inventory pins in =test/contracts/event_vocabulary_test.exs= and =event_payload_schema_test.exs= carry the
+after column of the transition table. No producer exists: nothing in =lib/= appends this type, and the Writer
+refuses it reserved-first.
+
+* Scope
+ONE new reserved event type with its own schema, ONE integer Fold.State field, one new fixture directory. NO
+producer (no acquisition writes it), no exhaustion terminal, no restart coordinator, no cleanup-unproven
+refusal, no continuation, no runtime consumer of =restart_attempts= (the typed budget stays inert), no
+deadline, no daemon topology. Omission at exhaustion stays not implemented: no injected default.
+
+* The event
+- Type =run_recovery_reserved=: a RESERVED member of the vocabulary (Journal.Event =@reserved_types= and
+  Vocabulary =@reserved= with target classification =:w4=), NEVER an acceptance type (Server =@acceptance_types= unchanged) and
+  NEVER a terminal type (Fold =run_terminal?/1= and Server =@terminal_types= unchanged). Reserved means: readable and
+  fold-legal history with a typed schema, refused by =Event.validate_append= / the Writer with
+  =reserved_event_type= (the existing reserved-first check). EXPORT (measured control C-3): the typed
+  envelope export =Event.json_schema/0= follows TYPED CURRENT VERSIONS, not reserved membership - it already lists
+  =run_budget_exhausted= and =run_failed= - so the new typed reserved type is INCLUDED there while
+  =Event.validate_append= / the Writer still refuse it reserved-first; no separate "read export" exists and none is
+  claimed. Direct =EventData.parse(_, :append)= admits the current version (structural only); the refusal is Event's.
+  Its version history is its own, starting at 1 (=EventData.current_version("run_recovery_reserved") == 1=).
+- EventData schema, version 1, REQUIRED fields only, unknown keys rejected:
+  | field | domain (structural, field level) |
+  | =attempt= | integer >= 1 |
+  | =limit= | integer >= 0 |
+  | =cause_class= | closed enum "writer_exit" \vert "writer_timeout" \vert "owner_down" (the three causes the delivered source emits: Run.Recovery's closed reasons and the Server's =run_effect_owner_down= clause; no other value in v1) |
+  | =lost_generation= | integer in the lock-generation domain 1..999999999999 (the =run.lock.N= filename grammar; never a pid) |
+  | =authority= | closed enum "executor" \vert "host" |
+  Integers only: booleans, floats (1.0 included), strings and null are =invalid_event_data= with the field named;
+  newline-bearing or canary strings in any field are refused without echo (errors carry field names, never values).
+- CHECK LOCATIONS AND PRECEDENCE (explicit): (1) envelope + structural field domains = EventData (read and append
+  modes alike, =invalid_event_data=); (2) cross-field: a reservation with =limit 0= or =attempt > limit= is
+  structurally well-formed but SEMANTICALLY impossible (nothing could be reserved) - refused by the FOLD with clause
+  =recovery_reservation_invalid= (=at_seq=, =field "attempt"=), not by the schema, so a line stays readable as bytes;
+  (3) history: the Fold requires =attempt == recovery_reservations + 1= (=recovery_reservation_out_of_order=,
+  =at_seq=, =expected=) - the count is RUN-WIDE and never resets across =lost_generation=, =authority= or command
+  acceptances; =lost_generation= values need not be adjacent or unique (lock releases also advance generations) and
+  no sequencing of them is enforced. Envelope/structural refusals precede fold refusals; preamble/terminal refusals
+  (existing) precede the reservation checks.
+- Fold placement (existing rules, measured): a reservation is legal only in phase =:run_started= (after
+  =run_started= / =run_resumed=) and before a terminal; before =run_started= it is =preamble_violation=; after a
+  terminal it is =events_after_terminal= (it is not a cleanup event). While BLOCKED (open attention) it is legal:
+  it is not a dispatch type (=blocks_on_attention?= unchanged) and does not resolve attention.
+- Fold effect: =Fold.State.recovery_reservations= (integer, initially 0) increments by one; phase, status, terminal?,
+  reason, assignments, attention, leases, work items unchanged; =last_seq= and =event_ids= advance as for any event.
+  No last-attempt/limit cache (the journal retains those fields; no consumer identified).
+- Projections: =Fold.summary/1= and =RunSummary.render/1= carry NO new field and render byte-identically for a
+  journal with reservations versus the same journal without them, EXCEPT the sequence truth (=last_seq=) which
+  advances; behavioural fields (status, run_id, completed ids, attention) are unchanged.
+- Command classification (Server =classify/3=): a reservation between an accepted command and its retry is NOT an
+  acceptance boundary and not a terminal: the accepted command's interval, stamp comparison and =:continue= admission
+  are unchanged; the second-acceptance refusal is unchanged.
+
+* Comparators
+=historical_projection/1= = the full canonical Fold.State with only the pending field removed (event_ids RETAINED) - used against the baseline file (C-4, R-8). =comparison_projection/1= = the same minus event_ids - used only for the reservation-added versus stripped-and-renumbered comparison (R-6), where event ids necessarily differ.
+
+* Fixture selection
+Tests select reservation lines by DECODED type (=event["type"] == "run_recovery_reserved"=), never by substring, so formatting can not decide whether a reservation exists.
+
+* Cause vocabulary provenance
+=writer_exit= and =writer_timeout= are Run.Recovery's closed reasons; =owner_down= is NORMALIZED from the Server's =run_effect_owner_down= clause - there is no producer in this unit and no cause value is claimed to be a literal emitted string.
+
+* Public-state shape statement
+=Fold.State= gains exactly one field, =recovery_reservations= (default 0). Literal old-struct equality therefore
+changes; the rows prove BEHAVIOURAL projection equality: for every historical fixture journal, folding with the
+new field REMOVED equals the fold at baseline. Historical fixture bytes are unchanged; the new fixture lives in
+its own directory.
+
+* Pinned inventory changes (a recorded inventory change, not a silent test edit)
+declared 53 -> 54; reserved 20 -> 21 (=run_recovery_reserved= at :w4); typed 44 -> 45 (evidence-backed reserved
+grows by one: the new fixture is its evidence); reserved-untyped stays 9; produced stays 33.
+
+* Rows
+| Row | Kind | Witness |
+|-----+------+---------|
+| C-1 | control | a STABLE synthetic unknown type is refused by name at every entry point (validate_read / validate_line / validate_append -> =unknown_event_type=; =EventData.parse= -> =event_schema_unavailable=; the fold -> =unknown_event_type= with NO =at_seq=). Pre-transition observations of the new type, recorded here as EVIDENCE (not a test invariant): on the unchanged baseline, =Event.validate_read= of the fixture's reservation line -> =unknown_event_type=; =Fold.fold_lines= of the fixture -> =unknown_event_type=; =Event.reserved?= false; not declared |
+| C-2 | control | existing reserved type append refusal is reserved-first: a well-formed =run_budget_exhausted= append -> =reserved_event_type= before any data check |
+| C-3a | control (reference) | acceptance/terminal sets: =Server= classifies a resume between a start and its retry as =command_superseded= (an existing row in =test/run/command_executor_red_test.exs=; referenced, not duplicated) |
+| C-3 | control (imported from review) | the typed envelope export INCLUDES typed reserved types and excludes an untyped reserved type |
+| C-4 | control (measured baseline) | =BASELINE-FOLD-PROJECTIONS.json= (generated on the unchanged baseline: the full canonical Fold.State projection of the NINE historical fold fixtures incl. valid_envelope_version_2_minimal, event_ids RETAINED, only the pending field removed) holds for each fixture through the same comparator; C-4b proves the comparator is not vacuous on the SELECTED projection: a no-op mutation compares equal, a status mutation and an event_ids mutation compare unequal, dropping event_ids is detected |
+| C-5 | control (fixture composition) | the reservation-less renumbered fixture folds on the unchanged lib to the MEASURED summary {run_id, in_flight, last_seq 7, open_attention_ids []} (attention_seen persists after resolution); expected.json differs from it ONLY by last_seq 9 |
+| C-6 | control (imported from review) | a v1 reservation after a real v2 prefix is refused by the chain (=mixed_envelope_versions=) before its type is consulted |
+| C-7 | control | R-3's reconstruction is well-formed (proper split, byte-identical rebuild) |
+| C-8 | control (executor file) | chain-stamped KNOWN history (=stop_policy_evaluated=) injected after a durable stamped start with the COUNTING adapter wired from the interrupted start on: no delivery before the cut; =Chain.verify= accepts; a stale receipt is planned as =advance_receipt= by the Reader; with the receipt advanced no repair is pending; the start retry CONTINUES to completion once (one run_created / run_started, stamp preserved, the injected line retained, EXACTLY ONE adapter delivery); then an identical retry replays with nothing appended and nothing delivered |
+| R-0 | RED | vocabulary: type reserved (Event + Vocabulary :w4), not appendable, not acceptance, not terminal; =current_version == 1=; =typed_types= contains it; the typed envelope export INCLUDES it (C-3); entry points pinned separately: validate_read / validate_line / validate_view / EventData.parse(read, append, view) accept the fixture line, =Event.validate_append= refuses reserved-first even with malformed data |
+| R-1 | RED | positive corpus: the new fixture folds to =expected.json= = {run_fixture_0031, in_flight, last_seq 9, open_attention_ids []} (the measured baseline shape, C-5) and =recovery_reservations == 2= |
+| R-2 | RED matrix, PER ENTRY POINT | =EventData.parse= in :read / :append / :view: missing field -> exact =%{clause: "invalid_event_data", event_type, event_version: 1, errors: [%{"code" => "required", "path" => ["data", field]}]}=; extra key (canary never echoed); malformed whole data (null, binary, integer, list, mixed keys, a real =%Version{}= struct, a =%URI{}= carrying a canary); an OTHERWISE-VALID map with an extra ATOM key refused as unknown without a masking required-field error and without echo; every numeric field x {below minimum, float 1.0, string, boolean, null, list, map} - the complete matrix incl. limit x map and lost_generation x {boolean, list, map}; cause / authority outside the closed enums incl. newline and canary strings; the error path names the field; event_version 2 -> exactly =%{clause: "unsupported_event_version", event_type, event_version: 2}=. Event entry points: validate_read / validate_line / validate_view carry the same structured refusal; at append the reserved refusal PRECEDES the data refusal; boundary accepts per cause x authority |
+| R-3 | RED | cross-field: limit 0 -> =recovery_reservation_invalid=; attempt > limit -> the same; both after the structural pass (a line with attempt 2 limit 1 is readable) |
+| R-4 | RED | history: attempt 2 first -> =recovery_reservation_out_of_order expected 1=; attempt 1 twice -> expected 2; count 2 across changed lost_generation and authority and across an accepted resume (the fixture); no reset |
+| R-5 | RED | placement through existing rules: before =run_started= -> =preamble_violation=; after =run_completed= -> =events_after_terminal= (not a cleanup event); while blocked -> legal, status stays "blocked", attention still open |
+| R-6 | RED | unchanged projections: status/phase/terminal?/reason/assignments/attention identical to the same journal with the reservation lines removed; =Fold.summary= and =RunSummary.render= identical except =last_seq=; =last_seq= and =event_ids= advance |
+| R-7 | RED (executor file) | a CHAIN-STAMPED reservation (v2, prev_line_sha256 of the last real line, receipt advanced) between a durable stamped start and its retry: =Chain.verify= accepts the prefix; the Reader/fold acceptance is the delivered behaviour; the retry CONTINUES to completion once (exactly one run_created / run_started, the original stamp preserved, the reservation retained, final fold count 1, EXACTLY ONE adapter delivery counted from the interrupted start on), then an identical retry REPLAYS with nothing appended and nothing delivered (COMPLETE counterpart) |
+| R-7b | RED (executor file) | the later-acceptance rule is not softened: a stamped resume accepted AFTER the reservation still makes the start retry =command_superseded= with the journal byte-unchanged |
+| R-8 | RED | for every one of the nine historical fold fixtures the HISTORICAL projection (event_ids retained, ONLY =recovery_reservations= removed) equals the measured baseline file through the C-4 comparator and the field is 0 |
+| R-9 | RED | the transition table {declared 53->54, produced 33->33, reserved 20->21, typed 44->45, reserved-untyped 9->9}: the row pins the AFTER column; the BEFORE column is exactly what the pins in test/contracts/event_vocabulary_test.exs (53/33/20) and event_payload_schema_test.exs (44, 9) measured at the baseline, so the delivery edits those named pins under the recorded inventory change and nothing else; no emit site in lib/ outside journal/ |

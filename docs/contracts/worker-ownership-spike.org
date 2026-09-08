@@ -1,0 +1,137 @@
+#+TITLE: Worker ownership mechanism spike (TEST-ONLY)
+#+PROPERTY: status test-only spike
+
+* Implementation status
+This document is a test-only spike: the owner, registry, seams, controlled executor and teardown it measures are
+=test/support/worker_spike/{owner,registry,seams,controlled_executor,teardown}.ex=, driven by
+=test/run/worker_spike_test.exs= and (native rows N-0..N-C, =@moduletag :native=)
+=test/run/worker_spike_native_test.exs=; none of them is a product module. A separate production owner ships as
+=AiOrchestrator.Run.Worker= under =Run.Server= (=lib/ai_orchestrator/run/=): capability / generation / ref
+correlation, a closed =effect_failed= reply and a settle protocol are there,
+under their own contracts (=run-server-foundation.org=, =effect-owner-lifecycle.org=, =owner-loss-generation.org=).
+The spike's refusal names (=effect_generation_stale=, =effect_duplicate=, =not_admitted=, =teardown_incomplete=)
+are spike-local and do not appear in the shipped lib.
+
+A test-only bounded mechanism spike; no production lifecycle change. The design constraints 1-6 named below
+were fixed by the scope review that admitted the spike. Everything in this note is measured by
+=test/run/worker_spike_test.exs= (and, for the native rows, =test/run/worker_spike_native_test.exs=) against
+test-support modules under =test/support/worker_spike/=; nothing under =lib/= changes.
+
+* Mechanism under test
+- Topology (the production supervision order preserved): Writer -> Run.Server -> Run.Work.Supervisor. ONE long-lived =:temporary= owner is
+  born UNDER the run's existing =Work.Supervisor= once per run execution (=max_restarts= 0, no automatic restart);
+  the Server (the test process in the spike) records the identity (monitor) BEFORE any message.
+- Capability: the Server mints a private run capability (=make_ref/0=) and hands it to the owner at birth; every
+  protocol message carries it. This is intra-BEAM correlation against accidental or forged ordinary messages, not
+  authentication; a PID in a message is a claim. No security claim is made against code introspecting the BEAM.
+- Protocol (asynchronous; the Server never blocks on the owner): admit -> admitted (before any effect);
+  release_terminal -> released; execute(effect, receipt) -> effect_result | effect_failed; settle -> settled.
+  Persisted suffix -> receipt selection -> release_terminal -> execute is the order the Server keeps; two
+  acknowledged operations, no unacknowledged interleaving, receipt boundary unchanged.
+- Dequeue validation (constraint 2): wrong capability dropped and counted; older generation refused
+  =effect_generation_stale=; a completed (generation, ref) refused =effect_duplicate= and never re-executed
+  (same-generation dedupe); before admission refused =not_admitted=. The Server accepts only the outstanding
+  (generation, ref) result; anything else is refused, never applied.
+- Failure (constraint 4): a trappable failure inside =Effects.execute= settles the LATEST runtime in the same
+  invocation (the Host's guard discipline moved with the stage) and answers =effect_failed= with the closed
+  kind/class/digest plus the NUMBER of handles settled; the owner stays alive. A blocked owner cannot serve
+  messages; the supervisor's shutdown bound (1 s in the spike) is containment: it is killed at the bound and NO
+  settlement is claimed. A hard death (kill/VM) runs no code; settlement stays unproven until native/OS evidence.
+- Secrecy (constraint 5): the child spec carries only {Server pid, cap, seams-holder pid}; the seams (adapter
+  closures) are fetched inside =init/1= and the Runtime built there; the execute message carries only the effect
+  and the receipt (the owner supplies its own seams); =format_status/1= renders closed; exits are closed except
+  an external kill. Measured surfaces: start failure, =:sys.get_status=, queued mailbox, child listing, crash
+  log, DOWN reason - none carries the seams' sentinel.
+- Teardown (constraints 1, 3, 6): owned identities are the Server's registered pids plus the pids the work
+  supervisor itself reports through a BOUNDED =which_children=; a link scan is never kill authority. Rounds (max
+  6): monitor admitted, orderly-stop the supervisor (bounded), kill survivors, join each under a bound,
+  re-discover to admit births that raced, repeat within a total elapsed budget. Success only when every admitted
+  pid was observed DOWN; a suspended supervisor makes discovery unknown, the registered identities are still
+  reaped and the supervisor killed; exhaustion is the closed =teardown_incomplete=. A bystander linked to the
+  supervisor is not an owned identity and survives.
+
+* Rows
+S-1 admission before use; S-2 driver free while the owner is blocked (owner itself unresponsive, stated);
+S-3 same-generation duplicate + stale generation + Server-side stale result refusal; S-4 capability correlation;
+S-5 trappable failure settles the latest runtime in-invocation, closed reply, owner alive; S-6 blocked owner +
+bounded shutdown = killed, unproven; S-7 hard death = unproven; S-8 no disclosure on six surfaces; S-9a-e
+teardown (registered + discovered, suspended supervisor, bystander survives, birth racing teardown, exhaustion).
+
+* Corrections after review (WM-1..WM-4)
+- WM-1: every reap operation (discovery, orderly stop, each join) requests at most the remaining part of ONE
+  absolute deadline; the budget is re-checked after every wait and before success; exhaustion is
+  =teardown_incomplete= with per-operation elapsed (=ops=). Imported probe P-1 (20 ms budget under a suspended
+  supervisor) and P-1s (ten suspended owners, 300 ms) bound end-to-end. W-1x pins the deadline ordering on the
+  pure =Teardown.decision/3=, not on a timed experiment.
+- WM-2: births go through =WorkerSpike.Registry= (intent recorded before the start, pid recorded on answer,
+  admission FROZEN for teardown). Closure is proven only by an enumerating supervisor or by a frozen COMPLETE
+  birth set; a dead supervisor is never proof its trapping children died. A bare pid list carries no
+  completeness: unknown discovery is =closure_unproven= (S-9b), a complete registry closes (S-9b'), an unregistered
+  trapping child under a suspended supervisor is refused and survives (imported probe P-2, cleaned by the test).
+- WM-3: protocol shapes are validated before any action without reflecting values (=execute_shape_invalid=,
+  =release_shape_invalid=); init's holder lookup, seams shape and runtime construction sit under one closed
+  boundary (=owner_seams_missing= / =owner_seams_invalid= / =owner_init_failed=); =format_status/1= redacts the
+  state, the last message, the log, the queue and the reason. Imported probe P-3 adapted (disclosed): the owner
+  no longer crashes on malformed inputs, so the completion witness is the closed refusal while the no-sentinel
+  log assertion is preserved (W-3a); W-3b init failure; W-3c an executor raise while settling and inside an effect.
+  The seams holder is an Agent OWNED by the driver (stopped in the test's exit hook); its state is a disclosure
+  surface by construction and is never printed by the owner; the claim of closure covers the measured surfaces only.
+- WM-4: the failure reply carries a cleanup SUMMARY (attempts / settled / unproven) derived from the executor's
+  actual answers; an unproven cleanup (=settle_unproven=, =abandon_unsettled=, =guardian_gone=) is never counted
+  settled (W-4 error/raise/unsettled). Transfer boundary (W-4t): a handle transferred into the runtime and then
+  failing at =started_data= is settled together with the older one by the same invocation.
+
+* Residuals after review
+- The absolute deadline exists before ANY operation; the registry freeze is a bounded call clamped to it
+  (=freeze_ms= accounted); a registry that cannot answer (suspended, dead) is the closed
+  =teardown_incomplete= cause =registry_unavailable= (imported probe P-5: 300 ms suspension, 20 ms budget).
+- The budget is checked BEFORE any success in code, as the claim says: joins that complete after the deadline are
+  =budget_exhausted=, never a late success (W-1x pins this on the pure decision; a timed crossing cannot be staged
+  because no single wait is requested beyond the remaining budget).
+- A dead supervisor is =:absent=, never an enumeration; closure without a live enumeration needs a COMPLETE frozen
+  birth set (imported probe P-4: killed supervisor, surviving unknown child -> =closure_unproven=). A birth whose
+  intent is in flight at the freeze boundary makes the set INCOMPLETE (W-2x: closure unproven; proven once the
+  intent resolves and the supervisor is gone). Births outside the registry are by definition outside the proof.
+- Measured under the full suite: a GenServer child dies with its killed parent supervisor even when trapping exits
+  (gen_server handles the parent's EXIT); the imported probes' GenServer survivor was racy, so the survivor control is
+  a raw linked process that traps and ignores the EXIT - deterministic (disclosed).
+
+* Native boundaries A-C (test/run/worker_spike_native_test.exs, @native) and Server-side failure rows
+- The owner runs the REAL =Gate.Execution= through =Effects.execute= with the native guardian; a gate barrier
+  (=:after_claim=, =:after_ack=, =:after_go=) kills the owner at the exact point because the executor runs inside it.
+  The driver persists =gate_started= through a real Writer (the durable receipt boundary) and a NEW owner (next
+  generation) performs cold recovery through the existing =ReconcileGate= path. N-0 control: prepare -> durable start
+  -> release -> await, one GO (the marker has exactly one line), exit observed, group settled.
+- N-A (before =gate_started= is durable, killed at =:after_claim=): nothing durable, no GO, the guardian settles the
+  group on control EOF, the published claim reconciles as =orphan_claim=; a new owner retrying the same attempt is
+  refused by the existing claim (=GatePrepareFailed=) - the delivered closed outcome, no forced GO.
+- N-B (durable receipt before GO, killed at =:after_ack= inside release): no GO ever; a new owner's =ReconcileGate=
+  against the journaled start verdicts =:dead=; the marker never appears (no duplicate GO on recovery).
+- N-C (after GO, killed at =:after_go=): MEASURED - the kill closes the Port, the guardian settles the released group
+  on control EOF and races the worker's first instruction, so the marker may or may not exist; GO was written exactly
+  once (the barrier fired once in the Port owner), the count is at most one and does not grow on recovery.
+- D-1 (owner responsive): after a result, a Server-side commit/observer/reducer failure settles through the owner and
+  gets the truthful summary. D-2 (owner blocked): the driver's settle gets no answer within its bound, the child is
+  stopped under the supervisor's bound, the outcome stays unproven and no cleanup is claimed (a finite bound is
+  containment, not deadline delivery).
+
+* Correction after review (WM-5)
+- Enumeration proves closure ONLY together with an ACKNOWLEDGED orderly stop: =Supervisor.stop= returned =:ok=
+  (the supervisor itself terminated every child it knew) and its exit was observed. A pre-stop snapshot followed
+  by a forced kill is stale - a birth queued behind the listing can survive the kill - so it is =closure_unproven=
+  unless the frozen birth set is complete (imported probe W-5: real DynamicSupervisor, late birth queued behind the
+  reap's listing, forced death, surviving raw child -> incomplete with =stop: :forced=; W-5c positive control: an
+  acknowledged stop is enumerated closure). The reap result now records =stop= (=:orderly= / =:forced= / =:absent=).
+- Freeze uses the configured operation timeout clamped to the remaining budget (SHOULD-1).
+- Scope statements (SHOULD-2): the clamp bounds each requested WAIT to the remaining budget; it does not prevent
+  scheduler overrun, which is why the deadline ordering is pinned on the pure decision. D-1/D-2 are protocol
+  demonstrations driven by the test process standing in for the Server, not executions of the real commit /
+  observer / reducer failure paths - those belong to the lifecycle RED. N-B/N-C build the reconcile expectation from
+  the in-memory prepare data plus the persisted receipt, not by reopening the journal through the Reader; a
+  cold-prefix derivation belongs to the lifecycle RED. Native READY identities are tracked before any result is
+  awaited (SHOULD-3).
+
+* Not in this spike
+The lifecycle interface (=Run.Server= driving a production owner) is delivered separately as =Run.Worker= under
+=Run.Server= (=run-server-foundation.org=, =effect-owner-lifecycle.org=). The spike's barrier-driven kills use
+the gate's own barriers; the production owner needs that seam only in tests.

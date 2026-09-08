@@ -1,0 +1,238 @@
+#+TITLE: Delivery deadline (deliver/reconcile under the Worker fence): source mapping, baselines, decision table
+#+PROPERTY: status delivered contract
+
+* Implementation status
+Delivered. =Contract.Effect.Dispatch= and =Contract.Effect.ReconcileSend= carry =deadline_unix=; the reducer threads
+the durable assignment deadline into both from the continuation and takes an attention-only branch
+(=journal_deadline_attention/3=) for the stable reasons =dispatch_deadline_exceeded= / =dispatch_reconcile_timeout=
+(=lib/ai_orchestrator/lifecycle/core/reducer.ex=); =AiOrchestrator.Effects= honours =:adapter_runner= for both
+effects through =deliver_through/3= and answers =DispatchFailed= / =SendReconcileFailed= from the owner's retained
+intent on =:expired= (=lib/ai_orchestrator/effects.ex=); =AiOrchestrator.Run.Worker= fences =Dispatch= /
+=ReconcileSend= through =execute_fenced/4=, refuses a missing or malformed deadline closed
+(=admit_deadline!/1=, =dispatch_deadline_missing=) and reports fence facts per operation kind
+(=lib/ai_orchestrator/run/worker.ex=, =Run.DeadlineFence=). Baselines DC-1..DC-16 live in
+=test/run/delivery_deadline_baseline_test.exs=, rows D-*/DP-*/DA-*/DO-*/DL-* in
+=test/run/delivery_deadline_red_test.exs=, and the imported kind-attribution probes with their two companions in
+=test/run/delivery_deadline_review_probe_test.exs=. Not delivered (outside this unit): attention resolution for a
+deadline attention, retry expansion, deadline renewal, a new settle protocol, daemon changes.
+
+* Scope
+Deliver (=Effect.Dispatch=) and reconcile (=Effect.ReconcileSend=) under the Worker's existing one-shot fence:
+source-clause mapping, MEASURED baseline controls, a closed decision table, the minimal product delta and the
+rows that pin it. The label "delivery deadline" is provisional (typed budgets name the wider concept).
+
+* Source facts before this unit
+- =Contract.Effect.Dispatch= was =[:assignment_id, :command, :message_id]=; =Contract.Effect.ReconcileSend= was
+  =[:assignment_id, :command]=. NEITHER carried =deadline_unix= (pinned DC-5); only =Observe=, =Timer=,
+  =PrepareGate= and =AwaitGate= did.
+- The assignment deadline is durable on =assignment_requested.data.deadline_unix= (repeated on
+  =assignment_observation_started=) and travels in the reducer continuation or queued struct, never in the Worker
+  effect. =dispatch_effect= is the single =Dispatch= constructor; =converge_queued_send/2= the single
+  =ReconcileSend= constructor. Sites and deadline availability are in the enumeration below.
+- =Effect.admissible_observations(%Dispatch{})= = =[Dispatched, DispatchFailed]=; =(%ReconcileSend{})= =
+  =[SendReconciled, SendReconcileFailed]=. =Observation.TimedOut= is admissible for =Observe= only and the reducer's
+  =unwrap= hardcodes =observation_timeout=: reusing it for delivery was rejected.
+- =Journal.Vocabulary.@reserved= has NO =delivery_unknown= / =dispatch_timeout= type. No new vocabulary, event or
+  observation class is introduced.
+- Existing typed failure paths: =assignment_dispatched(..., {:error, reason})= -> =journal_blocked_assignment= with
+  =dispatch_failure_reason= (=put_new= reason "dispatch_failed", detector "dispatch_failed", pane_state
+  "unknown"), =ret(:blocked)=, EXCEPT =*_invalid_return= -> =ret({:error, reason})=; =dispatch_recorded(...,
+  {:error, ...})= same route; =queued_send_retried(..., {:error, ...})= same route; =queued_send_reconciled(...,
+  {:error, reason})= -> =queued_send_blocked(..., "dispatch_reconcile_failed", "unknown")= with a FIXED map that
+  DROPS the adapter's cause. The reducer's own wall-clock policy for a PROVEN queued send (=queued_send_clock= /
+  =queued_send_retry_clock= -> "dispatch_queued_deadline_exceeded", pane_state "queued") is a different fact from
+  an unknown delivery and is not reused for expiry.
+- =journal_blocked_assignment= emits =agent_wedge_detected= (=agent_wedge_detected_data=: agent_ref, pane_ref,
+  assignment_id, detector, =stale_for_ms= defaulting to 200000, =pane_state= defaulting to "blocked",
+  =pending_count= defaulting to 0, reason) + =human_attention_required= (=human_attention_required_data=:
+  attention_id, reason, blocking_entity, summary_path, summary_hash, resume_command, optional =detail= only for
+  the preflight capability case). NEITHER builder emits =deadline_unix= or any other adapter field (measured DC-1/
+  DC-2 full payloads). Precedent for attention WITHOUT a wedge: =journal_prompt_failure= (attention only, a stable
+  reason string, assignment binding).
+- Effects ran the deliver/reconcile adapter IN the calling process (the Worker) with no runner seam and no fence;
+  only =Observe= honoured =:adapter_runner= (DC-4).
+- =LocalPane.deliver= (daemon-first dispatch): =proven= -> =reconcile(message_id, payload_hash)= -> =absent= is the
+  ONLY case that sends; =delivered= / =queued= reconstruct the receipt (=send_status "reconciled"/"queued", replayed
+  true=) with ZERO send; =ambiguous= / =conflict= refuse (=dispatch_reconcile_<outcome>=); =absent= at the daemon's
+  =@max_delivery_attempts= (2) refuses =dispatch_attempts_exhausted= (adapter-internal bound); a reconcile fault
+  ({:error, map}) propagates as the deliver's error. The message id is the deterministic =snd_<hash>= idempotency
+  key; the payload identity is the prompt's =SensitiveBytes.hash=, which equals the journaled
+  =assignment_prompt_projected.prompt_hash= (DC-9).
+
+* Constructor enumeration and admission policy
+| site | constructor | deadline in the continuation? | fenced before this unit? |
+|------+-------------+-------------------------------+--------------------------|
+| fresh dispatch | =dispatch_effect(context.assignment_id, command)= -> ={:assignment_dispatched, context, deadline_unix, command}= | YES (journaled on =assignment_requested=) | no |
+| fresh-no-receipt resume =ensure_dispatch_sent= (no =assignment_dispatch_sent=: the DC-7 loss window, and a legacy journal without a receipt) | =dispatch_effect(assignment_id, command)= -> ={:dispatch_recorded, ...}= | available via =recorded_deadline_unix= (durable), now threaded; nil for a legacy journal without =deadline_unix= | no |
+| queued / proven-absent retry | =dispatch_effect(queued.assignment_id, queued.command)= -> ={:queued_send_retried, queued}= | YES (=queued.deadline_unix=) | no |
+| reconcile (fresh, resume, after retry) =converge_queued_send= | =%Effect.ReconcileSend{}= | YES (=queued.deadline_unix=) | no |
+| legacy queued receipt without a deadline =apply_frame({:assignment_dispatch, ...})= | =recorded_deadline_unix= nil -> =clock("recorded_deadline_fallback")= before any =ReconcileSend= | the reducer reads its clock first; this branch exists ONLY after a successful queued receipt | no |
+Admission policy (delivered; no unfenced-nil fallback anywhere):
+- After propagation every production constructor above carries an integer =deadline_unix=; the fresh-no-receipt
+  resume site threads =recorded_deadline_unix=.
+- The Worker REFUSES a =Dispatch= / =ReconcileSend= whose =deadline_unix= is not a non-negative integer with a CLOSED
+  =effect_failed= (kind =:error=, class/digest of the clause atom =dispatch_deadline_missing=, runtime settled, no
+  adapter entry): nil, a struct, a string, a float or a negative value never disable the fence (rows DA-1..DA-4).
+- Legacy no-receipt resume of a journal WITHOUT =deadline_unix= on =assignment_requested= therefore REFUSES closed
+  at the Worker (pinned explicitly; no silent renewal, no unfenced fallback); it is not covered by the
+  recorded-deadline fallback, which only runs after a queued receipt. Whether such journals exist in the corpus is
+  a separate finding (none in the scenario fixtures: every =assignment_requested= carries a deadline).
+- The ONLY unfenced path is the direct owner-local =Effects.execute= WITHOUT a runner (the Host oracle, legacy
+  direct callers): the pre-unit behaviour exactly, witnessed by DC-4 and the control DA-control.
+
+* Measured baselines (controls file)
+"Before" describes the pre-unit product; the transition table below records what the feature changed.
+| id | control |
+|----+---------|
+| DC-1 | deliver ={:error, map}= (fresh): FULL payloads pinned: =agent_wedge_detected{agent_ref writer_agent, assignment_id as_0001, detector dispatch_failed, pane_ref pane_writer, pane_state unknown, pending_count 0, reason <adapter's>, stale_for_ms 200000}= + =human_attention_required{attention_id att_0001, blocking_entity as_0001, reason <adapter's>, resume_command, summary_hash zero, summary_path}=; summary =blocked=, one open attention; the synthetic wedge defaults are NOT measured facts; no deadline field anywhere |
+| DC-2 | queued send then reconcile ={:error, %{"reason" => ..., "deadline_unix" => 123}}=: FULL payloads pinned: the FIXED map =dispatch_reconcile_failed / dispatch_reconcile / unknown= plus the same synthetic defaults; the adapter's reason AND its deadline are DROPPED |
+| DC-3 | before: a deliver that BLOCKS forever ran IN the Worker; configured clock = real =SystemClock= for reducer and oracle; the JOURNALED deadline is proven due in that domain; Server still =:driving=, Worker alive, last event =assignment_prompt_projected=; bounded teardown joins the Worker: no expiry existed |
+| DC-4 | direct =Effects.execute= with =adapter_runner=: before, never invoked for =Dispatch= / =ReconcileSend= (Observe-only seam) |
+| DC-5 | before: the effect structs carried no deadline |
+| DC-6 | the five reconcile outcomes -> =SendReconciled{outcome}=; an outcome outside the five -> =SendReconcileFailed(dispatch_reconcile_invalid_return)= |
+| DC-7 | LOSS WINDOW on the real =LocalPane= with =WitnessPane= (the scenario =FakePaneClient= behind it ALWAYS answers absent, disclosed; it blocks BEFORE =Fake.send=, so it proves presentation/identity and the fresh loss path only, never a landed side effect): first attempt =[reconcile(mid) absent, send(mid, SensitiveBytes)]=, blocked, NO receipt journaled; kill9 + ownership release; resume with the SAME =prompt_root=, first-attempt calls drained: pane calls =[reconcile(mid) absent, send(mid, same digest)]= (asked ONCE) then the next assignment; suffix = 7-event acceptance/lease repair then =assignment_dispatch_sent{send_message_id mid, ok, replayed false}=; completed. Fresh-no-receipt resume goes through =ensure_dispatch_sent= -> =Dispatch= (fresh adapter-internal admission), NOT the recorded-queued path |
+| DC-7b | the same loss window resumed WITHOUT the original =prompt_root=: the prompt fetch fails BEFORE any dispatch: NO pane call, =human_attention_required{prompt_fetch_failed}=, blocked (8 appended events): a harness/operator fact |
+| DC-8 | resume at the COMMITTED blocked state (after DC-1): refused ={:error, %{"reason" => "attention_required", "open_attention_ids" => ["att_0001"]}}= (from the Server under the gated scenario config; from =start_link= itself with the kill9 case opts), no pane call, nothing appended. This is the committed-attention refusal, distinct from the pre-attention crash of DC-7 |
+| DC-9 | a =ReceiptAuthority= (test-owned GenServer surviving the tree) registers the daemon-side ACK per message id with the prompt's =SensitiveBytes.hash= BEFORE the send blocks; the Worker is lost; resume reconciles =delivered= under the same id and hash, the receipt is REPLAYED (=send_status reconciled, replayed true=), ZERO second send, completed; identity proof: the authority's hash == the journaled =prompt_hash=; the authority saw exactly one send for that key |
+| DC-10 | ACK =queued= before the loss; resume reconciles =queued=, converges on the daemon's drain (the authority answers delivered next), ZERO second send, completed |
+| DC-11 | the authority answers =ambiguous=: refused for attention (=dispatch_reconcile_ambiguous=), no send, no absence manufactured |
+| DC-12 | the authority FAULTS (no answer, ={:error, receipt_authority_unavailable}=): the fresh send is refused for attention with that reason, no send, no absence manufactured, nothing registered |
+| DC-13 | a CHANGED payload hash under the SAME key answers =conflict=: refused for attention (=dispatch_reconcile_conflict=), no send |
+| DC-14 | the FRESH path's attempt bound is adapter-internal: =absent= at the daemon's max attempt (2) refuses =dispatch_attempts_exhausted= with no send and no =assignment_dispatch_sent=; the reducer's queued retry authority (=retry_allowed?= / =@max_delivery_attempts= on the queued struct) is never entered on this path. The two bounds are separate call graphs: fresh = =LocalPane.deliver= reading the daemon's count; queued = reducer =queued_send_reconciled= on a journaled queued receipt |
+| DC-15 | =AuthorityPane.send= REGISTERS the ACK through an acknowledged call BEFORE emitting the witness; the =ReceiptAuthority= in =:hold_register= mode ACKNOWLEDGES the parked registration to the test (={:register_held, key, hash, caller}=); DC-15 consumes that fact first, then asserts no witness / no entry, then releases EXACTLY that registration by key (no sleeps) |
+| DC-16 | the witness-before-register mutation (=WitnessFirstPane=) observes the witness while the registry is still empty: the race the DC-15 ordering rule exists for |
+Explicit limits of the receipt authority: no real pane, no bytes kept (hash only), one pane ref, attempts count
+sends per key, no drain timing model beyond "next question after queued sees delivered". Every double witnesses
+BOTH methods (=deliver_entered= and =reconcile_entered=) before delegating; the DA matrix and D-3 refute both after
+a refusal / due answer and positively witness both on a live deadline; the direct no-runner control witnesses both
+on the legacy path.
+
+* Baseline transition table (recorded BEFORE any test migration; paired controls, nothing weakened silently)
+| control | before (baseline evidence kept) | after the feature |
+|---------+---------------------------------+-------------------|
+| DC-3 | the blocked deliver runs IN the Worker and never expires (=deliver_entered= from the Worker pid; Server =:driving= past the journaled deadline on the same clock) | the deliver runs in the Worker's TASK; at the journaled deadline the fence expires it: attention-only =dispatch_deadline_exceeded=, run =blocked=; the same-clock oracle, the durable-deadline read and the bounded teardown stay |
+| DC-4 | a supplied =adapter_runner= is NEVER invoked for =Dispatch= / =ReconcileSend= | the runner IS invoked for both with the deadline metadata map (D-1); the snapshot stays un-run |
+| DC-5 | the effect structs carry NO deadline field | both structs carry =deadline_unix= (the propagation witnesses DP-1..DP-4 pin the value) |
+| DC-7 | first attempt: =reconcile(mid)= then =send(mid)= inside the Worker (=sender == worker=), blocked in the send | the same calls inside the Worker's TASK (=sender != worker=); the loss-window identity, the drained-first-attempt resume calls =[reconcile(mid) absent, send(mid, same digest)]=, the journaled =send_message_id= and the completed run are unchanged |
+| DC-1, DC-2, DC-6, DC-7b, DC-8, DC-9..DC-16 | measured before | UNCHANGED (non-timeout routes are byte-identical; receipt/identity/cleanup evidence stays) |
+| effect_owner R-5, R-7 x3 | the deliver adapter ran IN the Worker (=deliver_entered= from the Worker pid; the instruction was sent to the Worker) | the adapter runs in the Worker's TASK (=deliver_entered= from the task pid, =executing != worker=); the instruction goes to the task; the Worker stays =:blocked= in its runner receive; the raw raise/throw/exit reaches the SAME closed boundary (kind/class/digest unchanged, frames = task-side depth); Server/Writer/Work/root liveness, sentinel absence and the closed exits are unchanged |
+| foundation case 8, M3 x2, R-G; executor case 8 (the EXPIRED kill9 =pre_dispatch= resumes) | expired at the OBSERVE after an unfenced delivery: exact =observation_timeout= error | expire at the DISPATCH (D1 at the Worker, zero adapter entry): run =blocked=, =open_attention_ids ["att_0001"]=, the journal ends with the attention-only =dispatch_deadline_exceeded=, no wedge, no =assignment_dispatch_sent=; the tail-repair / acceptance / receipt subjects are read from the actual journal as before. The =awaiting_artifact= cases (foundation/executor case 9) are UNCHANGED (still the Observe expiry) |
+
+* Decision table
+Cases: (i) already due BEFORE adapter GO at the Worker dequeue; (ii) a deliver INTERRUPTED after GO (delivery
+UNKNOWN: the task's DOWN proves nothing about external settlement); (iii) a reconciliation query that TIMES OUT (no
+answer; no inference of delivered/absent from a missing answer).
+| case | decision (existing observation classes, attention-only reducer branch) | consequence the old routes would have given (rejected) |
+|------+------------------------------------------------------------------------+---------------------------------------------------------|
+| (i) deliver already due | Effects answers =DispatchFailed{reason: %{"reason" => "dispatch_deadline_exceeded", "detector" => "dispatch_deadline"}}= from the OWNER's retained intent when the runner says =:expired= (no adapter entry, no send); the reducer's dispatch error routes recognise the stable reason and take the ATTENTION-ONLY branch below | the unchanged route would emit a wedge with synthetic =stale_for_ms 200000 / pending_count 0= that measured nothing: rejected |
+| (ii) deliver interrupted after GO | the same =DispatchFailed= shape; the journal COMMITS attention (attention-only, reason =dispatch_deadline_exceeded=, blocking_entity = assignment); the run is =blocked=; a later resume is REFUSED until the attention is resolved (DC-8); when an operator resumes after resolution the fresh-no-receipt path re-presents the SAME message id and asks the daemon (DC-9/DC-10 prove a landed/queued ACK yields ZERO second send, DC-11/12/13 prove no absence is manufactured) | pre-attention crash (DC-7 shape, no attention) and committed attention (DC-8 refusal) are DIFFERENT states and are kept distinct |
+| (iii) reconcile timed out | =SendReconcileFailed{reason: %{"reason" => "dispatch_reconcile_timeout", "detector" => "dispatch_reconcile"}}= -> the reconcile error route recognises the stable reason and takes the ATTENTION-ONLY branch (NOT =dispatch_queued_deadline_exceeded=, which asserts a proven queued state; NOT the fixed =dispatch_reconcile_failed= map) | the unchanged route drops the cause and adds synthetic wedge facts: rejected |
+| facts reused | the fence (=Run.DeadlineFence=), the Worker task runner/holds/kill/join/carrier validation (=observe-deadline.org=), strict D1 (already due at the Worker => zero adapter entry), daemon-first dispatch, the adapter-internal attempt bound and the reducer's queued retry bound as they stand | |
+
+* Attention-only reducer delta (delivered)
+- Two stable reason strings (engineering interface, not policy): ="dispatch_deadline_exceeded"= (the fresh,
+  recorded and retry dispatch routes) and ="dispatch_reconcile_timeout"= (the reconcile route).
+- One private helper mirroring =journal_prompt_failure=: =journal_deadline_attention(state, assignment_id, reason)=
+  = =human_attention_required_data(next_id("att", n), assignment_id, %{"reason" => reason})=, emit ONLY
+  =human_attention_required=, bump =next_attention=, =ret(:blocked)=. No =agent_wedge_detected= (no synthetic pane
+  facts), no =detail= (the durable deadline already lives on =assignment_requested=; no duplicate field, no schema
+  change), no new terminal, no free-form map extension.
+- Per-route payload matrix: fresh =assignment_dispatched=, recorded =dispatch_recorded=, retry
+  =queued_send_retried=: reason == "dispatch_deadline_exceeded" -> helper; every other reason -> UNCHANGED
+  (=journal_blocked_assignment= with =dispatch_failure_reason=, byte-identical events, DC-1 pins them). Reconcile
+  =queued_send_reconciled=: reason == "dispatch_reconcile_timeout" -> helper; every other reason -> UNCHANGED
+  (=queued_send_blocked= fixed map, DC-2 pins it). Invalid-return precedence unchanged.
+- Emitted fields for the timeout branch: exactly =human_attention_required{attention_id, reason, blocking_entity,
+  summary_path, summary_hash, resume_command}= (the existing builder, no new key).
+- Fold / continuation consequence: identical to any attention (=open_attention_ids= gains the id; resume refused
+  until resolved, DC-8); no retry, no attempt closure, no resend: the next operator resume re-enters the
+  fresh-no-receipt path (the daemon's answer decides).
+- Gap recorded: no existing supported operator command resolves an assignment-attention of this kind, so D-6
+  cannot witness "resume after resolution" without inventing a resolution; the row stops at the refusal. No new
+  operator policy or producer is part of this unit.
+
+* Product delta (delivered)
+1. =Contract.Effect.Dispatch= / =ReconcileSend= gain =deadline_unix= (=integer() | nil= in the type; the enforce
+   keys are unchanged so legacy direct callers compile; the Worker refuses nil closed).
+2. Reducer: =dispatch_effect/3= carries the deadline purely from the continuation at the four sites (fresh;
+   recorded/resume =ensure_dispatch_sent= via =recorded_deadline_unix=; queued/proven-absent retry from
+   =queued.deadline_unix=; =converge_queued_send= into =ReconcileSend=); the attention-only branch is taken ONLY
+   when =reason["reason"]= is =dispatch_deadline_exceeded= or =dispatch_reconcile_timeout= on the four error routes
+   (=assignment_dispatched=, =dispatch_recorded=, =queued_send_retried=, =queued_send_reconciled=); invalid-return
+   precedence and every other reason are byte-identical (DC-1/DC-2 pin them). No Worker journal read, no fresh
+   extension.
+3. Effects: =Dispatch= / =ReconcileSend= honour =:adapter_runner= through =deliver_through/3= with the Observe
+   grammar; the closure captures only the dispatch module, the command and the dispatch options; =:expired=
+   answers the EXISTING =DispatchFailed= / =SendReconcileFailed= from the owner's retained intent with the stable
+   reasons; the no-runner path is unchanged.
+4. Worker: the Observe execute path is generalised (=execute_fenced/4=) to =Dispatch= / =ReconcileSend=;
+   =admit_deadline!/1= refuses a non-integer or negative deadline closed (=:erlang.error(:dispatch_deadline_missing)=
+   under the same boundary, runtime settled, no adapter entry); the existing one-shot fence, task runner, holds,
+   kill/join and wake classes are reused unchanged.
+5. Fact attribution by kind (test-only seam): fence facts carry =kind:= (the intent struct); the observer seam
+   =observe_fence_kinds= (default =[Effect.Observe]=) selects which kinds report, decided PER FACT by that fact's
+   own kind at emission on every path. The default keeps the Observe fact stream byte-identical (the Observe rows
+   bind their op from the FIRST armed fact of a run; with Dispatch fenced in the same run that fact would be the
+   Dispatch's) while the delivery tests opt in (=[Effect.Dispatch, Effect.ReconcileSend, Effect.Observe]=). Holds
+   apply to every fenced kind regardless; the default never gates actuation, holds, cleanup or admission. The
+   kind travels explicitly: =retired= in the Worker state is a map =ref => kind=, the fenced context carries
+   =kind:=, and a retired op's stale wake (idle owner, nested receive, held point) reports THAT op's kind read from
+   the retired map; an unknown (foreign) wake at the idle owner carries =kind: nil= and is reported unfiltered; a
+   foreign wake inside a live op is attributed to the live op (its kind, its filter). Timer/identity grammar
+   unchanged.
+
+* Boundary rules
+- A genuine timeout uses the EXPIRED retained deadline and an operator resume never renews it; committed attention
+  refuses through the existing API (D-6a, DC-8); a pre-attention crash with a STILL-LIVE retained deadline enters
+  the daemon-first reconcile path (DC-7, DC-9..DC-13); a pre-attention crash with an EXPIRED retained deadline
+  follows strict D1 at the resume: zero adapter entry, attention-only (D-6c); task DOWN is never external
+  settlement; retained Port cleanup follows the existing owner lifetime and one =:settle= (D-4p); expiry is not a
+  new settle protocol.
+- Fresh and queued attempt bounds stay separate and unchanged; no resend from uncertainty (DC-9..DC-13), no new
+  attempt closure, elapsed time never becomes absence; the original attempt's daemon-side state survives the
+  caller's death (DC-9: the authority still holds attempt 1 after the loss).
+- Every timed row uses the COHERENT real =SystemClock= for unix and monotonic (DO-2, D-4, D-4p, D-4r, D-5i, D-6c)
+  and proves the due instant on that clock; a FixedClock monotonic counter is never armed against real timers.
+  Short real-deadline rows WITNESS future-or-now at the =:armed= fact on the same clock (the arm's OWN =unix_now=
+  read, not a later sample) and GO (=task_started= / adapter entry) before expiry; the durable deadline is never
+  renewed.
+- D-3i pins the one legitimate prior =SnapshotArtifact= call (it precedes =assignment_prompt_projected=) as exactly
+  =[{:snapshot, "as_0001"}]= and then ZERO deliver / reconcile / observe entries for the due assignment; no change
+  to snapshot ordering.
+- D-6c saves the first config, carries the SAME =prompt_root= into the resume, binds the original assignment /
+  message key / deadline and proves the retained prompt file is reachable BEFORE any expiry claim; the
+  missing-prompt negative stays DC-7b, never as expiry evidence.
+
+* Rows (=test/run/delivery_deadline_red_test.exs=; all pass on the shipped source, DA-control was green before)
+Mechanics: D-1 seam invoked for Dispatch AND ReconcileSend with the deadline metadata map, never for a snapshot;
+D-2 the Worker arms ONCE at the Dispatch dequeue and the adapter runs in a task; DP-1..DP-4 production witnesses
+through the real reducer (=Host= with =effect_observer=): DP-1 fresh dispatch, DP-2 fresh-no-receipt resume (same
+=prompt_root=), DP-3 proven-absent retry Dispatch, DP-4 ReconcileSend, each pinning
+=assignment_requested.deadline_unix= == the emitted intent's deadline; DA both effects x {missing, nil, struct,
+string, float, negative} refused closed (=dispatch_deadline_missing=, no adapter entry, Worker alive), a future
+integer admitted and armed, valid 0 admitted and answered as due (zero adapter entry); DA-control keeps the direct
+no-runner path distinct; D-7 binds the REAL =SensitiveBytes.hash= of the command's prompt; DO-1 reply before due
+wins (no kill, later wake =:retired=); DO-2 wake before reply on the coherent real clock (first wait, chunk, =:due=
+at or after the deadline on the same clock, =:expiry_selected=, held, killed, expiry answer); DL-1 hard Worker kill
+joins the task.
+Durable expiry: D-3 already due at the Worker for BOTH effects -> the exact =DispatchFailed= / =SendReconcileFailed=
+reasons, zero adapter entries, no task; D-3i integrated with a zero timeout -> attention-only (full payload),
+=blocked=, =open_attention_ids ["att_0001"]=, zero adapter calls, no wedge anywhere; D-4 integrated 2 s
+interruption -> task killed and joined, attention-only committed, blocked, Worker alive; D-4p retained Port
+survives and settles exactly once; D-4r a reply queued after selection is stale (=:ok_reply= / =:late_result
+:stale=, expiry answer stands); D-5i integrated reconcile that never answers -> attention-only
+=dispatch_reconcile_timeout= with the queued receipt journaled; D-6a committed timeout attention refuses the resume
+through the existing API, zero pane calls, nothing appended; D-6c pre-attention crash + EXPIRED retained deadline ->
+strict D1 at resume: zero adapter entry, attention-only, exactly acceptance + lease repair + attention appended.
+Kind attribution: =test/run/delivery_deadline_review_probe_test.exs= holds five imported review rows and two
+converse companions (an allowed retired Dispatch during an excluded live ReconcileSend is reported as Dispatch; an
+excluded retired Dispatch during an allowed live Observe does not leak while the live Observe's facts still flow;
+the probe adapter has a blocking =observe/2= for the second since the Observe adapter is the same =dispatch=
+module).
+
+* History
+This unit began as a test/contract-only source mapping with measured baselines and a decision table, went through
+an interface review that corroborated the attention-only direction and released the mechanics rows, a conditional
+implementation review that added the paired transition table and several harness corrections, and an on-head
+review that removed a process-global kind label in favour of per-fact kind attribution. Every correction is folded
+into the text above; the revision ledger is not reproduced here.

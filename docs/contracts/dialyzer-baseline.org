@@ -1,0 +1,28 @@
+#+title: Dialyzer baseline contract
+#+PROPERTY: status delivered contract
+
+* Implementation status
+Delivered: =bin/dialyzer-check= (runs =bin/validate-dialyzer-baseline .dialyzer_ignore.exs= and then
+=mix dialyzer --format github --list-unused-filters=), =bin/validate-dialyzer-baseline=, and the empty baseline
+file =.dialyzer_ignore.exs= (=[]=); =bin/verify= is the canonical gate that includes the check.
+
+Dialyzer is a ratchet over the typed durable core. The baseline
+(=.dialyzer_ignore.exs=) may record only warnings that were present when the
+ratchet was introduced; it does not make Dialyzer advisory.
+
+- New warnings fail =bin/dialyzer-check= and the canonical =bin/verify= gate.
+- Obsolete filters fail because Dialyxir exits nonzero for
+  =--list-unused-filters=; =bin/dialyzer-check= preserves that exit, so the
+  baseline can only shrink.
+- Every baseline entry is the strict two-string form
+  ={lib_path, warning_description}= emitted by
+  =mix dialyzer --format ignore_file_strict=.
+- Broad path-only, warning-class, regex, and module suppression entries are
+  rejected before Dialyzer runs.
+- PLTs remain generated cache artifacts under the Nix-pinned toolchain; they
+  are never repository truth.
+
+The shipped baseline is empty: =.dialyzer_ignore.exs= is =[]=, so every
+Dialyzer warning fails the check today. Any entry added later must take the
+strict form above, is validated by =bin/validate-dialyzer-baseline= before
+Dialyzer runs, and can only be removed, never broadened.

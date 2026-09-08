@@ -1,0 +1,200 @@
+#+title: Recovery acquisition: cold evidence, appending authority, truthful cleanup
+#+options: toc:nil
+#+PROPERTY: status delivered contract
+
+* Implementation status
+Delivered. =AiOrchestrator.Run.Recovery= (=lib/ai_orchestrator/run/recovery.ex=) implements =evidence/2=,
+=acquire/2= and =release/1= with the refusal domain, cleanup map, residue and call-timeout handling below.
+The rows are =test/run/recovery_acquisition_red_test.exs= (controls and witnesses),
+=test/run/recovery_acquisition_green_review_test.exs= (RG-1..RG-4),
+=recovery_acquisition_green_successor_test.exs= (L-1, L-1b, H-1, T-1..T-3) and
+=test/run/recovery_acquisition_timeout_followup_test.exs= (F-1/F-2). Not delivered: automatic
+fresh-snapshot decision retaking and full recovery-service wiring (no registry, no owner process, no restart
+loop).
+
+* Scope
+Cold evidence, appending authority and truthful cleanup reporting ONLY. The wrapper writes no event,
+acceptance, reservation or terminal and admits no replacement effect; opening may execute only the Writer's
+existing bounded repair. No registry, no new owner process, no hidden retry, no callback in the Writer, no
+new dependency, NO new Writer API (RA-M2: the wrapper reports only what the existing returns carry,
+structurally; it never parses =detail=). The verified-snapshot primitive is delivered by =Writer.verified/1= /
+=append/3=: =docs/contracts/writer-snapshot.org= is the ONLY snapshot contract. Automatic fresh-snapshot
+decision retaking and full recovery-service wiring are NOT delivered.
+
+* Module and placement
+=AiOrchestrator.Run.Recovery= in the Run boundary (already depends on Journal), a consumer over =Reader.load=,
+=Writer.open/verified/close=, =Ownership.status= and =RunLock=. No struct: the success handle is the smallest
+explicit map.
+
+* Caller precondition (RA-M6)
+=Writer.open= links the Writer to the caller, so a Writer that dies during verification sends the caller a linked
+exit that =catch_exit= cannot contain unless the caller traps exits (control C-11: a non-trapping caller goes DOWN
+=:killed= and the held lock remains). =acquire/2= and =release/1= therefore REQUIRE a trapping caller:
+=Process.info(self(), :trap_exit) == {:trap_exit, true}=, checked FIRST - before any option or handle check and
+before any IO - else the closed refusal =%{clause: "recovery_caller_invalid", field: "trap_exit", stage: "caller",
+cleanup: none}=. The wrapper never mutates the caller's flag. =evidence/2= has no caller precondition. The executor
+Owner already traps; no new owner process or registry. The linked success lifetime is unchanged.
+
+* Public interface
+- =evidence(run_dir, opts \\ [])= :: ={:ok, evidence} | {:error, refusal}= - COLD EVIDENCE, never authority.
+  =evidence = %{lines, seq, last_line_sha256, envelope_version, version_2_from, receipt, repair}= (the verified
+  keys WITHOUT =generation= and =token=). Options: only =fs:= (explicit seam). Proven: zero mutating seam ops, no
+  =run.lock.*= created, =Ownership.status= unchanged, works under a live OS holder and a live in-BEAM Writer.
+- =acquire(run_dir, opts)= :: ={:ok, handle} | {:error, refusal}= - APPENDING AUTHORITY.
+  =handle = %{writer: pid, generation: pos_integer, snapshot: verified_snapshot_with_token, repaired: repair | nil}=.
+  =repaired= is the OPEN's executed repair evidence (=opened.repair=); =snapshot.repair= is =verified='s CURRENT
+  pending evidence - distinct sources, never copied. Success requires a verified snapshot WITH a token; a pending
+  repair or any verification refusal or EXIT after open is a refusal at stage "verify": the wrapper observes the
+  allocated Writer (its pid and DOWN), closes it when it is alive, and reports the cleanup the close return proves.
+  The Writer is linked to the caller (=Writer.open='s link): caller death takes it down. Success admits ONLY an
+  explicit caller =Writer.append(writer, event, fence: handle.snapshot.token)=; the wrapper writes nothing.
+  Options: REQUIRED =lock:= a proper keyword list carrying a non-empty binary =supervisor_instance= (typed check
+  before any IO) whose keys are EXACTLY within the closed nested set =[supervisor_instance, pid, pid_start,
+  owner_status, token]= (RG-M2: any other nested key is =recovery_option_invalid= field "lock" before IO, never
+  echoed); =create:= REFUSED; explicit seams =fs:= / =clock:= / =ownership:= and those lock seams pass through
+  UNCHANGED and are never defaulted (without seams the lock file's =pid= is =System.pid()=). Unknown or duplicated
+  keys, non-keyword lists, improper lists: refused before IO.
+- =release(handle)= :: =:ok | {:error, refusal}= - explicit release responsibility (=Writer.close=). The handle
+  must be exactly the map above, keys AND values (RG-M3): a pid =writer=, a positive integer =generation=, a map
+  =snapshot=, =repaired= a map or nil - else =recovery_option_invalid= field "handle" before any call reaches the
+  Writer (a malformed handle never closes or kills anything). The Writer stops on a genuine release; a Writer that
+  is already gone is reported, not assumed released.
+
+* Call timeout is not death (RG-M1)
+=Writer.verified/1= and =Writer.close/1= are bounded calls (5 s). A call that TIMES OUT (=exit {:timeout, _}=) is
+distinguished from the Writer's exit: the Writer is alive and still this attempt's responsibility. The wrapper
+then attempts a bounded orderly =Writer.close= and, only if that times out too, terminates this exact owned BEAM
+Writer (=Process.exit(writer, :kill)=) and waits for its DOWN. Never an OS signal, never forced lock removal, never
+a hidden retry, never a global trap flag, never a new owner process. Reported: =reason "writer_timeout"= (a
+closed reason added by this revision) with =cleanup= = what the close return proved (legs) or, after a kill or an
+unobserved DOWN, =unknown / :retained / unknown= - the lost reply of a timed-out call is never invented. A genuine
+exit keeps =reason "writer_exit"=. The monitor wait is itself bounded (5 s) with an explicit =:unobserved= outcome
+that yields =cleanup unknown= rather than success (=release/1= then refuses with =writer_timeout=, never =:ok=).
+A verify-stage refusal whose orderly close timed out additionally carries =close: "writer_timeout"=.
+
+* Refusal domain (closed; admits uncertainty - RA-M3 / choice 2)
+=refusal = %{clause, stage, cleanup}= with =clause= in "journal_unavailable" | "journal_corrupt" |
+"recovery_caller_invalid" | "recovery_option_invalid" | "recovery_release_failed" and =stage= in "caller" |
+"options" | "ownership" | "lock" | "start" | "read" | "repair" | "descriptor" | "verify" | "release"; plus =field= (option/handle refusals), =source=
+("journal" | "receipt"), =reason= (a closed clause name or the Writer's repair stage), =at_seq= (integer, when the
+Reader names one), =release= (the STRUCTURED nested release clause - ONLY from =writer_open_cleanup_failed=),
+=legs= (the STRUCTURED leg names from =close_failed=: "descriptor" | "lock"), =close= ("writer_timeout" only: a
+verify-stage refusal whose orderly close timed out) and =residue=.
+- =journal_unavailable= WITHDRAWS "transient/retryable": it never grants retry, effect admission or automatic
+  re-acquisition; attention cases (permissions, missing input, ownership ambiguity, failed cleanup) live here.
+- =cleanup= is ALWAYS present and closed:
+  =%{lock: :none | :released | :removed_unsynced | :unproven | :unknown, registration: :none | :released | :retained | :unknown, descriptor: :none | :closed | :unproven | :unknown}=
+  A RELEASED lock is witnessed by =RunLock.owner= reading =:none= (RunLock's released tombstone stays on disk by
+  design); a REMAINING held file is witnessed by its basename still present. =:none= = this attempt acquired nothing of that kind; =:released= / =:closed= = proven by the seam's SUCCESS
+  return; =:removed_unsynced= = RunLock proved the file absent but its durability unproven; =:unproven= = the
+  seam's failure return says the resource may remain; =:unknown= = no return exists that proves either way (an
+  init crash, a Writer that died during verification, a handle whose Writer is already gone). Never =:none= or
+  =:released= without the corresponding evidence; never forced removal; never another generation's lock.
+- =residue= (optional; RA-M7) = =%{kind: :generation | :candidate | :unknown, generation: pos_integer | nil, ours: true | false | :unknown}=
+  - a TOKEN-FREE closed description of a file the seams report as possibly remaining. The source is always a
+  STRUCTURED path field of the seam's error (=lock_path=, RunLock's =path= - absolute); its basename is extracted
+  (=Path.basename/1=) and matched against the absolute-end grammars =\Arun\.lock\.([1-9][0-9]{0,11})\z= (generation
+  file) and =\Arun\.lock\.([1-9][0-9]{0,11})\.[A-Za-z0-9_-]{1,64}\.tmp\z= (candidate: its name CARRIES the token, so
+  the name itself is never reported); =generation= is that positive capture; any other basename is =kind :unknown,
+  generation nil=. Raw filename or token bytes are never promoted into a refusal. =ours= is =true= only where the seam structurally
+  proves it (the Writer's own =writer_open_cleanup_failed.lock_path= / the nested release's own record), =false= where
+  the seam proves this attempt did not create the file (=candidate_conflict=, =reclaim_failed=), else =:unknown= -
+  in particular the opaque =close_failed= lock leg (control C-7b: a held file whose token was replaced closes
+  with only leg + detail and the FOREIGN file remains) reports the handle's generation with =ours :unknown=.
+  Where the seam carries no path (=lock_unavailable= rollback "not_ours", control C-8b) NO residue is reported.
+- No seam reason bytes, no journal bytes (the Reader's =event_type= echo is dropped), no prompts/commands.
+
+* Source-clause mapping (every clause the seams can return; RA-M3 corrected)
+| Source | clause / stage | cleanup (lock / registration / descriptor) | residue |
+|--------+----------------+--------------------------------------------+---------|
+| options / handle validation | recovery_option_invalid / options | none / none / none | - |
+| Ownership =ownership_unavailable=, =second_live_writer= | unavailable / ownership | none / none / none | - |
+| Ownership =reclaim_failed= {lock_basename} | unavailable / ownership | none / none / none | {kind/generation from the grammar, ours: false} (a dead generation's file) |
+| RunLock =run_locked= | unavailable / lock | none / none / none | - |
+| RunLock =lock_unreadable=, =malformed_lock_family= | unavailable / lock | none / none / none | - |
+| RunLock =lock_unavailable= without =rollback= (attempts exhausted, own identity, unreadable reason) | unavailable / lock | none / none / none | - |
+| RunLock =lock_unavailable= rollback "removed" | unavailable / lock | none / none / none | - |
+| RunLock =lock_unavailable= rollback "removed_unsynced" | unavailable / lock | removed_unsynced / none / none | - |
+| RunLock =lock_unavailable= rollback "not_ours" (no path in the error; unreadable/absent state possible) | unavailable / lock | none / none / none | - (omitted) |
+| RunLock =cleanup_required= {path} (own temp, own final, OR a lower generation after compaction) | unavailable / lock | unproven / none / none | {kind/generation from the grammar, ours: :unknown} |
+| RunLock =candidate_conflict= {path} (choice 1: this attempt created no candidate) | unavailable / lock | none / none / none | {kind :candidate, generation from the grammar, ours: false} - never the token-bearing name |
+| RunLock =ownership_lost= {path} (foreign token or vanished) | unavailable / lock | none / none / none | {kind/generation from the grammar, ours: :unknown} |
+| Writer =writer_start_failed= (init crashed; choice 2) | unavailable / start | unknown / unknown / unknown | - |
+| Reader =journal_missing=, =journal_unreadable= (under the lock; release proven by the plain cause return) | unavailable / read, source journal | released / released / none | - |
+| Reader =receipt_unreadable= | unavailable / read, source receipt | released / released / none | - |
+| any other Reader/Chain clause (=unknown_event_type=, chain/receipt clauses...) | corrupt / read, =reason= = clause, =at_seq= when given | released / released / none | - |
+| Writer =repair_failed= {stage} (choice 3) | unavailable / repair, =reason= = "truncate" | "receipt" | released / released / none | - |
+| Writer =head_temp_cleanup_required=, =head_temp_removed_unsynced= | unavailable / repair, =reason= = clause | released / released / none | - |
+| Writer =journal_open_failed= | unavailable / descriptor | released / released / none | - |
+| Writer =journal_exists=, =journal_create_failed= | unreachable (=create:= refused) | - | - |
+| Writer =writer_open_cleanup_failed= {cause, release, lock_path} | classify(cause) at the cause's stage, =release= = release.clause | release_removed_unsynced -> removed_unsynced / retained; release_incomplete, cleanup_required -> unproven / retained; release_failed -> unproven / retained; not_owner -> unknown / retained | {kind :generation, generation from =lock_path='s grammar, ours: true} except not_owner (ours :unknown) |
+| post-open =Writer.verified= refusal =snapshot_unreadable= {source} | unavailable / verify, =source= | from =Writer.close= (below) | - |
+| post-open =snapshot_corrupt= / =snapshot_divergent= / token nil with pending repair | corrupt / verify, =reason= = clause or "pending_repair" | from =Writer.close= | - |
+| post-open =Writer.verified= EXIT (the Writer died; DOWN observed) | unavailable / verify, =reason= = "writer_exit" | unknown / retained / unknown | - |
+| post-open =Writer.verified= call TIMEOUT (the Writer is alive) | unavailable / verify, =reason= = "writer_timeout" | from the orderly close (legs) if it answers; after a kill: unknown / retained / unknown | - |
+| =Writer.close= call TIMEOUT on release (the Writer is alive) | recovery_release_failed / release, =reason= = "writer_timeout", =legs= [] | after the kill and its DOWN: unknown / retained / unknown | - |
+| =Writer.close= :ok (after a verify refusal, or on release) | - | released / released / closed | - |
+| =Writer.close= =close_failed= {failures: legs} (RA-M2: structured legs only, no nested clause) | on release: recovery_release_failed / release, =legs= | "lock" leg -> unproven / retained; "descriptor" leg -> descriptor unproven; a leg absent from failures -> its proven state | {kind :generation, generation = =handle.generation=, ours: :unknown} when the lock leg failed (the cached generation LOCATES evidence, it does not prove current ownership - RA-M7b) |
+| =Writer.close= EXIT (Writer already gone) on release | recovery_release_failed / release, =reason= = "writer_exit", =legs= [] | unknown / unknown / unknown | - |
+
+* Rows and baseline controls
+| Row | Kind | Witness |
+|-----+------+---------|
+| C-1 | control | a Writer in a REAL second OS process refuses =Writer.open= with =run_locked= naming its pid (holder stopped in =after=) |
+| C-2 | control | a live in-BEAM Writer refuses a second =Writer.open= with =second_live_writer= |
+| C-3 | control | a corrupt middle line: =Writer.open= refuses with EXACTLY =unknown_event_type= at_seq 2 carrying the journal bytes in =event_type=; lock released |
+| C-4 | control | read fault + release-leg fault: =Writer.open= returns =writer_open_cleanup_failed= whose nested =release= IS structured (clause =release_incomplete=), a lock file remains |
+| C-5 | control | =Reader.load= on an unreadable journal carries the seam bytes; on a corrupt line carries =event_type= bytes |
+| C-6 | control (RA-M1 positive) | a =:hook= on the descriptor open (=[:append]=) runs BEFORE that open, the open still succeeds (the trace shows it after the hook signal), and the armed read fault / torn tail makes the unchanged Writer's =verified/1= return =snapshot_unreadable= / a pending repair with token nil |
+| C-7 | control (RA-M2) | =Writer.close= with a failing lock leg returns =close_failed= with =failures= of exactly =[%{leg: "lock", detail}]= - no structured release clause; with a failing descriptor close: leg "descriptor"; both: both legs |
+| C-8 | control (RA-M3) | =RunLock.acquire= under a =dir_sync= fault returns =lock_unavailable= rollback "removed_unsynced" with the file absent |
+| C-9 | control (RA-M3/M7a) | a preexisting foreign candidate: =candidate_conflict= names its TOKEN-BEARING path (so a basename is not redaction), byte-identical afterwards, no =rm= |
+| C-10 | control (RA-M4/M5) | a Writer killed inside =verified/1='s re-read: the call EXITs, DOWN is observed, the lock file remains (terminate did not run) |
+| C-7b | control (RA-M7b) | a held file whose token was replaced: =Writer.close= reports only close_failed / leg lock / detail; the foreign file remains |
+| C-8b | control (RA-M7c) | rollback "not_ours" carries no =path= / =owner= in RunLock's error |
+| C-11 | control (RA-M6) | a NON-trapping linked caller cannot contain the Writer's death: DOWN =:killed=, the held lock remains |
+| C-12 | control (RA-M8) | harness: a readiness failure (the helper refused by a real-identity in-BEAM holder) still reaches the stop; an already-exited holder stops cleanly and is dead by identity |
+| C-13 | control (RA-M8) | harness: the holder owner dies -> the Port closes, the helper exits on stdin EOF, verified identity-bound (pid + ps start time), no signal |
+| harness (RA-M10) | - | normal stop = the owner CLOSES its Port (helper stdin EOF), then proof = an observed exit_status or identity-bound death (bounded); no numeric signal, nil Port.info is never proof, an unproven exit keeps the holder tracked; stop is serviceable before readiness; registrations are re-read per role (callers stopped first) and survivors retain their resources |
+| A-0 | RED | the three functions exist |
+| E-1b | RED | evidence has no caller precondition (a non-trapping caller reads it) |
+| P-1..P-3 | RED (RA-M6) | non-trapping caller refused before IO with =recovery_caller_invalid= (precedence over option/handle checks); the flag is never mutated; a trapping caller in another process receives the closed verify-death refusal and survives |
+| E-1..E-5 | RED | evidence shape/zero mutations/no lock/arbiter unchanged; unreadable journal/receipt normalized, canary absent; corrupt line -> =journal_corrupt= reason EXACTLY "unknown_event_type", at_seq 2, no =event_type= key, canary absent; options closed (unknown, create, duplicate); cold evidence under a live OS holder and a live in-BEAM Writer |
+| Q-1..Q-5 | RED | OS holder -> unavailable/lock/none, nothing of ours; in-BEAM live Writer -> unavailable/ownership/none; corrupt -> corrupt/read/released with exact reason, bytes unchanged, lock none, no Writer left (DOWN observed); unreadable under the lock -> unavailable/read/released; read fault + release fault -> unavailable/read with =release= "release_incomplete", cleanup unproven/retained, residue {kind :generation, generation 1, ours: true} (the Writer's own structured =lock_path=), canary absent |
+| Q-6..Q-8 | RED | success handle (linked, generation = held lock's, token, repaired nil, fenced append admits, nothing written) then release :ok; release stops the Writer and re-acquire works; release with a failing lock leg -> =recovery_release_failed= legs ["lock"], cleanup unproven/retained/closed, residue {kind :generation, generation = handle.generation, ours: :unknown}, canary absent |
+| Q-8b/Q-8c | RED | descriptor-only close failure -> legs ["descriptor"], cleanup released/released/unproven; combined -> legs ["descriptor", "lock"], cleanup unproven/retained/unproven |
+| Q-8d | RED | release on a handle whose Writer is already gone -> =recovery_release_failed= reason "writer_exit", legs [], cleanup unknown/unknown/unknown; invalid handle shapes -> =recovery_option_invalid= field "handle" with no IO |
+| Q-9 | RED | post-open read fault (armed by the =:hook= on the descriptor open) -> unavailable/verify source journal, cleanup released/released/closed, the allocated Writer's DOWN observed, lock gone |
+| Q-10 | RED | torn tail appended by the hook -> corrupt/verify reason "pending_repair", no token ever returned, DOWN observed, lock gone |
+| Q-10b | RED | the Writer dies during verification -> unavailable/verify reason "writer_exit", cleanup unknown/retained/unknown, DOWN observed, the lock file truthfully remains |
+| Q-11 | RED | caller death (tracked caller, bounded handshake, monitors on both) takes the Writer down and releases the lock |
+| Q-12 | RED | option matrix before any IO: create:, missing/empty/non-binary supervisor_instance, duplicate keys, non-keyword lock, improper list, unknown key; without lock seams the lock's pid is =System.pid()= |
+| Q-13 | RED | killed generation + torn tail: acquire succeeds at a generation PROVEN newer than the killed one (RunLock tombstones, no n+1 promise), =repaired= = the open's executed truncate verdict, =snapshot.repair= nil |
+| Q-14a/b/c | RED (RA-M3/M7/M9 arms, one FRESH directory each) | =dir_sync= fault -> cleanup lock :removed_unsynced, no residue; rollback not_ours -> no residue, canary absent, the real =run.lock.1= stays; a foreign candidate with a PRIVATE token -> cleanup none, residue {candidate, generation 1, ours false} with no token bytes, the candidate byte-identical |
+| C-14 | control (RA-M10) | harness: the requester dies before readiness is published; the owner still serves stop and proves the exit identity-bound |
+| C-15 | control (RA-M9) | measured: the not_ours leg leaves a real =run.lock.1=, so a following candidate leg in the SAME directory is =run_locked= and the candidate is never opened - the three arms need independent directories |
+
+* Review rows
+| Row | Witness |
+|-----+---------|
+| RG-1..RG-4 | probes imported from review: unknown nested lock key refused before IO; malformed handle values refused before any close; a verification call timeout does not leave a live Writer behind; a release timeout is not reported as death |
+| T-1 | verification timeout: =reason "writer_timeout"=, the exact Writer's DOWN observed, cleanup unknown/retained/unknown, the held file remains (the killed Writer ran no teardown), arbiter =:down= |
+| T-2 | release timeout (suspended Writer): =recovery_release_failed reason "writer_timeout" legs []= cleanup unknown/retained/unknown, DOWN observed, held file remains |
+| T-3 | genuine death still =writer_exit= |
+| L-1 | pid / pid_start / token pass through unchanged (visible in the held lock record); an unknown nested key -> field "lock", zero IO, no echo |
+| L-1b | owner_status IS consulted: a STRANDED RunLock generation is created directly (=RunLock.acquire= with a synthetic identity, no process killed, never registered with the arbiter), so the next acquisition's owner_status seam must classify it; the callback's receipt of that record is ASSERTED, it answers :dead, and the acquisition succeeds at a newer generation. (A killed Writer whose registration the arbiter holds is reclaimed before RunLock classifies anything, which is why that is not the mechanism.) |
+| F-1/F-2 | timeout follow-ups imported from review: a verification timeout followed by an orderly close that ANSWERS reports the proved cleanup (released/released/closed, normal DOWN); a verification refusal whose descriptor close blocks preserves the original source, adds close: "writer_timeout", kills the owned Writer (killed DOWN), retains the lock with the arbiter :down and cleanup unknown |
+| H-1 | one-field handle negatives (generation 0 / -1 / "1"; snapshot binary / nil; repaired atom / binary; writer non-pid; extra key; missing key) each refused with zero IO and the Writer alive; the genuine handle releases :ok |
+
+* Choices
+1. =candidate_conflict= -> cleanup =:none= for this attempt's resources; the residue names the preexisting candidate
+   without claiming it (=ours: false=); the earlier "own-temp withdrawal" text was false and is withdrawn.
+2. Init failure and Writer death during verification report =:unknown= where no return proves the state.
+3. Repair-stage =reason= is the Writer's structured stage ("truncate" | "receipt").
+
+* History
+The interface went through several review revisions (the trapping-caller precondition, token-free
+source-true residue, dependency-ordered identity-bound teardown, independent fixture directories, bounded
+holder shutdown proof, call timeout distinguished from death, the closed nested lock set, and handle value
+checks); the RA-M and RG-M labels in the rows above name those findings, and all corrections are folded
+into the text above.

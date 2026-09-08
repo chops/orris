@@ -1,0 +1,6123 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "anyOf": [
+    {
+      "type": "object",
+      "required": [
+        "actor",
+        "data",
+        "event_id",
+        "event_version",
+        "prev_line_sha256",
+        "run_id",
+        "schema",
+        "schema_version",
+        "seq",
+        "ts",
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "const": "run_supervisor"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "agent_ref",
+            "assignment_id",
+            "detector",
+            "pane_ref",
+            "pane_state",
+            "pending_count",
+            "stale_for_ms"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "agent_ref": {
+              "type": "string",
+              "minLength": 1
+            },
+            "assignment_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "detector": {
+              "type": "string",
+              "minLength": 1
+            },
+            "pane_ref": {
+              "type": "string",
+              "minLength": 1
+            },
+            "pane_state": {
+              "type": "string",
+              "minLength": 1
+            },
+            "pending_count": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1
+            },
+            "stale_for_ms": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_version": {
+          "const": 1
+        },
+        "prev_line_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema": {
+          "const": "ai-orchestrator/journal-event"
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "seq": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "traceparent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ts": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "agent_wedge_detected"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "actor",
+        "data",
+        "event_id",
+        "event_version",
+        "prev_line_sha256",
+        "run_id",
+        "schema",
+        "schema_version",
+        "seq",
+        "ts",
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "const": "run_supervisor"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "artifact_id",
+            "assignment_id",
+            "bytes",
+            "match_kind",
+            "modified_after_dispatch",
+            "path",
+            "sha256",
+            "stable_for_ms"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "artifact_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "assignment_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "bytes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "match_kind": {
+              "type": "string",
+              "minLength": 1
+            },
+            "modified_after_dispatch": {
+              "type": "boolean"
+            },
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "stable_for_ms": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_version": {
+          "const": 1
+        },
+        "prev_line_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema": {
+          "const": "ai-orchestrator/journal-event"
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "seq": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "traceparent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ts": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "artifact_observed"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "actor",
+        "data",
+        "event_id",
+        "event_version",
+        "prev_line_sha256",
+        "run_id",
+        "schema",
+        "schema_version",
+        "seq",
+        "ts",
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "const": "run_supervisor"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "artifact_id",
+            "assignment_id",
+            "pane_state"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "artifact_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "assignment_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "pane_state": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_version": {
+          "const": 1
+        },
+        "prev_line_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema": {
+          "const": "ai-orchestrator/journal-event"
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "seq": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "traceparent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ts": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "assignment_completed"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "actor",
+        "data",
+        "event_id",
+        "event_version",
+        "prev_line_sha256",
+        "run_id",
+        "schema",
+        "schema_version",
+        "seq",
+        "ts",
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "const": "run_supervisor"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "assignment_id",
+            "backend",
+            "pane_ref",
+            "replayed",
+            "send_message_id",
+            "send_status"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "artifact_baseline": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "required": [
+                    "exists"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "exists": {
+                      "const": false
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "bytes",
+                    "exists",
+                    "mtime_unix",
+                    "sha256"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "bytes": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "exists": {
+                      "const": true
+                    },
+                    "mtime_unix": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "sha256": {
+                      "type": "string",
+                      "pattern": "\\Asha256:[0-9a-f]{64}\\z"
+                    }
+                  }
+                }
+              ]
+            },
+            "assignment_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "backend": {
+              "type": "string",
+              "minLength": 1
+            },
+            "pane_ref": {
+              "type": "string",
+              "minLength": 1
+            },
+            "prompt_hash": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "replayed": {
+              "type": "boolean"
+            },
+            "send_message_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "send_status": {
+              "type": "string",
+              "enum": [
+                "ok",
+                "queued",
+                "reconciled"
+              ]
+            }
+          }
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_version": {
+          "const": 1
+        },
+        "prev_line_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema": {
+          "const": "ai-orchestrator/journal-event"
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "seq": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "traceparent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ts": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "assignment_dispatch_sent"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "actor",
+        "data",
+        "event_id",
+        "event_version",
+        "prev_line_sha256",
+        "run_id",
+        "schema",
+        "schema_version",
+        "seq",
+        "ts",
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "const": "run_supervisor"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "assignment_id",
+            "deadline_observed",
+            "reason"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "assignment_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "deadline_observed": {
+              "type": "boolean"
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_version": {
+          "const": 1
+        },
+        "prev_line_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema": {
+          "const": "ai-orchestrator/journal-event"
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "seq": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "traceparent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ts": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "assignment_failed"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "actor",
+        "data",
+        "event_id",
+        "event_version",
+        "prev_line_sha256",
+        "run_id",
+        "schema",
+        "schema_version",
+        "seq",
+        "ts",
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "const": "run_supervisor"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "assignment_id",
+            "deadline_unix"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "assignment_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "deadline_unix": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_version": {
+          "const": 1
+        },
+        "prev_line_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema": {
+          "const": "ai-orchestrator/journal-event"
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "seq": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "traceparent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ts": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "assignment_observation_started"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "actor",
+        "data",
+        "event_id",
+        "event_version",
+        "prev_line_sha256",
+        "run_id",
+        "schema",
+        "schema_version",
+        "seq",
+        "ts",
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "const": "run_supervisor"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "artifact_baseline",
+            "assignment_id",
+            "context_hash",
+            "context_revision",
+            "expected_artifact",
+            "prompt_bytes",
+            "prompt_hash",
+            "prompt_path"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "artifact_baseline": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "required": [
+                    "exists"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "exists": {
+                      "const": false
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "bytes",
+                    "exists",
+                    "mtime_unix",
+                    "sha256"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "bytes": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "exists": {
+                      "const": true
+                    },
+                    "mtime_unix": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "sha256": {
+                      "type": "string",
+                      "pattern": "\\Asha256:[0-9a-f]{64}\\z"
+                    }
+                  }
+                }
+              ]
+            },
+            "assignment_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "context_hash": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "context_revision": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "expected_artifact": {
+              "type": "string",
+              "minLength": 1
+            },
+            "prompt_bytes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "prompt_hash": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "prompt_path": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_version": {
+          "const": 2
+        },
+        "prev_line_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema": {
+          "const": "ai-orchestrator/journal-event"
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "seq": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "traceparent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ts": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "assignment_prompt_projected"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "actor",
+        "data",
+        "event_id",
+        "event_version",
+        "prev_line_sha256",
+        "run_id",
+        "schema",
+        "schema_version",
+        "seq",
+        "ts",
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "const": "run_supervisor"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "agent",
+            "assignment_id",
+            "attempt",
+            "context_hash",
+            "context_revision",
+            "deadline_unix",
+            "idempotency_key",
+            "role",
+            "work_item_id"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "agent": {
+              "type": "string",
+              "minLength": 1
+            },
+            "assignment_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "attempt": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "context_hash": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "context_revision": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "deadline_unix": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "idempotency_key": {
+              "type": "string",
+              "minLength": 1
+            },
+            "review_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "role": {
+              "type": "string",
+              "minLength": 1
+            },
+            "work_item_id": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_version": {
+          "const": 1
+        },
+        "prev_line_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema": {
+          "const": "ai-orchestrator/journal-event"
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "seq": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "traceparent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ts": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "assignment_requested"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "actor",
+        "data",
+        "event_id",
+        "event_version",
+        "prev_line_sha256",
+        "run_id",
+        "schema",
+        "schema_version",
+        "seq",
+        "ts",
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "const": "run_supervisor"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "accepted_by",
+            "new_context_hash",
+            "new_context_revision",
+            "prior_context_revision",
+            "proposal_id"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "accepted_by": {
+              "type": "string",
+              "minLength": 1
+            },
+            "new_context_hash": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "new_context_revision": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "prior_context_revision": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "proposal_id": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_version": {
+          "const": 1
+        },
+        "prev_line_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema": {
+          "const": "ai-orchestrator/journal-event"
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "seq": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "traceparent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ts": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "context_patch_accepted"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "actor",
+        "data",
+        "event_id",
+        "event_version",
+        "prev_line_sha256",
+        "run_id",
+        "schema",
+        "schema_version",
+        "seq",
+        "ts",
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "const": "run_supervisor"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "patch_hash",
+            "patch_kind",
+            "patch_path",
+            "proposal_id",
+            "proposer",
+            "target"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "patch_hash": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "patch_kind": {
+              "type": "string",
+              "minLength": 1
+            },
+            "patch_path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "proposal_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "proposer": {
+              "type": "string",
+              "minLength": 1
+            },
+            "target": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_version": {
+          "const": 1
+        },
+        "prev_line_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema": {
+          "const": "ai-orchestrator/journal-event"
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "seq": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "traceparent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ts": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "context_patch_proposed"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "actor",
+        "data",
+        "event_id",
+        "event_version",
+        "prev_line_sha256",
+        "run_id",
+        "schema",
+        "schema_version",
+        "seq",
+        "ts",
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "const": "run_supervisor"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "affected_contract",
+            "breaking",
+            "contract_change_id",
+            "patch_hash",
+            "patch_path",
+            "proposer"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "affected_contract": {
+              "type": "string",
+              "minLength": 1
+            },
+            "breaking": {
+              "type": "boolean"
+            },
+            "contract_change_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "patch_hash": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "patch_path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "proposer": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_version": {
+          "const": 1
+        },
+        "prev_line_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema": {
+          "const": "ai-orchestrator/journal-event"
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "seq": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "traceparent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ts": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "contract_change_proposed"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "actor",
+        "data",
+        "event_id",
+        "event_version",
+        "prev_line_sha256",
+        "run_id",
+        "schema",
+        "schema_version",
+        "seq",
+        "ts",
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "const": "run_supervisor"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "contract_change_id",
+            "new_context_hash",
+            "new_context_revision",
+            "prior_context_revision",
+            "ratified_by"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "contract_change_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "new_context_hash": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "new_context_revision": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "prior_context_revision": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "ratified_by": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_version": {
+          "const": 1
+        },
+        "prev_line_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema": {
+          "const": "ai-orchestrator/journal-event"
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "seq": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "traceparent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ts": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "contract_change_ratified"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "actor",
+        "data",
+        "event_id",
+        "event_version",
+        "prev_line_sha256",
+        "run_id",
+        "schema",
+        "schema_version",
+        "seq",
+        "ts",
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "const": "run_supervisor"
+        },
+        "data": {
+          "anyOf": [
+            {
+              "type": "object",
+              "required": [
+                "duration_ms",
+                "exit_status",
+                "failure_summary",
+                "gate_run_id",
+                "stderr_hash",
+                "stdout_hash"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "duration_ms": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "exit_status": {
+                  "maximum": 255,
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "failure_summary": {
+                  "type": "object",
+                  "required": [
+                    "failures",
+                    "headline",
+                    "suggestion"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "failures": {
+                      "type": "array",
+                      "items": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "required": [
+                              "line"
+                            ],
+                            "additionalProperties": false,
+                            "properties": {
+                              "line": {
+                                "type": "string",
+                                "minLength": 1
+                              }
+                            }
+                          },
+                          {
+                            "type": "object",
+                            "required": [
+                              "assertion",
+                              "test"
+                            ],
+                            "additionalProperties": false,
+                            "properties": {
+                              "assertion": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "test": {
+                                "type": "string",
+                                "minLength": 1
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    },
+                    "headline": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "suggestion": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                },
+                "gate_run_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "stderr_hash": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                },
+                "stderr_merged": {
+                  "type": "boolean"
+                },
+                "stdout_hash": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": [
+                "duration_ms",
+                "exit_status",
+                "failure_summary",
+                "gate_run_id",
+                "stderr_hash",
+                "stdout_hash",
+                "termination"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "duration_ms": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "exit_status": {
+                  "type": "null"
+                },
+                "failure_summary": {
+                  "type": "object",
+                  "required": [
+                    "failures",
+                    "headline",
+                    "suggestion"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "failures": {
+                      "type": "array",
+                      "items": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "required": [
+                              "line"
+                            ],
+                            "additionalProperties": false,
+                            "properties": {
+                              "line": {
+                                "type": "string",
+                                "minLength": 1
+                              }
+                            }
+                          },
+                          {
+                            "type": "object",
+                            "required": [
+                              "assertion",
+                              "test"
+                            ],
+                            "additionalProperties": false,
+                            "properties": {
+                              "assertion": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "test": {
+                                "type": "string",
+                                "minLength": 1
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    },
+                    "headline": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "suggestion": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                },
+                "gate_run_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "stderr_hash": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                },
+                "stderr_merged": {
+                  "type": "boolean"
+                },
+                "stdout_hash": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                },
+                "termination": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "required": [
+                        "kind",
+                        "leftovers",
+                        "proof",
+                        "settled"
+                      ],
+                      "additionalProperties": false,
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "timeout",
+                            "recovery"
+                          ]
+                        },
+                        "leftovers": {
+                          "type": "string",
+                          "pattern": "^(?:0|[1-9][0-9]{0,9}|unknown)(?![\\s\\S])"
+                        },
+                        "proof": {
+                          "type": "string",
+                          "enum": [
+                            "gone",
+                            "alive",
+                            "unknown"
+                          ]
+                        },
+                        "settled": {
+                          "type": "boolean"
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "kind",
+                        "leftovers",
+                        "proof",
+                        "settled",
+                        "signal"
+                      ],
+                      "additionalProperties": false,
+                      "properties": {
+                        "kind": {
+                          "const": "signal"
+                        },
+                        "leftovers": {
+                          "type": "string",
+                          "pattern": "^(?:0|[1-9][0-9]{0,9}|unknown)(?![\\s\\S])"
+                        },
+                        "proof": {
+                          "type": "string",
+                          "enum": [
+                            "gone",
+                            "alive",
+                            "unknown"
+                          ]
+                        },
+                        "settled": {
+                          "type": "boolean"
+                        },
+                        "signal": {
+                          "type": "integer",
+                          "exclusiveMinimum": 0
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": [
+                "duration_ms",
+                "exit_status",
+                "failure_summary",
+                "gate_run_id",
+                "stderr_merged",
+                "stdout_hash"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "duration_ms": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "exit_status": {
+                  "maximum": 255,
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "failure_summary": {
+                  "type": "object",
+                  "required": [
+                    "failures",
+                    "headline",
+                    "suggestion"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "failures": {
+                      "type": "array",
+                      "items": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "required": [
+                              "line"
+                            ],
+                            "additionalProperties": false,
+                            "properties": {
+                              "line": {
+                                "type": "string",
+                                "minLength": 1
+                              }
+                            }
+                          },
+                          {
+                            "type": "object",
+                            "required": [
+                              "assertion",
+                              "test"
+                            ],
+                            "additionalProperties": false,
+                            "properties": {
+                              "assertion": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "test": {
+                                "type": "string",
+                                "minLength": 1
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    },
+                    "headline": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "suggestion": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                },
+                "gate_run_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "stderr_hash": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                },
+                "stderr_merged": {
+                  "type": "boolean"
+                },
+                "stdout_hash": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": [
+                "duration_ms",
+                "exit_status",
+                "failure_summary",
+                "gate_run_id",
+                "stderr_merged",
+                "stdout_hash",
+                "termination"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "duration_ms": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "exit_status": {
+                  "type": "null"
+                },
+                "failure_summary": {
+                  "type": "object",
+                  "required": [
+                    "failures",
+                    "headline",
+                    "suggestion"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "failures": {
+                      "type": "array",
+                      "items": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "required": [
+                              "line"
+                            ],
+                            "additionalProperties": false,
+                            "properties": {
+                              "line": {
+                                "type": "string",
+                                "minLength": 1
+                              }
+                            }
+                          },
+                          {
+                            "type": "object",
+                            "required": [
+                              "assertion",
+                              "test"
+                            ],
+                            "additionalProperties": false,
+                            "properties": {
+                              "assertion": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "test": {
+                                "type": "string",
+                                "minLength": 1
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    },
+                    "headline": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "suggestion": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                },
+                "gate_run_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "stderr_hash": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                },
+                "stderr_merged": {
+                  "type": "boolean"
+                },
+                "stdout_hash": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                },
+                "termination": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "required": [
+                        "kind",
+                        "leftovers",
+                        "proof",
+                        "settled"
+                      ],
+                      "additionalProperties": false,
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "timeout",
+                            "recovery"
+                          ]
+                        },
+                        "leftovers": {
+                          "type": "string",
+                          "pattern": "^(?:0|[1-9][0-9]{0,9}|unknown)(?![\\s\\S])"
+                        },
+                        "proof": {
+                          "type": "string",
+                          "enum": [
+                            "gone",
+                            "alive",
+                            "unknown"
+                          ]
+                        },
+                        "settled": {
+                          "type": "boolean"
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "kind",
+                        "leftovers",
+                        "proof",
+                        "settled",
+                        "signal"
+                      ],
+                      "additionalProperties": false,
+                      "properties": {
+                        "kind": {
+                          "const": "signal"
+                        },
+                        "leftovers": {
+                          "type": "string",
+                          "pattern": "^(?:0|[1-9][0-9]{0,9}|unknown)(?![\\s\\S])"
+                        },
+                        "proof": {
+                          "type": "string",
+                          "enum": [
+                            "gone",
+                            "alive",
+                            "unknown"
+                          ]
+                        },
+                        "settled": {
+                          "type": "boolean"
+                        },
+                        "signal": {
+                          "type": "integer",
+                          "exclusiveMinimum": 0
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_version": {
+          "const": 2
+        },
+        "prev_line_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema": {
+          "const": "ai-orchestrator/journal-event"
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "seq": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "traceparent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ts": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "gate_failed"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "actor",
+        "data",
+        "event_id",
+        "event_version",
+        "prev_line_sha256",
+        "run_id",
+        "schema",
+        "schema_version",
+        "seq",
+        "ts",
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "const": "run_supervisor"
+        },
+        "data": {
+          "anyOf": [
+            {
+              "type": "object",
+              "required": [
+                "duration_ms",
+                "exit_status",
+                "gate_run_id",
+                "stderr_hash",
+                "stdout_hash"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "duration_ms": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "exit_status": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "gate_run_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "stderr_hash": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                },
+                "stdout_hash": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": [
+                "duration_ms",
+                "exit_status",
+                "gate_run_id",
+                "stderr_merged",
+                "stdout_hash"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "duration_ms": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "exit_status": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "gate_run_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "stderr_merged": {
+                  "type": "boolean"
+                },
+                "stdout_hash": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                }
+              }
+            }
+          ]
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_version": {
+          "const": 1
+        },
+        "prev_line_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema": {
+          "const": "ai-orchestrator/journal-event"
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "seq": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "traceparent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ts": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "gate_passed"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "actor",
+        "data",
+        "event_id",
+        "event_version",
+        "prev_line_sha256",
+        "run_id",
+        "schema",
+        "schema_version",
+        "seq",
+        "ts",
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "const": "run_supervisor"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "artifact_ids",
+            "assignment_id",
+            "command_argv",
+            "gate_id",
+            "gate_run_id",
+            "timeout_s",
+            "work_item_id"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "artifact_ids": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "assignment_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "command_argv": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "gate_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "gate_run_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "timeout_s": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "work_item_id": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_version": {
+          "const": 1
+        },
+        "prev_line_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema": {
+          "const": "ai-orchestrator/journal-event"
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "seq": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "traceparent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ts": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "gate_requested"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "actor",
+        "data",
+        "event_id",
+        "event_version",
+        "prev_line_sha256",
+        "run_id",
+        "schema",
+        "schema_version",
+        "seq",
+        "ts",
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "const": "run_supervisor"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "attempt",
+            "command_argv",
+            "deadline_unix",
+            "execution",
+            "gate_run_id",
+            "stderr_path",
+            "stdout_path"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "attempt": {
+              "maximum": 2,
+              "type": "integer",
+              "minimum": 1
+            },
+            "command_argv": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "deadline_unix": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "execution": {
+              "type": "object",
+              "required": [
+                "claim_hash",
+                "pgid",
+                "pid",
+                "start"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "claim_hash": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}(?![\\s\\S])"
+                },
+                "pgid": {
+                  "maximum": 2147483647,
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "pid": {
+                  "maximum": 2147483647,
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "start": {
+                  "type": "string",
+                  "pattern": "^(?:[0-9]{1,20}\\.[0-9]{6}|ticks:[0-9]{1,20})(?![\\s\\S])"
+                }
+              }
+            },
+            "gate_run_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "stderr_path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "stdout_path": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_version": {
+          "const": 2
+        },
+        "prev_line_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema": {
+          "const": "ai-orchestrator/journal-event"
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "seq": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "traceparent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ts": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "gate_started"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "actor",
+        "data",
+        "event_id",
+        "event_version",
+        "prev_line_sha256",
+        "run_id",
+        "schema",
+        "schema_version",
+        "seq",
+        "ts",
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "const": "run_supervisor"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "attention_id",
+            "blocking_entity",
+            "reason",
+            "resume_command",
+            "summary_hash",
+            "summary_path"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "attention_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "blocking_entity": {
+              "type": "string",
+              "minLength": 1
+            },
+            "detail": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "error",
+                    "prompt_bytes",
+                    "prompt_hash",
+                    "stage"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "prompt_bytes": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "prompt_hash": {
+                      "type": "string",
+                      "pattern": "^sha256:[0-9a-f]{64}$"
+                    },
+                    "prompt_path": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "stage": {
+                      "type": "string",
+                      "enum": [
+                        "retain",
+                        "fetch"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "missing_capabilities"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "missing_capabilities": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "error",
+                    "stage"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "stage": {
+                      "const": "snapshot"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "required": [],
+                  "additionalProperties": false,
+                  "properties": {
+                    "class": {
+                      "type": "string",
+                      "enum": [
+                        "eio",
+                        "enospc",
+                        "enoent",
+                        "eacces",
+                        "eexist",
+                        "erofs",
+                        "other",
+                        "open_stdout",
+                        "open_stderr",
+                        "pipe",
+                        "fork",
+                        "chdir",
+                        "setsid",
+                        "ready_timeout",
+                        "identity",
+                        "usage",
+                        "protocol",
+                        "unknown"
+                      ]
+                    },
+                    "clause": {
+                      "type": "string",
+                      "enum": [
+                        "claim_unpublished",
+                        "claim_conflict",
+                        "prepare_failed",
+                        "release_failed",
+                        "already_released",
+                        "settle_unproven",
+                        "guardian_gone",
+                        "deadline_expired",
+                        "deadline_unsupported",
+                        "clock_unavailable",
+                        "helper_missing",
+                        "invalid_request",
+                        "output_unreadable",
+                        "evidence_incomplete",
+                        "claim_unreadable",
+                        "claim_mismatch",
+                        "claim_unexpected",
+                        "probe_invalid",
+                        "ack_mismatch",
+                        "await_failed",
+                        "unknown",
+                        "invalid_return",
+                        "clock_skew"
+                      ]
+                    },
+                    "cleanup": {
+                      "type": "string",
+                      "enum": [
+                        "none",
+                        "removed",
+                        "removed_unsynced",
+                        "absent",
+                        "absent_unsynced",
+                        "cleanup_required",
+                        "foreign_final_untouched"
+                      ]
+                    },
+                    "duration_ms": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "evidence": {
+                      "type": "object",
+                      "required": [],
+                      "additionalProperties": false,
+                      "properties": {
+                        "duration_ms": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "stderr_hash": {
+                          "type": "string",
+                          "pattern": "^sha256:[0-9a-f]{64}$"
+                        },
+                        "stdout_hash": {
+                          "type": "string",
+                          "pattern": "^sha256:[0-9a-f]{64}$"
+                        }
+                      }
+                    },
+                    "exit_status": {
+                      "maximum": 255,
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "field": {
+                      "type": "string",
+                      "maxLength": 64,
+                      "minLength": 1
+                    },
+                    "final": {
+                      "type": "string",
+                      "enum": [
+                        "removed",
+                        "removed_unsynced",
+                        "absent",
+                        "absent_unsynced"
+                      ]
+                    },
+                    "group": {
+                      "type": "string",
+                      "enum": [
+                        "gone",
+                        "alive",
+                        "unknown"
+                      ]
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "exited",
+                        "signaled",
+                        "timeout",
+                        "unknown"
+                      ]
+                    },
+                    "leader": {
+                      "type": "string",
+                      "enum": [
+                        "gone",
+                        "alive",
+                        "unknown"
+                      ]
+                    },
+                    "leader_pid": {
+                      "type": "string",
+                      "enum": [
+                        "reused"
+                      ]
+                    },
+                    "leftovers": {
+                      "type": "string",
+                      "pattern": "\\A(0|[1-9][0-9]{0,9}|unknown)\\z"
+                    },
+                    "max_ms": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "members": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        {
+                          "type": "string",
+                          "enum": [
+                            "unknown"
+                          ]
+                        }
+                      ]
+                    },
+                    "missing": {
+                      "type": "boolean"
+                    },
+                    "observed_now_unix": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "outputs": {
+                      "type": "string",
+                      "enum": [
+                        "removed",
+                        "left"
+                      ]
+                    },
+                    "proof": {
+                      "type": "string",
+                      "enum": [
+                        "gone",
+                        "alive",
+                        "unknown"
+                      ]
+                    },
+                    "recorded_start_unix": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "residue": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "pattern": "\\Agates/(?!\\.\\.?\\z)[A-Za-z0-9_.-]{1,200}\\z"
+                      },
+                      "maxItems": 8
+                    },
+                    "settle": {
+                      "type": "object",
+                      "required": [],
+                      "additionalProperties": false,
+                      "properties": {
+                        "clause": {
+                          "type": "string",
+                          "enum": [
+                            "guardian_gone",
+                            "settle_unproven",
+                            "abandon_unsettled"
+                          ]
+                        },
+                        "leftovers": {
+                          "type": "string",
+                          "pattern": "\\A(0|[1-9][0-9]{0,9}|unknown)\\z"
+                        },
+                        "proof": {
+                          "type": "string",
+                          "enum": [
+                            "gone",
+                            "alive",
+                            "unknown"
+                          ]
+                        },
+                        "reason": {
+                          "type": "string",
+                          "enum": [
+                            "command",
+                            "parent_gone",
+                            "guardian_signaled",
+                            "release_failed",
+                            "deadline"
+                          ]
+                        },
+                        "settled": {
+                          "type": "boolean"
+                        },
+                        "worker": {
+                          "type": "boolean"
+                        }
+                      }
+                    },
+                    "settled": {
+                      "type": "boolean"
+                    },
+                    "signal": {
+                      "maximum": 64,
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "stage": {
+                      "type": "string",
+                      "enum": [
+                        "mkdir",
+                        "gates_dir",
+                        "open",
+                        "chmod",
+                        "write",
+                        "sync",
+                        "close",
+                        "link",
+                        "rm_temp",
+                        "dir_sync",
+                        "encode",
+                        "receipt",
+                        "list_dir",
+                        "lstat",
+                        "read"
+                      ]
+                    },
+                    "start": {
+                      "type": "string",
+                      "pattern": "\\A([0-9]{1,20}\\.[0-9]{6}|-)\\z"
+                    },
+                    "temp": {
+                      "type": "string",
+                      "enum": [
+                        "removed",
+                        "removed_unsynced",
+                        "absent",
+                        "absent_unsynced"
+                      ]
+                    }
+                  }
+                }
+              ]
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1
+            },
+            "resume_command": {
+              "type": "string",
+              "minLength": 1
+            },
+            "summary_hash": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "summary_path": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_version": {
+          "const": 1
+        },
+        "prev_line_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema": {
+          "const": "ai-orchestrator/journal-event"
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "seq": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "traceparent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ts": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "human_attention_required"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "actor",
+        "data",
+        "event_id",
+        "event_version",
+        "prev_line_sha256",
+        "run_id",
+        "schema",
+        "schema_version",
+        "seq",
+        "ts",
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "const": "run_supervisor"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "channel",
+            "notification_id",
+            "reason"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "channel": {
+              "type": "string",
+              "minLength": 1
+            },
+            "detail": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "error",
+                    "prompt_bytes",
+                    "prompt_hash",
+                    "stage"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "prompt_bytes": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "prompt_hash": {
+                      "type": "string",
+                      "pattern": "^sha256:[0-9a-f]{64}$"
+                    },
+                    "prompt_path": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "stage": {
+                      "type": "string",
+                      "enum": [
+                        "retain",
+                        "fetch"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "missing_capabilities"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "missing_capabilities": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "error",
+                    "stage"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "stage": {
+                      "const": "snapshot"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "required": [],
+                  "additionalProperties": false,
+                  "properties": {
+                    "class": {
+                      "type": "string",
+                      "enum": [
+                        "eio",
+                        "enospc",
+                        "enoent",
+                        "eacces",
+                        "eexist",
+                        "erofs",
+                        "other",
+                        "open_stdout",
+                        "open_stderr",
+                        "pipe",
+                        "fork",
+                        "chdir",
+                        "setsid",
+                        "ready_timeout",
+                        "identity",
+                        "usage",
+                        "protocol",
+                        "unknown"
+                      ]
+                    },
+                    "clause": {
+                      "type": "string",
+                      "enum": [
+                        "claim_unpublished",
+                        "claim_conflict",
+                        "prepare_failed",
+                        "release_failed",
+                        "already_released",
+                        "settle_unproven",
+                        "guardian_gone",
+                        "deadline_expired",
+                        "deadline_unsupported",
+                        "clock_unavailable",
+                        "helper_missing",
+                        "invalid_request",
+                        "output_unreadable",
+                        "evidence_incomplete",
+                        "claim_unreadable",
+                        "claim_mismatch",
+                        "claim_unexpected",
+                        "probe_invalid",
+                        "ack_mismatch",
+                        "await_failed",
+                        "unknown",
+                        "invalid_return",
+                        "clock_skew"
+                      ]
+                    },
+                    "cleanup": {
+                      "type": "string",
+                      "enum": [
+                        "none",
+                        "removed",
+                        "removed_unsynced",
+                        "absent",
+                        "absent_unsynced",
+                        "cleanup_required",
+                        "foreign_final_untouched"
+                      ]
+                    },
+                    "duration_ms": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "evidence": {
+                      "type": "object",
+                      "required": [],
+                      "additionalProperties": false,
+                      "properties": {
+                        "duration_ms": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "stderr_hash": {
+                          "type": "string",
+                          "pattern": "^sha256:[0-9a-f]{64}$"
+                        },
+                        "stdout_hash": {
+                          "type": "string",
+                          "pattern": "^sha256:[0-9a-f]{64}$"
+                        }
+                      }
+                    },
+                    "exit_status": {
+                      "maximum": 255,
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "field": {
+                      "type": "string",
+                      "maxLength": 64,
+                      "minLength": 1
+                    },
+                    "final": {
+                      "type": "string",
+                      "enum": [
+                        "removed",
+                        "removed_unsynced",
+                        "absent",
+                        "absent_unsynced"
+                      ]
+                    },
+                    "group": {
+                      "type": "string",
+                      "enum": [
+                        "gone",
+                        "alive",
+                        "unknown"
+                      ]
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "exited",
+                        "signaled",
+                        "timeout",
+                        "unknown"
+                      ]
+                    },
+                    "leader": {
+                      "type": "string",
+                      "enum": [
+                        "gone",
+                        "alive",
+                        "unknown"
+                      ]
+                    },
+                    "leader_pid": {
+                      "type": "string",
+                      "enum": [
+                        "reused"
+                      ]
+                    },
+                    "leftovers": {
+                      "type": "string",
+                      "pattern": "\\A(0|[1-9][0-9]{0,9}|unknown)\\z"
+                    },
+                    "max_ms": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "members": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        {
+                          "type": "string",
+                          "enum": [
+                            "unknown"
+                          ]
+                        }
+                      ]
+                    },
+                    "missing": {
+                      "type": "boolean"
+                    },
+                    "observed_now_unix": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "outputs": {
+                      "type": "string",
+                      "enum": [
+                        "removed",
+                        "left"
+                      ]
+                    },
+                    "proof": {
+                      "type": "string",
+                      "enum": [
+                        "gone",
+                        "alive",
+                        "unknown"
+                      ]
+                    },
+                    "recorded_start_unix": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "residue": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "pattern": "\\Agates/(?!\\.\\.?\\z)[A-Za-z0-9_.-]{1,200}\\z"
+                      },
+                      "maxItems": 8
+                    },
+                    "settle": {
+                      "type": "object",
+                      "required": [],
+                      "additionalProperties": false,
+                      "properties": {
+                        "clause": {
+                          "type": "string",
+                          "enum": [
+                            "guardian_gone",
+                            "settle_unproven",
+                            "abandon_unsettled"
+                          ]
+                        },
+                        "leftovers": {
+                          "type": "string",
+                          "pattern": "\\A(0|[1-9][0-9]{0,9}|unknown)\\z"
+                        },
+                        "proof": {
+                          "type": "string",
+                          "enum": [
+                            "gone",
+                            "alive",
+                            "unknown"
+                          ]
+                        },
+                        "reason": {
+                          "type": "string",
+                          "enum": [
+                            "command",
+                            "parent_gone",
+                            "guardian_signaled",
+                            "release_failed",
+                            "deadline"
+                          ]
+                        },
+                        "settled": {
+                          "type": "boolean"
+                        },
+                        "worker": {
+                          "type": "boolean"
+                        }
+                      }
+                    },
+                    "settled": {
+                      "type": "boolean"
+                    },
+                    "signal": {
+                      "maximum": 64,
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "stage": {
+                      "type": "string",
+                      "enum": [
+                        "mkdir",
+                        "gates_dir",
+                        "open",
+                        "chmod",
+                        "write",
+                        "sync",
+                        "close",
+                        "link",
+                        "rm_temp",
+                        "dir_sync",
+                        "encode",
+                        "receipt",
+                        "list_dir",
+                        "lstat",
+                        "read"
+                      ]
+                    },
+                    "start": {
+                      "type": "string",
+                      "pattern": "\\A([0-9]{1,20}\\.[0-9]{6}|-)\\z"
+                    },
+                    "temp": {
+                      "type": "string",
+                      "enum": [
+                        "removed",
+                        "removed_unsynced",
+                        "absent",
+                        "absent_unsynced"
+                      ]
+                    }
+                  }
+                }
+              ]
+            },
+            "notification_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_version": {
+          "const": 1
+        },
+        "prev_line_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema": {
+          "const": "ai-orchestrator/journal-event"
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "seq": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "traceparent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ts": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "notification_failed"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "actor",
+        "data",
+        "event_id",
+        "event_version",
+        "prev_line_sha256",
+        "run_id",
+        "schema",
+        "schema_version",
+        "seq",
+        "ts",
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "const": "run_supervisor"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "channel",
+            "notification_id",
+            "payload_hash",
+            "trigger_event_id"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "channel": {
+              "type": "string",
+              "minLength": 1
+            },
+            "notification_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "payload_hash": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "trigger_event_id": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_version": {
+          "const": 1
+        },
+        "prev_line_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema": {
+          "const": "ai-orchestrator/journal-event"
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "seq": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "traceparent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ts": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "notification_requested"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "actor",
+        "data",
+        "event_id",
+        "event_version",
+        "prev_line_sha256",
+        "run_id",
+        "schema",
+        "schema_version",
+        "seq",
+        "ts",
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "const": "run_supervisor"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "channel",
+            "notification_id"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "channel": {
+              "type": "string",
+              "minLength": 1
+            },
+            "notification_id": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_version": {
+          "const": 1
+        },
+        "prev_line_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema": {
+          "const": "ai-orchestrator/journal-event"
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "seq": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "traceparent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ts": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "notification_sent"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "actor",
+        "data",
+        "event_id",
+        "event_version",
+        "prev_line_sha256",
+        "run_id",
+        "schema",
+        "schema_version",
+        "seq",
+        "ts",
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "const": "run_supervisor"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "lease_request_id",
+            "owner_instance",
+            "pane_ref"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "claim_token": {
+              "type": "string",
+              "minLength": 1
+            },
+            "lease_request_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "owner_instance": {
+              "type": "string",
+              "minLength": 1
+            },
+            "pane_ref": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_version": {
+          "const": 1
+        },
+        "prev_line_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema": {
+          "const": "ai-orchestrator/journal-event"
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "seq": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "traceparent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ts": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "pane_lease_acquired"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "actor",
+        "data",
+        "event_id",
+        "event_version",
+        "prev_line_sha256",
+        "run_id",
+        "schema",
+        "schema_version",
+        "seq",
+        "ts",
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "const": "run_supervisor"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "pane_ref",
+            "reason",
+            "release_request_id"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "pane_ref": {
+              "type": "string",
+              "minLength": 1
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1
+            },
+            "release_request_id": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_version": {
+          "const": 1
+        },
+        "prev_line_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema": {
+          "const": "ai-orchestrator/journal-event"
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "seq": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "traceparent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ts": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "pane_lease_release_requested"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "actor",
+        "data",
+        "event_id",
+        "event_version",
+        "prev_line_sha256",
+        "run_id",
+        "schema",
+        "schema_version",
+        "seq",
+        "ts",
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "const": "run_supervisor"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "pane_ref",
+            "release_request_id"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "pane_ref": {
+              "type": "string",
+              "minLength": 1
+            },
+            "release_request_id": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_version": {
+          "const": 1
+        },
+        "prev_line_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema": {
+          "const": "ai-orchestrator/journal-event"
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "seq": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "traceparent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ts": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "pane_lease_released"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "actor",
+        "data",
+        "event_id",
+        "event_version",
+        "prev_line_sha256",
+        "run_id",
+        "schema",
+        "schema_version",
+        "seq",
+        "ts",
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "const": "run_supervisor"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "assignment_id",
+            "lease_request_id",
+            "owner_instance",
+            "pane_ref",
+            "stale_after_ms"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "assignment_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "lease_request_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "owner_instance": {
+              "type": "string",
+              "minLength": 1
+            },
+            "pane_ref": {
+              "type": "string",
+              "minLength": 1
+            },
+            "stale_after_ms": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_version": {
+          "const": 1
+        },
+        "prev_line_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema": {
+          "const": "ai-orchestrator/journal-event"
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "seq": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "traceparent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ts": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "pane_lease_requested"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "actor",
+        "data",
+        "event_id",
+        "event_version",
+        "prev_line_sha256",
+        "run_id",
+        "schema",
+        "schema_version",
+        "seq",
+        "ts",
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "const": "run_supervisor"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "context_initial_hash",
+            "context_revision",
+            "dag_edges",
+            "plan_hash",
+            "plan_id",
+            "plan_path",
+            "work_item_ids"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "context_initial_hash": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "context_revision": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "dag_edges": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "depends_on",
+                  "item"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "depends_on": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "item": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            },
+            "plan_hash": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "plan_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "plan_path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "work_item_ids": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_version": {
+          "const": 1
+        },
+        "prev_line_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema": {
+          "const": "ai-orchestrator/journal-event"
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "seq": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "traceparent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ts": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "plan_recorded"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "actor",
+        "data",
+        "event_id",
+        "event_version",
+        "prev_line_sha256",
+        "run_id",
+        "schema",
+        "schema_version",
+        "seq",
+        "ts",
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "const": "run_supervisor"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "disposition",
+            "review_id"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "disposition": {
+              "type": "string",
+              "minLength": 1
+            },
+            "review_id": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_version": {
+          "const": 1
+        },
+        "prev_line_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema": {
+          "const": "ai-orchestrator/journal-event"
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "seq": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "traceparent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ts": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "review_disposition_recorded"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "actor",
+        "data",
+        "event_id",
+        "event_version",
+        "prev_line_sha256",
+        "run_id",
+        "schema",
+        "schema_version",
+        "seq",
+        "ts",
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "const": "run_supervisor"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "review_artifact_id",
+            "review_hash",
+            "review_id",
+            "reviewer_assignment_id",
+            "verdict"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "finding_count": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "review_artifact_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "review_hash": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "review_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "reviewer_assignment_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "verdict": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_version": {
+          "const": 1
+        },
+        "prev_line_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema": {
+          "const": "ai-orchestrator/journal-event"
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "seq": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "traceparent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ts": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "review_received"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "actor",
+        "data",
+        "event_id",
+        "event_version",
+        "prev_line_sha256",
+        "run_id",
+        "schema",
+        "schema_version",
+        "seq",
+        "ts",
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "const": "run_supervisor"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "context_hash",
+            "context_revision",
+            "review_id",
+            "reviewer_agent",
+            "subject_assignment_id",
+            "work_item_id"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "context_hash": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "context_revision": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "review_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "reviewer_agent": {
+              "type": "string",
+              "minLength": 1
+            },
+            "subject_assignment_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "work_item_id": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_version": {
+          "const": 1
+        },
+        "prev_line_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema": {
+          "const": "ai-orchestrator/journal-event"
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "seq": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "traceparent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ts": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "review_requested"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "actor",
+        "data",
+        "event_id",
+        "event_version",
+        "prev_line_sha256",
+        "run_id",
+        "schema",
+        "schema_version",
+        "seq",
+        "ts",
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "const": "run_supervisor"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "blocking_entity",
+            "budget_kind",
+            "consumed",
+            "limit"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "blocking_entity": {
+              "type": "string",
+              "minLength": 1
+            },
+            "budget_kind": {
+              "type": "string",
+              "minLength": 1
+            },
+            "consumed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_version": {
+          "const": 1
+        },
+        "prev_line_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema": {
+          "const": "ai-orchestrator/journal-event"
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "seq": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "traceparent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ts": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "run_budget_exhausted"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "actor",
+        "data",
+        "event_id",
+        "event_version",
+        "prev_line_sha256",
+        "run_id",
+        "schema",
+        "schema_version",
+        "seq",
+        "ts",
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "const": "run_supervisor"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "reason"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "last_seen_seq": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1
+            },
+            "requested_by": {
+              "discriminator": {
+                "propertyName": "class"
+              },
+              "oneOf": [
+                {
+                  "type": "object",
+                  "required": [
+                    "args_hash",
+                    "class",
+                    "command_id",
+                    "id",
+                    "verb"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "args_hash": {
+                      "type": "string",
+                      "pattern": "^sha256:[0-9a-f]{64}$"
+                    },
+                    "class": {
+                      "const": "operator"
+                    },
+                    "command_id": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_-]{16,64}$"
+                    },
+                    "id": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_.-]{1,64}$"
+                    },
+                    "verb": {
+                      "type": "string",
+                      "enum": [
+                        "start",
+                        "resume",
+                        "resolve_attention",
+                        "repair",
+                        "cancel",
+                        "pause",
+                        "update_context",
+                        "ratify_plan"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "args_hash",
+                    "class",
+                    "command_id",
+                    "id",
+                    "verb"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "args_hash": {
+                      "type": "string",
+                      "pattern": "^sha256:[0-9a-f]{64}$"
+                    },
+                    "class": {
+                      "const": "console"
+                    },
+                    "command_id": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_-]{16,64}$"
+                    },
+                    "id": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_.-]{1,64}$"
+                    },
+                    "verb": {
+                      "type": "string",
+                      "enum": [
+                        "start",
+                        "resume",
+                        "resolve_attention",
+                        "repair",
+                        "cancel",
+                        "pause",
+                        "update_context",
+                        "ratify_plan"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "args_hash",
+                    "assignment_id",
+                    "class",
+                    "command_id",
+                    "id",
+                    "run_id",
+                    "verb"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "args_hash": {
+                      "type": "string",
+                      "pattern": "^sha256:[0-9a-f]{64}$"
+                    },
+                    "assignment_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "class": {
+                      "const": "agent"
+                    },
+                    "command_id": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_-]{16,64}$"
+                    },
+                    "id": {
+                      "type": "string",
+                      "pattern": "^[a-z][a-z0-9_-]{0,31}$"
+                    },
+                    "run_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "verb": {
+                      "type": "string",
+                      "enum": [
+                        "propose_plan",
+                        "propose_context_change"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "args_hash",
+                    "class",
+                    "command_id",
+                    "id",
+                    "reason",
+                    "verb"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "args_hash": {
+                      "type": "string",
+                      "pattern": "^sha256:[0-9a-f]{64}$"
+                    },
+                    "class": {
+                      "const": "system"
+                    },
+                    "command_id": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_-]{16,64}$"
+                    },
+                    "id": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_.-]{1,64}$"
+                    },
+                    "reason": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "verb": {
+                      "type": "string",
+                      "enum": [
+                        "repair"
+                      ]
+                    }
+                  }
+                }
+              ]
+            },
+            "run_lock_path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "supervisor_instance": {
+              "type": "string",
+              "minLength": 1
+            },
+            "tail_repair": {
+              "type": "object",
+              "required": [
+                "action",
+                "receipt_seq_after",
+                "receipt_seq_before",
+                "truncated_bytes"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "enum": [
+                    "truncate_tail",
+                    "advance_receipt",
+                    "advance_and_truncate"
+                  ]
+                },
+                "receipt_seq_after": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "receipt_seq_before": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "truncated_bytes": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            }
+          }
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_version": {
+          "const": 1
+        },
+        "prev_line_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema": {
+          "const": "ai-orchestrator/journal-event"
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "seq": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "traceparent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ts": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "run_cancel_requested"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "actor",
+        "data",
+        "event_id",
+        "event_version",
+        "prev_line_sha256",
+        "run_id",
+        "schema",
+        "schema_version",
+        "seq",
+        "ts",
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "const": "run_supervisor"
+        },
+        "data": {
+          "anyOf": [
+            {
+              "type": "object",
+              "required": [
+                "reason",
+                "released_lease_ids"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "released_lease_ids": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": [
+                "last_seen_seq",
+                "reason",
+                "supervisor_instance"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "last_seen_seq": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "run_lock_path": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "supervisor_instance": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          ]
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_version": {
+          "const": 1
+        },
+        "prev_line_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema": {
+          "const": "ai-orchestrator/journal-event"
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "seq": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "traceparent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ts": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "run_cancelled"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "actor",
+        "data",
+        "event_id",
+        "event_version",
+        "prev_line_sha256",
+        "run_id",
+        "schema",
+        "schema_version",
+        "seq",
+        "ts",
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "const": "run_supervisor"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "completed_work_item_ids"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "completed_work_item_ids": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_version": {
+          "const": 1
+        },
+        "prev_line_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema": {
+          "const": "ai-orchestrator/journal-event"
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "seq": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "traceparent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ts": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "run_completed"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "actor",
+        "data",
+        "event_id",
+        "event_version",
+        "prev_line_sha256",
+        "run_id",
+        "schema",
+        "schema_version",
+        "seq",
+        "ts",
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "const": "run_supervisor"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "operator",
+            "project",
+            "repo_root",
+            "run_dir",
+            "spec_hash",
+            "spec_path"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "operator": {
+              "type": "string",
+              "minLength": 1
+            },
+            "project": {
+              "type": "string",
+              "minLength": 1
+            },
+            "repo_root": {
+              "type": "string",
+              "minLength": 1
+            },
+            "requested_by": {
+              "discriminator": {
+                "propertyName": "class"
+              },
+              "oneOf": [
+                {
+                  "type": "object",
+                  "required": [
+                    "args_hash",
+                    "class",
+                    "command_id",
+                    "id",
+                    "verb"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "args_hash": {
+                      "type": "string",
+                      "pattern": "^sha256:[0-9a-f]{64}$"
+                    },
+                    "class": {
+                      "const": "operator"
+                    },
+                    "command_id": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_-]{16,64}$"
+                    },
+                    "id": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_.-]{1,64}$"
+                    },
+                    "verb": {
+                      "type": "string",
+                      "enum": [
+                        "start",
+                        "resume",
+                        "resolve_attention",
+                        "repair",
+                        "cancel",
+                        "pause",
+                        "update_context",
+                        "ratify_plan"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "args_hash",
+                    "class",
+                    "command_id",
+                    "id",
+                    "verb"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "args_hash": {
+                      "type": "string",
+                      "pattern": "^sha256:[0-9a-f]{64}$"
+                    },
+                    "class": {
+                      "const": "console"
+                    },
+                    "command_id": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_-]{16,64}$"
+                    },
+                    "id": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_.-]{1,64}$"
+                    },
+                    "verb": {
+                      "type": "string",
+                      "enum": [
+                        "start",
+                        "resume",
+                        "resolve_attention",
+                        "repair",
+                        "cancel",
+                        "pause",
+                        "update_context",
+                        "ratify_plan"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "args_hash",
+                    "assignment_id",
+                    "class",
+                    "command_id",
+                    "id",
+                    "run_id",
+                    "verb"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "args_hash": {
+                      "type": "string",
+                      "pattern": "^sha256:[0-9a-f]{64}$"
+                    },
+                    "assignment_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "class": {
+                      "const": "agent"
+                    },
+                    "command_id": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_-]{16,64}$"
+                    },
+                    "id": {
+                      "type": "string",
+                      "pattern": "^[a-z][a-z0-9_-]{0,31}$"
+                    },
+                    "run_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "verb": {
+                      "type": "string",
+                      "enum": [
+                        "propose_plan",
+                        "propose_context_change"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "args_hash",
+                    "class",
+                    "command_id",
+                    "id",
+                    "reason",
+                    "verb"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "args_hash": {
+                      "type": "string",
+                      "pattern": "^sha256:[0-9a-f]{64}$"
+                    },
+                    "class": {
+                      "const": "system"
+                    },
+                    "command_id": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_-]{16,64}$"
+                    },
+                    "id": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_.-]{1,64}$"
+                    },
+                    "reason": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "verb": {
+                      "type": "string",
+                      "enum": [
+                        "repair"
+                      ]
+                    }
+                  }
+                }
+              ]
+            },
+            "run_dir": {
+              "type": "string",
+              "minLength": 1
+            },
+            "spec_hash": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "spec_path": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_version": {
+          "const": 1
+        },
+        "prev_line_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema": {
+          "const": "ai-orchestrator/journal-event"
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "seq": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "traceparent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ts": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "run_created"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "actor",
+        "data",
+        "event_id",
+        "event_version",
+        "prev_line_sha256",
+        "run_id",
+        "schema",
+        "schema_version",
+        "seq",
+        "ts",
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "const": "run_supervisor"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "diagnostic_hash",
+            "diagnostic_path",
+            "reason"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "diagnostic_hash": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "diagnostic_path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_version": {
+          "const": 1
+        },
+        "prev_line_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema": {
+          "const": "ai-orchestrator/journal-event"
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "seq": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "traceparent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ts": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "run_failed"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "actor",
+        "data",
+        "event_id",
+        "event_version",
+        "prev_line_sha256",
+        "run_id",
+        "schema",
+        "schema_version",
+        "seq",
+        "ts",
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "const": "run_supervisor"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "attempt",
+            "authority",
+            "cause_class",
+            "limit",
+            "lost_generation"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "attempt": {
+              "type": "integer",
+              "exclusiveMinimum": 0
+            },
+            "authority": {
+              "type": "string",
+              "enum": [
+                "executor",
+                "host"
+              ]
+            },
+            "cause_class": {
+              "type": "string",
+              "enum": [
+                "writer_exit",
+                "writer_timeout",
+                "owner_down"
+              ]
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "lost_generation": {
+              "maximum": 999999999999,
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_version": {
+          "const": 1
+        },
+        "prev_line_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema": {
+          "const": "ai-orchestrator/journal-event"
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "seq": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "traceparent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ts": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "run_recovery_reserved"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "actor",
+        "data",
+        "event_id",
+        "event_version",
+        "prev_line_sha256",
+        "run_id",
+        "schema",
+        "schema_version",
+        "seq",
+        "ts",
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "const": "run_supervisor"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "last_seen_seq",
+            "recovery_reason",
+            "supervisor_instance"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "last_seen_seq": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "recovery_reason": {
+              "type": "string",
+              "minLength": 1
+            },
+            "requested_by": {
+              "discriminator": {
+                "propertyName": "class"
+              },
+              "oneOf": [
+                {
+                  "type": "object",
+                  "required": [
+                    "args_hash",
+                    "class",
+                    "command_id",
+                    "id",
+                    "verb"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "args_hash": {
+                      "type": "string",
+                      "pattern": "^sha256:[0-9a-f]{64}$"
+                    },
+                    "class": {
+                      "const": "operator"
+                    },
+                    "command_id": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_-]{16,64}$"
+                    },
+                    "id": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_.-]{1,64}$"
+                    },
+                    "verb": {
+                      "type": "string",
+                      "enum": [
+                        "start",
+                        "resume",
+                        "resolve_attention",
+                        "repair",
+                        "cancel",
+                        "pause",
+                        "update_context",
+                        "ratify_plan"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "args_hash",
+                    "class",
+                    "command_id",
+                    "id",
+                    "verb"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "args_hash": {
+                      "type": "string",
+                      "pattern": "^sha256:[0-9a-f]{64}$"
+                    },
+                    "class": {
+                      "const": "console"
+                    },
+                    "command_id": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_-]{16,64}$"
+                    },
+                    "id": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_.-]{1,64}$"
+                    },
+                    "verb": {
+                      "type": "string",
+                      "enum": [
+                        "start",
+                        "resume",
+                        "resolve_attention",
+                        "repair",
+                        "cancel",
+                        "pause",
+                        "update_context",
+                        "ratify_plan"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "args_hash",
+                    "assignment_id",
+                    "class",
+                    "command_id",
+                    "id",
+                    "run_id",
+                    "verb"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "args_hash": {
+                      "type": "string",
+                      "pattern": "^sha256:[0-9a-f]{64}$"
+                    },
+                    "assignment_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "class": {
+                      "const": "agent"
+                    },
+                    "command_id": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_-]{16,64}$"
+                    },
+                    "id": {
+                      "type": "string",
+                      "pattern": "^[a-z][a-z0-9_-]{0,31}$"
+                    },
+                    "run_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "verb": {
+                      "type": "string",
+                      "enum": [
+                        "propose_plan",
+                        "propose_context_change"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "args_hash",
+                    "class",
+                    "command_id",
+                    "id",
+                    "reason",
+                    "verb"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "args_hash": {
+                      "type": "string",
+                      "pattern": "^sha256:[0-9a-f]{64}$"
+                    },
+                    "class": {
+                      "const": "system"
+                    },
+                    "command_id": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_-]{16,64}$"
+                    },
+                    "id": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_.-]{1,64}$"
+                    },
+                    "reason": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "verb": {
+                      "type": "string",
+                      "enum": [
+                        "repair"
+                      ]
+                    }
+                  }
+                }
+              ]
+            },
+            "resolves_attention_ids": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "run_environment": {
+              "type": "object",
+              "required": [
+                "agent",
+                "auth_profile_key",
+                "cli_name",
+                "cli_version",
+                "executable_sha256",
+                "interface_mode",
+                "permission_mode",
+                "provider"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "agent": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "auth_profile_key": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "cli_name": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "cli_version": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "executable_sha256": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                },
+                "interface_mode": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "permission_mode": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "provider": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            },
+            "run_lock_path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "supervisor_instance": {
+              "type": "string",
+              "minLength": 1
+            },
+            "tail_repair": {
+              "type": "object",
+              "required": [
+                "action",
+                "receipt_seq_after",
+                "receipt_seq_before",
+                "truncated_bytes"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "enum": [
+                    "truncate_tail",
+                    "advance_receipt",
+                    "advance_and_truncate"
+                  ]
+                },
+                "receipt_seq_after": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "receipt_seq_before": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "truncated_bytes": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            }
+          }
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_version": {
+          "const": 1
+        },
+        "prev_line_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema": {
+          "const": "ai-orchestrator/journal-event"
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "seq": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "traceparent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ts": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "run_resumed"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "actor",
+        "data",
+        "event_id",
+        "event_version",
+        "prev_line_sha256",
+        "run_id",
+        "schema",
+        "schema_version",
+        "seq",
+        "ts",
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "const": "run_supervisor"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "spec_hash",
+            "spec_path"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "agent_roster_hash": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "spec_hash": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "spec_path": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_version": {
+          "const": 1
+        },
+        "prev_line_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema": {
+          "const": "ai-orchestrator/journal-event"
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "seq": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "traceparent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ts": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "run_spec_loaded"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "actor",
+        "data",
+        "event_id",
+        "event_version",
+        "prev_line_sha256",
+        "run_id",
+        "schema",
+        "schema_version",
+        "seq",
+        "ts",
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "const": "run_supervisor"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "last_seen_seq",
+            "resume",
+            "supervisor_instance"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "last_seen_seq": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "resume": {
+              "type": "boolean"
+            },
+            "run_environment": {
+              "type": "object",
+              "required": [
+                "agent",
+                "auth_profile_key",
+                "cli_name",
+                "cli_version",
+                "executable_sha256",
+                "interface_mode",
+                "permission_mode",
+                "provider"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "agent": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "auth_profile_key": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "cli_name": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "cli_version": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "executable_sha256": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                },
+                "interface_mode": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "permission_mode": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "provider": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            },
+            "run_lock_path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "supervisor_instance": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_version": {
+          "const": 1
+        },
+        "prev_line_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema": {
+          "const": "ai-orchestrator/journal-event"
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "seq": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "traceparent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ts": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "run_started"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "actor",
+        "data",
+        "event_id",
+        "event_version",
+        "prev_line_sha256",
+        "run_id",
+        "schema",
+        "schema_version",
+        "seq",
+        "ts",
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "const": "run_supervisor"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "decision",
+            "policy_id",
+            "reason",
+            "scope"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "counters": {
+              "type": "object"
+            },
+            "decision": {
+              "type": "string",
+              "minLength": 1
+            },
+            "policy_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1
+            },
+            "scope": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_version": {
+          "const": 1
+        },
+        "prev_line_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema": {
+          "const": "ai-orchestrator/journal-event"
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "seq": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "traceparent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ts": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "stop_policy_evaluated"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "actor",
+        "data",
+        "event_id",
+        "event_version",
+        "prev_line_sha256",
+        "run_id",
+        "schema",
+        "schema_version",
+        "seq",
+        "ts",
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "const": "run_supervisor"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "accepted_artifact_ids",
+            "completing_assignment_id",
+            "context_revision",
+            "required_gate_run_ids",
+            "work_item_id"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "accepted_artifact_ids": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "completing_assignment_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "context_revision": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "required_gate_run_ids": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "work_item_id": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_version": {
+          "const": 1
+        },
+        "prev_line_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema": {
+          "const": "ai-orchestrator/journal-event"
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "seq": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "traceparent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ts": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "work_item_completed"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "actor",
+        "data",
+        "event_id",
+        "event_version",
+        "prev_line_sha256",
+        "run_id",
+        "schema",
+        "schema_version",
+        "seq",
+        "ts",
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "const": "run_supervisor"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "next_attempt",
+            "prior_assignment_id",
+            "reason",
+            "remaining_attempts",
+            "work_item_id"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "next_attempt": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "prior_assignment_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1
+            },
+            "remaining_attempts": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "work_item_id": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_version": {
+          "const": 1
+        },
+        "prev_line_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema": {
+          "const": "ai-orchestrator/journal-event"
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "seq": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "traceparent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ts": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "work_item_retry_scheduled"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "actor",
+        "data",
+        "event_id",
+        "event_version",
+        "prev_line_sha256",
+        "run_id",
+        "schema",
+        "schema_version",
+        "seq",
+        "ts",
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "const": "run_supervisor"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "mode",
+            "workspace_lease_id"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "mode": {
+              "type": "string",
+              "minLength": 1
+            },
+            "workspace_lease_id": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_version": {
+          "const": 1
+        },
+        "prev_line_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema": {
+          "const": "ai-orchestrator/journal-event"
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "seq": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "traceparent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ts": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "workspace_lease_acquired"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "actor",
+        "data",
+        "event_id",
+        "event_version",
+        "prev_line_sha256",
+        "run_id",
+        "schema",
+        "schema_version",
+        "seq",
+        "ts",
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "const": "run_supervisor"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "reason",
+            "release_request_id",
+            "workspace_lease_id"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "reason": {
+              "type": "string",
+              "minLength": 1
+            },
+            "release_request_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "workspace_lease_id": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_version": {
+          "const": 1
+        },
+        "prev_line_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema": {
+          "const": "ai-orchestrator/journal-event"
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "seq": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "traceparent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ts": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "workspace_lease_release_requested"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "actor",
+        "data",
+        "event_id",
+        "event_version",
+        "prev_line_sha256",
+        "run_id",
+        "schema",
+        "schema_version",
+        "seq",
+        "ts",
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "const": "run_supervisor"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "release_request_id",
+            "workspace_lease_id"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "release_request_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "workspace_lease_id": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_version": {
+          "const": 1
+        },
+        "prev_line_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema": {
+          "const": "ai-orchestrator/journal-event"
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "seq": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "traceparent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ts": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "workspace_lease_released"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "actor",
+        "data",
+        "event_id",
+        "event_version",
+        "prev_line_sha256",
+        "run_id",
+        "schema",
+        "schema_version",
+        "seq",
+        "ts",
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "const": "run_supervisor"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "allowed_paths",
+            "assignment_id",
+            "mode",
+            "workspace_lease_id"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "allowed_paths": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "assignment_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "mode": {
+              "type": "string",
+              "minLength": 1
+            },
+            "workspace_lease_id": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_version": {
+          "const": 1
+        },
+        "prev_line_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema": {
+          "const": "ai-orchestrator/journal-event"
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "seq": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "traceparent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ts": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "workspace_lease_requested"
+        }
+      }
+    }
+  ]
+}

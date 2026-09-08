@@ -1,0 +1,439 @@
+{
+  "fold_attention_block": {
+    "outcome": "ok",
+    "projection": {
+      "active_workspace_leases": {},
+      "assignments": {},
+      "attention_seen?": true,
+      "completed_work_item_ids": [],
+      "context_revision": 0,
+      "contract_changes": {},
+      "event_ids": [
+        "ev_0001",
+        "ev_0002",
+        "ev_0003",
+        "ev_0004",
+        "ev_0005"
+      ],
+      "gate_runs": {},
+      "last_seq": 5,
+      "observed_artifact_ids": [],
+      "open_assignment_ids": [],
+      "open_attention_ids": [
+        "att_0001"
+      ],
+      "pane_lease_requests": {},
+      "phase": "run_started",
+      "reason": null,
+      "reviews": {},
+      "run_id": "run_fixture_0003",
+      "status": "blocked",
+      "terminal?": false,
+      "work_item_ids": [
+        "item_a"
+      ],
+      "workspace_lease_requests": {}
+    }
+  },
+  "fold_attention_resolved": {
+    "outcome": "ok",
+    "projection": {
+      "active_workspace_leases": {},
+      "assignments": {},
+      "attention_seen?": true,
+      "completed_work_item_ids": [],
+      "context_revision": 0,
+      "contract_changes": {},
+      "event_ids": [
+        "ev_0001",
+        "ev_0002",
+        "ev_0003",
+        "ev_0004",
+        "ev_0005",
+        "ev_0006"
+      ],
+      "gate_runs": {},
+      "last_seq": 6,
+      "observed_artifact_ids": [],
+      "open_assignment_ids": [],
+      "open_attention_ids": [],
+      "pane_lease_requests": {},
+      "phase": "run_started",
+      "reason": null,
+      "reviews": {},
+      "run_id": "run_fixture_0003",
+      "status": "in_flight",
+      "terminal?": false,
+      "work_item_ids": [
+        "item_a"
+      ],
+      "workspace_lease_requests": {}
+    }
+  },
+  "fold_budget_exhausted": {
+    "outcome": "ok",
+    "projection": {
+      "active_workspace_leases": {},
+      "assignments": {},
+      "attention_seen?": false,
+      "completed_work_item_ids": [],
+      "context_revision": 0,
+      "contract_changes": {},
+      "event_ids": [
+        "ev_0001",
+        "ev_0002",
+        "ev_0003",
+        "ev_0004",
+        "ev_0005",
+        "ev_0006"
+      ],
+      "gate_runs": {},
+      "last_seq": 6,
+      "observed_artifact_ids": [],
+      "open_assignment_ids": [],
+      "open_attention_ids": [],
+      "pane_lease_requests": {},
+      "phase": "run_started",
+      "reason": null,
+      "reviews": {},
+      "run_id": "run_fixture_0003",
+      "status": "budget_exhausted",
+      "terminal?": true,
+      "work_item_ids": [
+        "item_a"
+      ],
+      "workspace_lease_requests": {}
+    }
+  },
+  "fold_cancel_converged": {
+    "outcome": "ok",
+    "projection": {
+      "active_workspace_leases": {},
+      "assignments": {},
+      "attention_seen?": false,
+      "completed_work_item_ids": [],
+      "context_revision": 0,
+      "contract_changes": {},
+      "event_ids": [
+        "ev_0001",
+        "ev_0002",
+        "ev_0003",
+        "ev_0004",
+        "ev_0005",
+        "ev_0006"
+      ],
+      "gate_runs": {},
+      "last_seq": 6,
+      "observed_artifact_ids": [],
+      "open_assignment_ids": [],
+      "open_attention_ids": [],
+      "pane_lease_requests": {},
+      "phase": "run_started",
+      "reason": null,
+      "reviews": {},
+      "run_id": "run_fixture_0003",
+      "status": "cancelled",
+      "terminal?": true,
+      "work_item_ids": [
+        "item_a"
+      ],
+      "workspace_lease_requests": {}
+    }
+  },
+  "fold_happy_writer_reviewer": {
+    "outcome": "ok",
+    "projection": {
+      "active_workspace_leases": {},
+      "assignments": {
+        "as_0001": {
+          "artifact_ids": [
+            "art_0001"
+          ],
+          "context_revision": 0,
+          "latest_artifact_seq": 13,
+          "pane_lease?": false,
+          "pane_ref": "pane_writer",
+          "role": "writer",
+          "terminal?": true,
+          "work_item_id": "item_a",
+          "workspace_lease?": false
+        },
+        "as_0002": {
+          "artifact_ids": [
+            "art_0002"
+          ],
+          "context_revision": 0,
+          "latest_artifact_seq": 22,
+          "pane_lease?": false,
+          "pane_ref": "pane_reviewer",
+          "role": "reviewer",
+          "terminal?": true,
+          "work_item_id": "item_a"
+        }
+      },
+      "attention_seen?": false,
+      "completed_work_item_ids": [
+        "item_a"
+      ],
+      "context_revision": 0,
+      "contract_changes": {},
+      "event_ids": [
+        "ev_0001",
+        "ev_0002",
+        "ev_0003",
+        "ev_0004",
+        "ev_0005",
+        "ev_0006",
+        "ev_0007",
+        "ev_0008",
+        "ev_0009",
+        "ev_0010",
+        "ev_0011",
+        "ev_0012",
+        "ev_0013",
+        "ev_0014",
+        "ev_0015",
+        "ev_0016",
+        "ev_0017",
+        "ev_0018",
+        "ev_0019",
+        "ev_0020",
+        "ev_0021",
+        "ev_0022",
+        "ev_0023",
+        "ev_0024",
+        "ev_0025",
+        "ev_0026",
+        "ev_0027",
+        "ev_0028",
+        "ev_0029",
+        "ev_0030",
+        "ev_0031",
+        "ev_0032",
+        "ev_0033",
+        "ev_0034",
+        "ev_0035",
+        "ev_0036"
+      ],
+      "gate_runs": {
+        "gr_0001": {
+          "artifact_ids": [
+            "art_0001"
+          ],
+          "assignment_id": "as_0001",
+          "status": "passed",
+          "work_item_id": "item_a"
+        }
+      },
+      "last_seq": 36,
+      "observed_artifact_ids": [
+        "art_0001",
+        "art_0002"
+      ],
+      "open_assignment_ids": [],
+      "open_attention_ids": [],
+      "pane_lease_requests": {
+        "plr_0001": {
+          "assignment_id": "as_0001",
+          "pane_ref": "pane_writer"
+        },
+        "plr_0002": {
+          "assignment_id": "as_0002",
+          "pane_ref": "pane_reviewer"
+        }
+      },
+      "phase": "run_started",
+      "reason": null,
+      "reviews": {
+        "rev_0001": {
+          "disposition": "accepted_clean",
+          "subject_assignment_id": "as_0001",
+          "work_item_id": "item_a"
+        }
+      },
+      "run_id": "run_fixture_0002",
+      "status": "completed",
+      "terminal?": true,
+      "work_item_ids": [
+        "item_a"
+      ],
+      "workspace_lease_requests": {
+        "wsl_0001": {
+          "allowed_paths": [
+            "lib"
+          ],
+          "assignment_id": "as_0001",
+          "mode": "shared_repo"
+        }
+      }
+    }
+  },
+  "fold_resume_mid_run": {
+    "outcome": "ok",
+    "projection": {
+      "active_workspace_leases": {
+        "wsl_0001": {
+          "allowed_paths": [
+            "lib"
+          ],
+          "assignment_id": "as_0001",
+          "mode": "shared_repo"
+        }
+      },
+      "assignments": {
+        "as_0001": {
+          "artifact_ids": [],
+          "context_revision": 0,
+          "pane_lease?": true,
+          "pane_ref": "pane_writer",
+          "role": "writer",
+          "terminal?": false,
+          "work_item_id": "item_a",
+          "workspace_lease?": true
+        }
+      },
+      "attention_seen?": false,
+      "completed_work_item_ids": [],
+      "context_revision": 0,
+      "contract_changes": {},
+      "event_ids": [
+        "ev_0001",
+        "ev_0002",
+        "ev_0003",
+        "ev_0004",
+        "ev_0005",
+        "ev_0006",
+        "ev_0007",
+        "ev_0008",
+        "ev_0009",
+        "ev_0010",
+        "ev_0011",
+        "ev_0012"
+      ],
+      "gate_runs": {},
+      "last_seq": 12,
+      "observed_artifact_ids": [],
+      "open_assignment_ids": [
+        "as_0001"
+      ],
+      "open_attention_ids": [],
+      "pane_lease_requests": {
+        "plr_0001": {
+          "assignment_id": "as_0001",
+          "pane_ref": "pane_writer"
+        }
+      },
+      "phase": "run_started",
+      "reason": null,
+      "reviews": {},
+      "run_id": "run_fixture_0002",
+      "status": "in_flight",
+      "terminal?": false,
+      "work_item_ids": [
+        "item_a"
+      ],
+      "workspace_lease_requests": {
+        "wsl_0001": {
+          "allowed_paths": [
+            "lib"
+          ],
+          "assignment_id": "as_0001",
+          "mode": "shared_repo"
+        }
+      }
+    }
+  },
+  "valid_envelope_version_2_minimal": {
+    "outcome": "ok",
+    "projection": {
+      "active_workspace_leases": {},
+      "assignments": {},
+      "attention_seen?": false,
+      "completed_work_item_ids": [],
+      "context_revision": 0,
+      "contract_changes": {},
+      "event_ids": [
+        "ev_version_2_0001",
+        "ev_version_2_0002"
+      ],
+      "gate_runs": {},
+      "last_seq": 2,
+      "observed_artifact_ids": [],
+      "open_assignment_ids": [],
+      "open_attention_ids": [],
+      "pane_lease_requests": {},
+      "phase": "run_spec_loaded",
+      "reason": null,
+      "reviews": {},
+      "run_id": "run_fixture_version_2_0001",
+      "status": "created",
+      "terminal?": false,
+      "work_item_ids": [],
+      "workspace_lease_requests": {}
+    }
+  },
+  "valid_minimal": {
+    "outcome": "ok",
+    "projection": {
+      "active_workspace_leases": {},
+      "assignments": {},
+      "attention_seen?": false,
+      "completed_work_item_ids": [],
+      "context_revision": 0,
+      "contract_changes": {},
+      "event_ids": [
+        "ev_0001",
+        "ev_0002"
+      ],
+      "gate_runs": {},
+      "last_seq": 2,
+      "observed_artifact_ids": [],
+      "open_assignment_ids": [],
+      "open_attention_ids": [],
+      "pane_lease_requests": {},
+      "phase": "run_created",
+      "reason": "spec_invalid",
+      "reviews": {},
+      "run_id": "run_fixture_0001",
+      "status": "failed",
+      "terminal?": true,
+      "work_item_ids": [],
+      "workspace_lease_requests": {}
+    }
+  },
+  "valid_requested_by": {
+    "outcome": "ok",
+    "projection": {
+      "active_workspace_leases": {},
+      "assignments": {},
+      "attention_seen?": false,
+      "completed_work_item_ids": [],
+      "context_revision": 0,
+      "contract_changes": {},
+      "event_ids": [
+        "ev_0001",
+        "ev_0002",
+        "ev_0003",
+        "ev_0004",
+        "ev_0005",
+        "ev_0006"
+      ],
+      "gate_runs": {},
+      "last_seq": 6,
+      "observed_artifact_ids": [],
+      "open_assignment_ids": [],
+      "open_attention_ids": [],
+      "pane_lease_requests": {},
+      "phase": "run_started",
+      "reason": null,
+      "reviews": {},
+      "run_id": "run_fixture_0004",
+      "status": "cancelled",
+      "terminal?": true,
+      "work_item_ids": [
+        "item_a"
+      ],
+      "workspace_lease_requests": {}
+    }
+  }
+}

@@ -1,0 +1,90 @@
+#+TITLE: Reservation producer - interface proposal (planned, not implemented)
+#+PROPERTY: status planned proposal
+
+* Implementation status
+Nothing in this document is implemented. =run_recovery_reserved= remains a reserved event type (see
+=recovery-reservation.org=): =Journal.Event= and the Writer refuse it at append, and no =reserve/2=, no
+=reservation_stale= / =reservation_unproven= / =spec_binding_failed= / =recovery_cause_invalid= /
+=current_generation_conflated= clause exists anywhere under =lib/=. The only delivered neighbour is the pure
+exhaustion judge, =AiOrchestrator.Run.Recovery.Exhaustion.judge/2= (=exhaustion-judge.org=), which this
+producer would call. Treat every interface below as a design proposal that a future change may adopt,
+amend or drop.
+
+* Status
+A corrected interface DRAFT for the first producer of =run_recovery_reserved=. The pure judge
+(=exhaustion-judge.org=) is the delivered companion; the open design questions are collected at the end.
+
+* Appendability: the first producer is a vocabulary change, not a Writer backdoor
+- Today =run_recovery_reserved= is declared AND reserved (Event =@reserved_types=, Vocabulary =:w4=), Writer/Event
+  refuse it first-in-journal, and =Writer.append_event= performs seq/stamp/=Event.validate_append= ONLY - no Fold
+  validation. Therefore no producer can exist with Writer/Event/Vocabulary unchanged, and a Fold refusal is
+  never a Writer guarantee.
+- Proposal: a producer change moves the type from reserved to PRODUCED under the existing two-gate rule
+  (Vocabulary producer + target classification, pins 21 -> 20 reserved / 33 -> 34 produced, the vocabulary
+  inventory amended with provenance); the type stays reserved-first-refused (it is never a preamble event).
+- Fold semantic validation before append is the PRODUCER'S duty, not Writer's: the producer folds the CANDIDATE
+  event onto the fresh verified snapshot's lines (=Fold.fold_lines(snapshot.lines ++ [candidate])=) and appends only
+  when that fold is =:ok=; a Fold refusal is returned as the producer's refusal with the Fold clause, journal
+  untouched. No privileged path around =Event.validate_append=.
+
+* Fence and count: whole token, fresh snapshot, no refund, no idempotency
+- =Writer.append/3= =fence:= is the WHOLE =snapshot.token= (seq/hash/generation/ref), not a generation. The
+  handle's =snapshot= is acquisition-time evidence only.
+- Proposal: =reserve/2= takes a FRESH =Writer.verified(handle.writer)= snapshot; derives =consumed= by folding
+  =snapshot.lines= (the snapshot has no =recovery_reservations= field) and reading =State.recovery_reservations=;
+  calls the pure judge; on ={:reserve, attempt}= appends with =fence: snapshot.token=. A stale token (any
+  same-generation concurrent write) refuses =:stale= from Writer and the producer returns
+  =reservation_stale= with NO retry and NO resend; the caller decides whether to re-read.
+- Repeated =reserve/2= on the same handle: each call is a fresh snapshot + judge; the second call sees
+  =consumed + 1= and either reserves the next attempt or reports exhausted. There is no idempotency key: a
+  reservation is a consumed attempt by definition (append-before-attempt, never refunded).
+- Durable-but-unreplied append (Writer wrote the line, reply lost: writer_exit / writer_timeout on the call):
+  the producer returns =reservation_unproven= with =residue: %{kind: :append, proven: :unknown}=; it asserts
+  NOTHING about the count, refunds nothing, and the next fresh snapshot is the only truth.
+
+* Spec provenance: which budget binds this run
+- =RunSpec.budgets/1= authenticates nothing; =run_spec_loaded= records =spec_path= and =spec_hash= (and roster
+  hash), not budget contents; the handle has writer/generation/snapshot/repaired and no spec.
+- Proposal: the producer never re-reads a mutable path. The caller supplies =spec_bytes= (the bytes it holds)
+  and the producer VERIFIES =sha256(spec_bytes) == data.spec_hash= of the =run_spec_loaded= event in the FRESH
+  snapshot's prefix (the same prefix the count came from), decodes, runs =RunSpec.validate/1= then
+  =RunSpec.budgets/1=, and only that result reaches the judge. Hash mismatch / absent =run_spec_loaded= /
+  invalid spec -> =spec_binding_failed= (clause only; no path, no bytes echoed). A caller-supplied "typed"
+  limit is NEVER accepted as appending authority.
+- Open: whether the spec bytes must be re-obtained from an operator-controlled immutable store rather than
+  supplied by the caller (open question 2).
+
+* Cause, authority, identity, failure truth
+- =cause_class= is a separate producer field built from OBSERVED facts, closed at the boundary:
+  =writer_exit= / =writer_timeout= from =Recovery.retire_live= / =call= reasons; =owner_down= normalized from the
+  Server's =run_effect_owner_down= event in the prefix - NOT from a =ProcessIdentity.owner_status= result. A
+  free string or an unknown atom refuses =recovery_cause_invalid=.
+- =lost_generation= = the generation named by the acquisition refusal/residue or by the last
+  =run_effect_owner_down= in the prefix; it must be strictly less than the handle's generation
+  (=current_generation_conflated= otherwise). =authority= = =executor= | =host= supplied by the caller and
+  pinned by which supervisor holds the handle (open question 3).
+- Event identity: =event_id= from the Writer's existing minting, =seq= = =snapshot.seq + 1= via the fence,
+  =ts= from the Writer's clock (the producer holds no clock), =actor= = the recovery authority's actor string.
+- Failure truth: refusals return the SAME cleanup map vocabulary as =Recovery= (=lock/registration/descriptor=
+  each =:none | :released | :retained | :unproven | :unknown=), filled from what was OBSERVED, never blanket
+  all-unknown: after a failed append the handle is still held, so =lock: :retained, registration: :retained=
+  unless a DOWN was observed; =descriptor: :unknown= only when the Writer is not observed alive. No timeout is
+  ever translated into a release or cleanup fact.
+- Caller ownership/lifetime: the handle stays the caller's on every failure; =reserve/2= never releases it.
+
+* Authority separation (unchanged)
+Reserve/exhausted is a budget calculation; appending it needs appending authority (the handle); neither proves
+cleanup nor permits replacing effects. =run_budget_exhausted= / =run_failed= appends are outside this proposal;
+replacement effects likewise stay out of scope until a cleanup-proven refusal (=recovery_cleanup_unproven=)
+exists.
+
+* Open design questions
+- 1. Move =run_recovery_reserved= from reserved to produced in the SAME change as the producer (one review), or
+  as a vocabulary-only precursor (two reviews)?
+- 2. Spec provenance source: caller-supplied bytes verified against the prefix hash (proposal), or an
+  operator-immutable store re-read by the producer?
+- 3. Who may hold =authority: "host"=? Only a daemon boot-reconciliation path, or any non-executor supervisor?
+- 4. =reservation_unproven= after an unreplied durable append: may the NEXT authority treat the ambiguous line
+  as consumed (truthful prefix count) with no operator event, or must it raise attention first?
+- 5. Confirm that recovery NEVER appends =run_failed= without a real closed diagnostic and that exhaustion
+  (=consumed >= limit=) is the only recovery-originated terminal.

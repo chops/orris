@@ -1,0 +1,37 @@
+{
+  "schema": "ai-orchestrator/run-spec",
+  "schema_version": 1,
+  "goal": "Scenario seed run",
+  "repo_root": "/tmp/example-repo",
+  "allowed_roots": [
+    "lib",
+    "test",
+    "review"
+  ],
+  "agents": [
+    {
+      "name": "writer_agent",
+      "role": "writer",
+      "concurrency_cap": 1
+    },
+    {
+      "name": "reviewer_agent",
+      "role": "reviewer"
+    }
+  ],
+  "gates": {
+    "tests": [
+      "mix",
+      "test"
+    ]
+  },
+  "budgets": {
+    "max_wall_clock_s": 3600,
+    "max_attempts_default": 3
+  },
+  "stop_policy": {
+    "max_no_progress_attempts": 2,
+    "wedge_stale_ms": 180000
+  },
+  "fingerprint_policy": "escalate"
+}

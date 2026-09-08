@@ -1,0 +1,21 @@
+# Local operator conveniences — not part of the shipped artifact.
+.envrc
+.direnv/
+
+# devenv / nix
+.devenv/
+result
+result-*
+
+# Runtime state from probes/smoke runs that opt into a repo-local artifact root
+.ai-orchestrator/runs/
+.ai-orchestrator/config.local.json
+
+# Elixir build output and local tooling state
+/bin/ai-orchestrator
+/_build/
+/deps/
+/.elixir_ls/
+/cover/
+/doc/
+/.fetch

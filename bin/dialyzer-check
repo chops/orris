@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+if [[ $# -ne 0 ]]; then
+  printf 'usage: bin/dialyzer-check\n' >&2
+  exit 2
+fi
+
+bin/validate-dialyzer-baseline .dialyzer_ignore.exs
+
+# New warnings fail. Obsolete strict filters also fail, forcing the baseline to
+# shrink when code repairs an accepted warning.
+mix dialyzer --format github --list-unused-filters

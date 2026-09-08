@@ -1,0 +1,206 @@
+#+TITLE: Gate owner-resident wait: production interface PROPOSAL (superseded design history)
+#+PROPERTY: status planned proposal (SUPERSEDED BY gate-record-retention-proposal.org and gate-async-await-proposal.org; retained as design history, not the specification of the shipped modules)
+
+* Implementation status
+Not implemented as written. The shipped source implements a successor design: =Effects.begin/3=,
+=Effects.resume/4=, =Effects.settle_await/3= and =Effects.pending/1= with the =:awaiting= runtime phase
+(=lib/ai_orchestrator/effects.ex=, =effects/runtime.ex=); =Run.Worker= keeps a pending AwaitGate, resumes it on
+its own Port record and settles it on a correlated ={:gate_deadline, cap, gen, ref}= wake
+(=lib/ai_orchestrator/run/worker.ex=); =Run.Server= arms the deadline with =Run.DeadlineFence= and sends that
+wake (=lib/ai_orchestrator/run/server.ex=). That is Option P's owner-resident wait with the deadline armed at
+the Server (this document's slice A2) rather than at the Worker (slice A1), and the pending settle goes through
+=Execution.settle_await/1=, not =Execution.expire/1=. =Execution.retain/2=, the =late_record= /
+=duplicate_record= / =foreign_port_record= drop names and the GW-* rows below do not exist in the shipped
+source; retention of owned Port records is specified by =gate-record-retention-proposal.org= and tested by
+=test/gate/gate_record_retention_red_test.exs=. Tests for the shipped design:
+=test/run/gate_async_await_red_test.exs=, =test/run/gate_async_pending_control_test.exs=.
+
+* Status
+
+SUPERSEDED. This document is retained as design history for the owner-resident gate wait. Its
+retention clause ("Owned Port facts") was carried forward by
+[[file:gate-record-retention-proposal.org][gate-record-retention-proposal.org]], which marks the remaining sections of this
+file deferred, unapproved design; the asynchronous wait with Server-owned deadline authority
+that the shipped =Run.Worker= / =Run.Server= / =Effects= implement is specified by
+[[file:gate-async-await-proposal.org][gate-async-await-proposal.org]]. Nothing below is the specification of a shipped
+module; where this text and the shipped source differ, the source and the two documents above
+govern. The synchronous statement in [[file:gate-execution-wiring.org][gate-execution-wiring.org]] ("awaiting IS its
+work ... nothing schedules elsewhere", lines 68-71, constraint C-2 of
+[[file:gate-ownership.org][gate-ownership.org]]) describes the =Lifecycle.Host= route.
+
+Governing rules this proposal was written under: direction C in gate-ownership.org "Status and
+authority" (the live gate deadline is owned by a Server-side timer authority); G-N1 (AwaitGate
+never routes through the generic adapter runner); and the rule that the run host owns every live
+deadline and wake-up timer while workers never implement hidden schedulers. This proposal claims
+no deadline-enforcement closure for any slice.
+
+* What existed when this was proposed (source attribution at the time; the shipped source has since changed)
+
+- =Gate.Execution.begin_await/2= and =resume_await/2=: owner-local
+  descriptor =%{port, running, opts, ref}=, retained evidence =:released= / =:termination= /
+  =:descriptor= memos keyed by Port, fail-closed =owner!/1=. Zero lib callers at the time.
+- =Gate.Execution.expire/1=: owner-harness TERM through the original channel. Zero lib callers.
+- =Effects.execute/3= returns =`{observation, runtime}`= for every effect; AwaitGate
+  goes to =gate_await/3= which blocks in =gate_mod(opts).await/2=.
+- =Effects.Runtime=: entries =%{phase: :prepared | :running, handle}= keyed
+  =`{gate_run_id, attempt}`=; the Port stays owned by the process running the loop.
+- =Run.Worker=: Observe / Dispatch / ReconcileSend take =execute_fenced= (task under
+  =DeadlineFence= armed from =deadline_unix=, wake =`{:observe_fence_wake, identity}`= with stale-class
+  filtering); every other effect, AwaitGate included, ran on the generic synchronous
+  =handle_info({:execute, cap, gen, ref, intent, receipt})= clause; the catch-all
+  =handle_info(_other, state)= dropped any Port record (measured by GB-8b in
+  =test/run/gate_ownership_baseline_test.exs=; the responsiveness gap by GB-6).
+- =Run.Server= owned only the admission and settle budgets; no gate timer.
+- =Lifecycle.Host= calls =Effects.execute/3= synchronously and pattern-matches
+  =`{observation, runtime}`=.
+- The native guardian's own deadline backstop (process-group TERM at the recorded deadline) is
+  defence in depth; it is NOT the owner deadline semantics and this proposal never treats it as one.
+
+* Why one inseparable production slice (precision 1)
+
+A pending wait whose deadline authority exists only in a test double is not shippable: the
+moment =AwaitGate= stops blocking, the in-await clock enforcement of =await_until_deadline/3=
+is no longer on the path, and the guardian backstop would be the only
+thing left. Therefore slice A1 is proposed as ONE production slice that carries its own real
+deadline authority:
+
+- Option P (proposed): the Worker arms the gate deadline with the SAME production mechanism it
+  already uses for Observe: =DeadlineFence.arm/5= from the effect's =deadline_unix= plus one
+  =Process.send_after= wake. On wake it calls =Execution.expire/1= (the existing owner-harness
+  control) and finalises through =resume_await/2= on the resulting termination memo. This is
+  real, production, owner-resident authority on day one. Direction C's Server-side timer then
+  becomes slice A2, which MOVES the arm from the Worker to the Server (the Worker keeps the
+  wake handler; only the arming site changes). Nothing in A1 is thrown away by A2.
+- Option Q (fallback): keep =AwaitGate= blocking exactly as today until the Server timer slice
+  lands, and ship the retention clause (section "Owned Port facts") alone as a smaller first slice.
+
+Option P is proposed because it removes the measured drop (GB-8b) and the measured
+responsiveness gap (GB-6) in one reviewed unit without an interim double. The choice is a
+ruling for the reviewer; both are written so either can be taken without rewriting this file.
+
+* Interface (proposed, exact)
+
+** Effects (new entry points; =execute/3= byte-identical)
+
+#+begin_example
+@spec begin(struct(), Runtime.t(), inputs()) ::
+        {:done, {struct(), Runtime.t()}} | {:pending, Runtime.t()}
+@spec resume(Runtime.t(), Runtime.key(), tuple(), inputs()) ::
+        {:done, {struct(), Runtime.t()}}
+#+end_example
+
+- =Effects.begin/3= is =execute/3= for every effect except =AwaitGate= (it answers
+  =`{:done, execute(...)}`=). For =AwaitGate= it calls =gate_mod(opts).begin_await(running,
+  gate_opts(effect, opts))=: =`{:done, answer}`= maps through the EXISTING observation builders
+  (=gate_exit_observation= / =gate_timeout_observation= / =GateError=) and answers =`{:done, {obs,
+  runtime}}`=; =`{:pending, waiting}`= answers =`{:pending, runtime'}`= where the entry for the key
+  becomes =%{phase: :awaiting, handle: running, waiting: waiting, effect: effect}=.
+- =Effects.resume/4= (arity 4: the =inputs= carry =opts= for =now(opts)= and the observation
+  builders, exactly as =execute/3= does; the earlier "resume/3" wording in the rev-1 sketch is
+  withdrawn) hands ONE Port message to =gate_mod(opts).resume_await(waiting, message)= and maps the
+  =`{:done, answer}`= through the same builders. It never returns =:pending=: =resume_await/2=
+  always answers =`{:done, _}`=, so the grammar is closed.
+- Custom executors (=gate_mod(opts)= other than =Gate.Execution=): =begin/3= uses
+  =function_exported?(mod, :begin_await, 2)= and =resume_await/2=; a module lacking either takes the
+  blocking =execute/3= path and =begin/3= answers =`{:done, _}`=. No executor is coerced.
+- Synchronous callers: =Lifecycle.Host= keeps calling =execute/3= and stays
+  byte-identical and blocking; this is disclosed, not hidden (row GW-10). =Effects.settle/1=
+  gains one clause: an =:awaiting= entry is abandoned exactly like a =:running= one (the handle
+  is expired then released through the existing =abandon_one/2= path; the descriptor is finalized).
+- =Runtime.put/4= phase domain becomes =:prepared | :running | :awaiting=; =render_keys/1= renders
+  the new phase name only (payload-free stays true).
+
+** Run.Worker (owner-resident; no task, no transfer, no relocation; precision 5)
+
+- =handle_info({:execute, cap, gen, ref, %Effect.AwaitGate{} = intent, receipt})= (new clause
+  ahead of the generic one): under =boundary/2=, =Effects.begin/3=. =`{:done, outcome}`= answers
+  through the existing =answer/3=. =`{:pending, runtime}`= stores =state.pending = %{op: ref, key:
+  key, port: port, fence: fence}= and (Option P) arms the fence: =DeadlineFence.arm(identity,
+  deadline_unix, unix_now, monotonic_now_ms, cap)= + =Process.send_after(self(), {:gate_deadline,
+  identity}, wait)=. A clock failure or an already-due deadline at arming settles the latest
+  runtime and answers a closed =effect_failed= / expires immediately, exactly as =execute_fenced=
+  treats a failing clock. =deadline_unix= comes from the effect (delivery-deadline
+  propagation, DC-3/4/5); a missing or malformed deadline is a closed refusal before any Port work.
+- =handle_info({port, payload}, state)= (new clause ahead of the catch-all, precision 3): see
+  "Owned Port facts". When =state.pending.port == port=, it is =Effects.resume/4=; the =`{:done,
+  outcome}`= answers through =answer/3= exactly once and clears =pending=.
+- =handle_info({:gate_deadline, identity}, state)=: correlated to =pending= by the same
+  =stale_class/2= grammar as the observe wake (cap, gen, ref); a stale or retired wake is a fact, not
+  an action. A live wake calls =Execution.expire(running)= then =Effects.resume/4= with the
+  termination memo (the memo is what =resume_await= answers first); exactly one
+  completion answers the Server.
+- =handle_info({:settle, cap, gen, ref})= while =pending=: the =:awaiting= entry is abandoned
+  (settle clause above), the fence timer is cancelled, one =:settled= answer carries the cleanup,
+  and no later Port message or wake for that op completes anything (rows GW-6, GW-7).
+- The Port stays connected to the Worker process for its whole life; nothing hands it to a task,
+  the process dictionary memos stay where =Execution= writes them (the Worker), and
+  =drain_exit/1= semantics are untouched.
+
+** Owned Port facts arriving outside the pending wait (precision 3)
+
+Binding: a Port message is OWNED iff its Port equals the =port= of an entry in =state.runtime=
+(=:prepared=, =:running= or =:awaiting=). Ownership is decided by the Runtime index, never by
+"any Port this process happens to own".
+
+- Owned, entry =:awaiting=, =pending.port == port=: resume (above).
+- Owned, entry =:prepared= or =:running= (idle Worker, or another op is running): the message is
+  handed to =Execution.retain(running, message)= (new primitive, owner-only, same private decoder
+  as =resume_await=): an EXIT/DEAD record writes the existing Port-keyed memo (=:termination= via
+  =memo_dead/2= semantics; an EXIT keeps the record under a new =:exit= memo consumed first by the
+  next =begin_await= / =await=); =exit_status= is retained under the same key. Nothing is
+  interpreted, no observation is produced, no op is answered.
+- Lifetime: memos live until the entry is dropped (=release_terminal/2= or settle abandonment),
+  which is the existing lifetime of every Port memo.
+- Bounds: at most ONE terminal record memo per Port (the guardian emits one terminal), plus one
+  =exit_status=. A second terminal for a Port that already holds one is NOT stored: it is counted
+  as =duplicate_record= in =state.drops= and surfaces in the settle cleanup, so nothing is silently lost.
+- Foreign Port (no Runtime entry): not captured, not stored; counted as =foreign_port_record= in
+  =state.drops= and surfaced in the settle cleanup. This is the only change to the catch-all: Port
+  messages are classified before it, everything else still falls through to it.
+- Finalized descriptor's Port (terminal already answered, entry not yet dropped): a late record is
+  retained under the same bounded memo as a diagnostic (=late_record=) and can never re-open the
+  descriptor (=resume_await= raises on a finalized descriptor).
+- Retention never blocks and never reads the clock.
+
+** Run.Server (slice A2 only; not in A1)
+
+Slice A2 moves the arming site: the Server arms ONE timer at =deadline_unix= for the outstanding
+=AwaitGate= op (its one-outstanding-op protocol) and sends =`{:gate_deadline,
+identity}`= to the Worker; the Worker handler above is unchanged. A2 requires its own contract
+revision and test map; nothing about A2 is proposed here beyond this boundary, and no
+deadline-enforcement closure follows from A1 or from A2 by itself (precision 5).
+
+* Controls and test map (names only; rows were never written for this proposal)
+
+| Row   | Pins                                                                                              |
+|-------+---------------------------------------------------------------------------------------------------|
+| GW-1  | Record during =:awaiting= resumes and finalises: one observation, one Server answer, entry dropped by release_terminal |
+| GW-2  | Record while idle (Port owned, entry =:running=) is retained; the later begin_await answers it without a clock read (inverts GB-8b) |
+| GW-2b | Record while ANOTHER op is running is retained the same way; the running op is unaffected         |
+| GW-3  | Correlated settle probe answered while a gate is pending (inverts GB-6)                            |
+| GW-4  | Deadline wake expires exactly once; EXIT queued BEFORE the wake wins as exit (queued proof precedes clock) |
+| GW-4b | Wake BEFORE EXIT: timeout answered once; the late EXIT is =late_record=, no second completion       |
+| GW-5  | Clock failure at arming: closed effect_failed, no Port work started; already-due at arming: immediate expire, one answer |
+| GW-6  | Settle during pending: abandonment via the existing path, fence cancelled, one =:settled= answer, later record/wake are facts only |
+| GW-7  | Stale identity (foreign cap / gen / ref), retired op, duplicate wake: filtered by =stale_class/2=, nothing completes |
+| GW-8  | Duplicate terminal for one Port: first wins, second counted =duplicate_record=; foreign Port counted =foreign_port_record=; both visible in cleanup |
+| GW-9  | Release after durable terminal: =release_terminal/2= drops the =:awaiting= entry and its memos; a record after that is =late_record= |
+| GW-10 | Host path byte-identical: =execute/3= still blocks for AwaitGate; =begin/3= is never called by the Host |
+| GW-11 | Owner death while pending: the Port dies with the Worker (linked), the guardian's group is terminated by its own backstop, the Server observes DOWN; no orphan task, no transferred Port |
+| GW-12 | Custom executor without =begin_await/2=: blocking path, =begin/3= answers =:done=                  |
+| GW-C1 | Control: today's blocking clause still answers identically for a non-AwaitGate effect            |
+
+* What this proposal does NOT do
+
+No adapter task, no Port transfer, no process-dictionary relocation, no change to =await/2=,
+=expire/1=, the parser or the guardian; no Server timer (A2); no deadline-closure claim; no change
+to C-2 wording; no fixture, schema or vocabulary change; no claim about test counts.
+
+* Open questions for the reviewer (rulings, not defaults)
+
+- OQ-1 Option P (Worker-armed production fence in A1) or Option Q (blocking until A2)?
+- OQ-2 =Execution.retain/2= as a new owner-only primitive versus extending =begin_await/2= to
+  accept an already-dequeued message: retain/2 is proposed because it keeps "the owner already
+  dequeued it" semantics explicit and leaves =begin_await/2= byte-identical.
+- OQ-3 Does the =late_record= diagnostic belong in the settle cleanup only, or also as a Server
+  drop count? Proposed: cleanup only (the Server counts its own drops today).

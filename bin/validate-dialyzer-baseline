@@ -1,0 +1,54 @@
+#!/usr/bin/env elixir
+
+defmodule DialyzerBaselineValidator do
+  @moduledoc false
+
+  def main([path]) do
+    with {:ok, source} <- File.read(path),
+         {:ok, ast} <- Code.string_to_quoted(source),
+         {:ok, entries} <- literal_entries(ast),
+         :ok <- unique(entries) do
+      :ok
+    else
+      {:error, reason} -> fail(reason)
+    end
+  end
+
+  def main(_args), do: fail("usage: bin/validate-dialyzer-baseline FILE")
+
+  defp literal_entries(entries) when is_list(entries) do
+    Enum.reduce_while(entries, {:ok, []}, fn
+      {file, description}, {:ok, parsed}
+      when is_binary(file) and is_binary(description) and description != "" ->
+        if valid_lib_path?(file) do
+          {:cont, {:ok, [{file, description} | parsed]}}
+        else
+          {:halt, {:error, "baseline paths must name a file below lib/"}}
+        end
+
+      _entry, _parsed ->
+        {:halt, {:error, "baseline entries must be literal {lib_path, warning_description} string pairs"}}
+    end)
+  end
+
+  defp literal_entries(_ast), do: {:error, "baseline must be a literal list"}
+
+  defp valid_lib_path?(path) do
+    case Path.split(path) do
+      ["lib" | rest] -> rest != [] and Enum.all?(rest, &(&1 not in ["", ".", ".."]))
+      _other -> false
+    end
+  end
+
+  defp unique(entries) do
+    if entries == Enum.uniq(entries), do: :ok, else: {:error, "baseline entries must be unique"}
+  end
+
+  defp fail(reason) do
+    detail = if is_binary(reason), do: reason, else: inspect(reason)
+    IO.puts(:stderr, "dialyzer baseline invalid: #{detail}")
+    System.halt(2)
+  end
+end
+
+DialyzerBaselineValidator.main(System.argv())

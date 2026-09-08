@@ -1,0 +1,145 @@
+#+title: Gate guardian: entry point and control protocol (pinned)
+#+PROPERTY: status delivered contract
+
+* Implementation status
+Delivered: =native/gate_guardian/gate_guardian.c= implements every record, command, bound, the =--timeout-ms=
+backstop, the =--probe= verb and the =-DGATE_GUARDIAN_TESTING= fault seam named below (=setsid_delay=,
+=members_fail=, =identity_short=, =go_after_deadline=, =probe_group_eperm=); =test/gate/gate_guardian_test.exs=
+and =test/gate/gate_guardian_unit2_test.exs= build it with =cc= into a scratch path and exercise the protocol.
+The BEAM-side obligations listed at the end ship in =AiOrchestrator.Gate.Execution= (=gate-execution-claim.org=).
+Build wiring for a packaged binary is resolved at runtime through =Config.Runtime.resolve/1= (=gate_guardian=
+flag, =AI_ORCHESTRATOR_GATE_GUARDIAN=, local config), not by this document.
+
+Status: pinned protocol for the gate-process-ownership contracts. Source entry point:
+=native/gate_guardian/gate_guardian.c=, a single C file built with the pinned nixpkgs
+toolchain (=cc=); no external runtime dependency. Build wiring (Nix package / mix compiler)
+is a separate non-overlapping unit; the tests build it with =cc= into a scratch path.
+
+* Invocation
+#+begin_example
+gate_guardian --stdout PATH --stderr PATH --cwd DIR [--ready-ms N] [--settle-ms N] [--rounds N] -- ARGV...
+#+end_example
+- ARGV is an argument list; no shell. The lifecycle passes the gate's =command_argv=.
+- =--stdout=/=--stderr= are created by the guardian with =O_EXCL= and mode 0600 BEFORE the
+  fork; an existing file is =SETUP_FAILED class=open_stdout|open_stderr= (never truncated).
+- =--cwd= is the repo root; the worker =chdir=s after =setsid=.
+- Defaults: ready 5000 ms, settle 3000 ms per round, 2 rounds. Every numeric option is validated
+  before any side effect: decimal digits only, fully consumed; =--ready-ms= and =--settle-ms= in
+  [100, 600000]; =--rounds= in [2, 10] (two rounds so the escalation always reaches =KILL=).
+  Anything else is =SETUP_FAILED class=usage=, exit 2, before the output files exist.
+
+* Channels
+- Control channel = the guardian's stdin/stdout (the OTP Port). Ordinary gate output never
+  reaches it: the worker's stdin is =/dev/null= and stdout/stderr are the private files, so a
+  command cannot forge a control record.
+- The worker is a forked child; it =setsid=s (leads its own session and process group), then
+  reports ready on a private status pipe, then BLOCKS on a private token pipe until released.
+
+* Control records (guardian stdout, one per line)
+| =READY guardian=P worker=P pgid=G start=I= | after ready; nothing has run; I = kernel identity |
+| =RELEASED=                                 | the one-time go-token was delivered            |
+| =EXIT kind=exited status=N ...=            | leader exited normally                          |
+| =EXIT kind=signaled signal=N ...=          | leader was killed by signal N (never status 0)  |
+| =DEAD reason=command ...=                  | settled by force on =TERM=                      |
+| =DEAD reason=parent_gone ...=              | settled by force on control EOF                 |
+| =SETUP_FAILED class=C ... cleanup=X=       | C in open_stdout, open_stderr, pipe, fork, setsid, chdir, redirect, ready_timeout, ready, identity; exit 1. Rejection is reported only AFTER bounded cleanup: a prepared child is settled under phase-aware authority (before =setsid= is proven only the exact child pid is signalled; after, the owned group) and its outcome is carried (=settled= =leftovers= =proof=); output objects this guardian created are removed, =cleanup=removed|left|none=. =class=usage= is refused before any side effect (exit 2, no trailer). |
+| =PROTOCOL_ERROR=                           | unknown command line; ignored                   |
+EXIT/DEAD trailers: =settled=0|1 leftovers=N|unknown proof=gone|alive|unknown escaped=unknown=.
+
+* Commands (guardian stdin, one per line)
+- =GO= releases the worker once (later =GO=s are ignored).
+- =TERM= settles the owned group by force.
+- EOF = the parent is gone = forced settle with =reason=parent_gone=. An unreleased worker
+  never runs (its token read returns EOF).
+
+* Kernel identity
+- macOS: =sysctl KERN_PROC_PID= → =kinfo_proc.kp_proc.p_starttime=, printed =sec.usec= (6 digits).
+  Equivalent Darwin source, independently measured in review (libproc
+  =proc_pidinfo(PROC_PIDTBSDINFO)= → =pbi_start_tvsec=/=pbi_start_tvusec=; two same-second
+  processes 160 ms apart resolved): same kernel field; the helper keeps sysctl
+  because it needs no =-lproc= link. Its reference contract carries over: a nonexistent pid
+  is a named =identity= failure (=SETUP_FAILED class=identity=), bounds fail closed.
+- Linux: =/proc/<pid>/stat= field 22, printed =ticks:N=.
+- Recorded identity is (pid, pgid, start). A later process at the same pid with another
+  start is a stranger and is never signalled by anyone; only the guardian signals its group.
+
+* Settlement and authority (the part the reviews were about)
+1. Leader exit is OBSERVED with =waitid(P_PID, WEXITED|WNOHANG|WNOWAIT)= -- never with
+   =kill(pid,0)= (a zombie answers 0) and never with a reaping wait on a live child.
+2. Settle rounds (bounded, =--rounds= × =--settle-ms=): round 0 sends =TERM= to =-pgid= when
+   forced; every later round sends =KILL=. The group is settled when the leader has exited
+   and the kernel enumerates no other member (macOS =KERN_PROC_PGRP=; Linux =/proc= scan of
+   field 5). If enumeration is unprovable the result is =unknown=, never an empty set.
+3. Authority: the exact child stays UNREAPED through the rounds; it is reaped only after it
+   is observed exited and either the group settled or the rounds are exhausted. After the
+   reap, authority continues only as long as the group is non-empty (a pgid cannot be reused
+   while a member exists) and ends when =kill(-pgid, 0)= is =ESRCH=. If the rounds end with a
+   live leader the guardian reports =settled=0 proof=alive= and does NOT block on it.
+4. Proof is errno-decoded: =ESRCH= → =gone=; 0 → =alive=; =EPERM=/other → =unknown=. Kernel facts are
+   parsed strictly (exact record sizes, complete numeric parses, pid agreement); only a
+   documented disappearance race (=ENOENT=/=ESRCH= between enumeration and read) counts as
+   absence, every other uncertainty is =unknown= (=leftovers=unknown=, =settled=0=): a read
+   error, an enumeration error, a fact that names another pid, a signed or non-decimal number,
+   or a value that does not fit =pid_t=. On Linux only a bounded all-digit =/proc= entry that
+   parses into =pid_t= is a process entry; anything else is not a process, not an unknown.
+   Every stat fact, identity or member, must name the pid it was read for (one shared prefix
+   rule); a fact naming another pid is unknown. A member's pgid may be 0 (kernel tasks export
+   that group): it is a valid value that can never match the guardian's positive group, so it
+   is counted as not-a-member, never as an error.
+   Output cleanup assumes the output namespace is exclusively the guardian's (the caller
+   contract pins that); unlink-by-path is not a defence against a foreign replacement.
+5. A descendant that leaves the session (=setsid= again) is outside any process-group proof:
+   =escaped=unknown= on every record; group death is not arbitrary descendant death.
+
+* Bounds
+Ready wait, each settle round, and preparation are hard-bounded by the flags; there is no
+unbounded read on the status pipe. Control input is framed incrementally as exact lines (a
+command acts only when its newline arrives; several lines in one read act in order; an
+overlong line is one =PROTOCOL_ERROR=). A record is a command only by exact bytes AND exact
+length: a NUL or any other extra byte makes it an invalid record, and an invalid record
+never acts. Only the guardian's own control and token writes carry the retry bound; the
+child's pre-exec status writes are best effort, and a lost status surfaces as the ready
+timeout, never as success. Control output is non-blocking with a 2 s retry
+bound: a parent that stops draining is a broken channel, and a broken channel (also EPIPE;
+=SIGPIPE= is ignored) means bounded settlement and exit, never a hang or a default signal
+death. =SIGTERM=/=SIGINT=/=SIGHUP= to the guardian settle its group and report
+=DEAD reason=guardian_signaled=. These bounds are on the guardian's own polling and
+processing; they assume admitted filesystem and kernel responsiveness and do not promise
+that an arbitrary blocking syscall completes on a timer. Output files are private; a byte
+cap is a separate contract (redirection is not bounding).
+
+* Test seam
+Built with =-DGATE_GUARDIAN_TESTING= only (the tests; never the package), the guardian reads
+=GATE_GUARDIAN_FAULT= (=setsid_delay=, =members_fail=, =identity_short=, =go_after_deadline=
+(the expiry check at the GO boundary reads as elapsed); for the =--probe= verb also
+=probe_group_eperm=, which makes =kill(-pgid, 0)= answer =EPERM=) to prove the
+setup-cleanup and unknown-on-unprovable paths. The production build has no seam.
+
+* Backstop and probe additions (implemented)
+- =--timeout-ms N= (100 ms to 86400000 ms, 24 h: the backstop covers a gate's whole remaining
+  deadline plus a fixed grace, so its range is wider than the settle/ready options'): a bounded
+  cleanup BACKSTOP, measured by the guardian's own monotonic clock from its own start (prepare
+  time), never refreshed on =GO=. The expiry is re-checked at the irreversible GO-token boundary:
+  a =GO= that arrives after the backstop elapsed, even inside the same poll window, is never
+  honoured; the still-blocked worker is settled and =DEAD reason=deadline= reported. When it elapses, whether
+  or not the worker was released, the guardian settles its own group exactly as on =TERM=
+  and reports =DEAD reason=deadline ...=. It is not the running-deadline policy: that timer
+  belongs to the owner harness (the Host today, =Run.Server= later), which expires the
+  handle through this guardian's original control channel. The backstop only guarantees
+  cleanup for an owner that is alive but stuck.
+- =gate_guardian --probe PID PGID=: a READ-ONLY verb in the same binary. Prints exactly one
+  bounded record =PROBE leader=gone|alive|unknown start=<identity>|- group=gone|alive|unknown
+  members=N|unknown= and exits 0. =leader= and =start= come from =kill(pid, 0)= plus the
+  kernel identity reader; =group= comes independently from =kill(-pgid, 0)= (=ESRCH= gone,
+  0 alive, =EPERM= or anything else unknown); =members= from the group enumeration reader.
+  Unknown propagates: a consumer may call the group dead only when =leader=gone= (or alive
+  with a different start), =group=gone= AND =members=0=; an empty enumeration never makes an
+  =EPERM= group dead. Malformed arguments are =SETUP_FAILED class=usage=, exit 2, before any
+  fact is read. The verb never sends =TERM= or =KILL= and holds no authority: matching a saved
+  identity is a fact, not permission to signal. Only the original guardian, through its
+  original control channel, ever settles a group.
+
+* What the lifecycle owes (delivered in =gate-execution-claim.org=)
+Durable execution claim before release, writer-ack of the versioned =gate_started= identity
+event before the go-token, deterministic Fs crash barriers, cold recovery (no guardian →
+fail closed unless proven death was recorded), attempt cap 2 under the original deadline.

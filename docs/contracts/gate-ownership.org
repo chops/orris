@@ -1,0 +1,304 @@
+#+TITLE: Gate ownership (PrepareGate / ReleaseGate / AwaitGate under the Run.Worker): source matrix, measured baselines, resumable-await primitives
+#+PROPERTY: status delivered contract
+
+* Implementation status
+Delivered in two steps. This document's own deliverables ship: the measured baselines
+(=test/run/gate_ownership_baseline_test.exs=, GB rows), the Server-side timer-authority double
+(=test/support/gate_deadline_authority.ex=, =AiOrchestrator.Test.GateDeadlineAuthority=, with
+=test/run/gate_ownership_prototype_test.exs= GP rows and =test/run/gate_authority_review_probe_test.exs=), and the
+two resumable primitives =Gate.Execution.begin_await/2= and =resume_await/2= in
+=lib/ai_orchestrator/gate/execution.ex= (rows =test/gate/execution_resumable_red_test.exs=). The owner integration this document only proposed (an
+owner-resident wait in the Worker, a real Server-owned deadline timer, =Effects= grammar for a pending effect, a
+third primitive =settle_await/1=) was delivered afterwards under =gate-async-await-proposal.org=; the Worker's
+dropping of an idle Port record (constraint C-4, GB-8b) was removed by =gate-record-retention-proposal.org=. As a
+consequence two baselines in the shipped suite now measure the inverted state: GB-4n witnesses the owner ANSWERING a
+correlated settle probe while the real await is pending, and GB-8b measures the staged answer instead of the drop.
+The source matrix below is the survey that motivated the work; rows whose facts changed are listed after it.
+
+* Premise
+The journaled gate =timeout_s= IS enforced by =Gate.Execution.await= (bounded receive =min(remaining_ms,
+@receive_cap_ms)=; the cap is a maximum, not the wait) and by the guardian backstop =--timeout-ms=; a timeout maps
+to =GateFailed= (settled, proof gone) or =GateUnsettled=. The gap this document addressed was OWNERSHIP /
+RESPONSIVENESS: =AwaitGate= ran on the Worker's generic synchronous clause, so the owner could not serve
+status/settle while a gate was awaited, and a Server timer could not interrupt it. Direction chosen: the live gate
+deadline is owned by a Server-side timer authority; the Worker stays an event-driven owner. Task-wrapping
+=gate_mod.await= at the deadline or at deadline+grace was rejected.
+
+* Binding constraints (G-N1..G-N4)
+- G-N1 :: =Effects.gate_await= reads =Runtime.handle=; =Execution.await= / =next_record= receive the Port's records
+  in the CALLER; termination/released-at state lives in the process dictionary keyed by Port. The Worker owns all
+  of it. Task-wrapping the await loses owner mailbox and memo access before any expiry. Runtime/Port/memo must not
+  cross processes casually; NO generic =adapter_runner= route for =AwaitGate=.
+- G-N2 :: =Worker.fenced_run/await= and =held= are selective nested receives that do not serve status/settle. A
+  fence or finite chunks alone do not meet the responsiveness criterion; a Server timer message cannot interrupt a
+  synchronously blocked owner without an owner-resident event/protocol change. Demonstrate the real mailbox path,
+  not an adapter double that removes the constraint.
+- G-N3 :: do NOT import the assignment rule "already due at dequeue -> zero adapter calls". An =AwaitGate= may refer
+  to an ALREADY PREPARED/RELEASED native process; it must avoid new work/release but may need expiry/cleanup calls
+  on the retained handle. =Execution.not_expired= at prepare/release is a different stage. Pin separately:
+  live-handle case, pre-GO case, queued terminal-record precedence. =await_records= consumes EXIT/DEAD before
+  reading the clock and keeps doing so (an unconditional due refusal would discard real proof). No fabricated
+  =GateUnsettled= fields, no =gate_failed= settled/gone claims; mapping only from measured proof.
+- G-N4 :: =cap_ms= is a maximum timer chunk, NOT a grace duration; no deadline+grace policy. The execution deadline
+  stays distinct from any proposed bounded cleanup/proof wait. The direction preserves the guardian backstop and
+  the existing result mappings while identifying the authoritative live deadline owner. Worker hard-death proves
+  nothing about external descendants.
+- =timeout_s= 600 stays hard-coded in this unit; the configurability gap is stated, not silently removed.
+
+* Deliverables of this document
+1. Source matrix for prepare/release/await ownership, the Port owner, the memos, the parser, the deadline record,
+   the timeout/settlement mapping, the Worker receive sites and the Server timer surface.
+2. Measured baseline controls (=test/run/gate_ownership_baseline_test.exs=, GB rows) with a REAL native
+   guardian/Port witness: owner identity of the Port, retained memo, recorded deadline, timeout and settlement
+   results, normal exit, and the owner's (former) non-responsiveness during the await.
+3. Prototype (test support only) of the smallest owner-resident, resumable, event-driven wait: a Server-side timer
+   authority double, correlated completion-vs-expiry ordering, duplicate/foreign handling, teardown/owner death,
+   guardian proof. Any new primitive is specified with exact signatures and state ownership, reusing the existing
+   record parser (no hand-rolled protocol parser in tests).
+4. The two resumable primitives, with their precedence table and rows.
+
+* Source matrix (survey of the pre-unit source; function names, not line numbers)
+| Concern | Site | Fact |
+|---------+------+------|
+| Route dispatch | =Effects.run_effect= | PrepareGate -> =gate_prepare/3=, ReleaseGate -> =gate_release/4=, AwaitGate -> =gate_await/3= |
+| Handle retention | =Effects.Runtime= | =Runtime{executor, gates: %{{id, attempt} => %{phase, handle}}}=; =put/4=, =handle/2=, =drop/2=; value threaded, never the process dictionary |
+| Prepare | =Effects.gate_prepare/3= | =gate_mod.prepare(fs, request, gate_opts)=; handle owned the moment =Runtime.put(:prepared)= |
+| Release | =Effects.gate_release/4= | =ack/2= then =release/3=; =Runtime.put(:running)=; failure abandons through =abandon_one/2= |
+| Await | =Effects.gate_await/3= | =running = Runtime.handle(runtime, key)=; =gate_mod.await(running, gate_opts)= BLOCKS in the caller; grammar ={:exit,_} / {:timeout,_} / {:error,_}= |
+| Executor seam | =Effects.gate_mod/1=; =Runtime.executor= | =:gate_executor= (default =Gate.Execution=), same module in =runtime.executor= |
+| Gate opts | =Effects.gate_opts/2= | =:gate_opts= + =:helper= + =:clock= + =:deadline_unix= (from the effect) |
+| Result mapping | =Effects.gate_exit_observation= / =gate_timeout_observation= | exit -> GateFinished / GateFailed / GateError / GateUnsettled; timeout settled+gone -> GateFailed (evidence) else GateUnsettled; error -> GateError |
+| Port open | =Execution.prepare/3= | the ONLY =Port.open=; owner = the process calling =prepare/3= = the Worker; no =Port.connect= anywhere |
+| Blocking receive | =Execution.next_record/2= | selective receive on ={^port, {:data|:exit_status, _}}= with =after=; callers: the RELEASED wait, READY, DEAD at settle, =await_records=, =await_record=; =drain_exit/1= |
+| Await internals | =Execution.await/2= | reads the termination memo first; =await_records= consumes EXIT/DEAD at timeout 0 BEFORE the clock; =await_until_deadline= remaining = (deadline - now)*1000; =await_record= receive =min(remaining, @receive_cap_ms)=; expiry -> =terminate_and_memo/2= |
+| Memos (all Port-keyed, process dictionary of the owner) | =Execution= | ={Execution, port, :released | :released_at_ms | :opts | :termination}=; no =Process.delete= |
+| Owner-harness expiry | =Execution.expire/1= | TERM through the original channel, memoised, idempotent with a later =await/2= |
+| Backstop | =Execution= guardian argv | =--timeout-ms= = remaining + 2000 ms grace, max 86_400_000; =deadline_expired= / =deadline_unsupported= refusals; =not_expired/2= at release |
+| Parser | =Execution.parse_record/1= | =@heads READY RELEASED EXIT DEAD SETUP_FAILED PROTOCOL_ERROR PROBE=; =parse_record/1=, =decode_pairs/2=, =record_grammar/2= ALL =defp= |
+| Claim | =Execution.prepare/3= | written by the Port-owning process inside =prepare/3= through =Journal.Fs= |
+| Reconcile | =Execution.reconcile/4= | cold, read-only, no Port, no dictionary; =--probe= via =run_helper/3= |
+| Worker clause | =Run.Worker= generic execute | generic SYNCHRONOUS =Effects.execute= inside =boundary/2=; every gate effect took it; no fence, no task |
+| Worker receives | =Run.Worker= =await/5=, =held/5=, catch-all | only task reply / DOWN / fence wake / proceed; a Port record was dropped by the catch-all |
+| Settle | =Run.Worker= settle clause; =Effects.settle/1= | abandons every retained handle through =runtime.executor.abandon/1= |
+| Server routing | =Run.Server.request/3= | ={:execute, cap, gen, ref, intent, receipt}= / ={:settle, cap, gen, ref}=; =status/1=, =await/2= |
+| Server timers | =Run.Server= | only gen_statem =:state_timeout= (admit 5 s, settle 5 s) and a shutdown receive; NO gate timer, no =send_after= |
+| Contracts | =gate-execution-wiring.org=, =gate-execution-claim.org=, =gate-guardian-protocol.org= | "awaiting IS its work; nothing schedules elsewhere"; "live timers belong to the host-owner harness"; "only the original guardian, through its original control channel, ever settles a group" |
+| Owner death | =gate-execution-wiring.org=, =gate-execution-claim.org= | Ports close with the process; settlement is the guardian's control-EOF path; nothing is reported |
+| Reusable evidence | =test/gate/gate_execution_test.exs=; =test/run/worker_spike_native_test.exs=; =test/run/observe_deadline_red_test.exs= (PortGate) | the hand-rolled owner timer (=send_after= + =expire/1=), memo idempotence, N-0 control, owner-identity Port double |
+What changed after the survey (see the two later contracts): the Worker clause for =AwaitGate= goes through
+=Effects.begin/3= and may leave the effect pending; the Worker has a Port clause ahead of its catch-all (pending
+Port -> resume; other owned Ports -> staged); the Server arms a gen_statem generic timeout per =AwaitGate=; the
+"awaiting IS its work" sentence applies to the Host path only.
+
+* Measured baselines (=test/run/gate_ownership_baseline_test.exs=, real Worker + real Execution + native guardian)
+- GB-1 :: after PrepareGate/ReleaseGate the Worker's links hold exactly ONE Port, =Port.info(:connected)= is the
+  Worker; its os_pid is alive.
+- GB-2 :: ={Execution, port, :released}= true and =:released_at_ms= integer are entries of the WORKER's process
+  dictionary; no =:termination= memo before the await.
+- GB-3 :: =started_data["deadline_unix"]= equals the effect's absolute deadline (journal pin).
+- GB-4 :: deadline one second ahead of the fixed clock, command =sleep 30=: the owner's OWN await holds the
+  remaining window (measured >= 900 ms), then expires the group; termination memo =kind "timeout", settled true,
+  proof "gone"= in the Worker's dictionary; OS oracle dead; a second AwaitGate on the same handle reports the same
+  observation class (memo idempotence). Pinned result: =GateFailed= with =result["termination"] == %{"kind"
+  "timeout", "leftovers" "0", "proof" "gone", "settled" true}=, null exit status, empty-output hashes,
+  =duration_ms= in [900, 2900) and the Worker-local memo WITHOUT a =:backstop= key (owner TERM); a
+  guardian-backstop termination would carry =backstop: true= and arrive only after the +2000 ms grace, so removing
+  the inner expiry flips exactly these pins. In the shipped suite the termination is driven by the owner's own
+  settle on the correlated wake.
+- GB-4n :: originally: while that real await holds the window, a correlated =settle= probe is NOT answered (300
+  ms); answered after the result - THE GAP, native. Now INVERTED in the shipped suite: the owner answers the
+  correlated settle probe within the probe window while the real await is pending; the probe settles the handle
+  and the original ref gets no result.
+- GB-5 :: normal exit -> =GateFinished= with a map result; =ran= written once (exact bytes ="ran\n"=); group dead;
+  settle reports one handle.
+- GB-6 :: (double) the executor's =await/2= runs in the Worker pid with the retained handle (nil here); settle
+  unanswered for 300 ms; after release =GateError= first, then the queued settle; idle control answers within 300
+  ms. The inversion of this row on the native complete-capability path is AW-11 in
+  =gate-async-await-proposal.org=.
+- GB-7 :: Worker =:kill= while INSIDE the native wait (entry witness: current stack in =Execution.next_record/2=)
+  of a released =sleep 30=: no result ever; the group is settled by the guardian's control-EOF path, proven only
+  by the OS oracle (the Worker's death proves nothing by itself).
+- GB-8a :: pre-GO refusal (=deadline_expired= at ReleaseGate, handle abandoned, settle carried, no GO, no owned
+  Port).
+- GB-8b :: originally the MEASURED constraint C-4 on the real Worker: a guardian EXIT record arriving while the
+  Worker is IDLE (between ReleaseGate and AwaitGate) was DROPPED by the catch-all =handle_info/2=; the later
+  AwaitGate answered =GateError{"clause" "guardian_gone"}= and the Port was already closed; a direct dequeue
+  witness (an Erlang =:receive= trace on the Worker) showed it dequeuing the guardian's ="EXIT ..."= record for the
+  retained Port while idle. Now measures the staged answer on the permit-gated command (the later await answers
+  the staged record); GB-8b-neg keeps the invalid old witness order on record.
+- GB-8c :: released handle past its deadline with no queued terminal (expired at once, owner TERM, no backstop).
+- Forced order: the positive normal-exit controls GB-1 and GB-5 share the real race "immediate exit + any delay
+  before AwaitGate"; a file-gated command completes only after the Worker is witnessed inside
+  =Execution.next_record/2= (=await_gated!/4=); terminal delivery ordering is not pretended to be guaranteed.
+
+* Baseline rows (IDs stable)
+| Row | Measures | Witness |
+|-----+----------+---------|
+| GB-1 | Port owner during PrepareGate/ReleaseGate/AwaitGate is the Worker process | native guardian, =Port.info(port, :connected)= |
+| GB-2 | released-at / termination memos live in the Worker's process dictionary keyed by Port | process dictionary read from the owner |
+| GB-3 | =gate_started= records =deadline_unix= equal to the =AwaitGate= deadline | journal read |
+| GB-4 | timeout at the recorded deadline: guardian DEAD/EXIT consumed before the clock; result =GateFailed= settled/gone or =GateUnsettled= exactly as produced | native process, journal |
+| GB-5 | normal exit: =GateFinished= with the parsed exit record | native process |
+| GB-6 | (formerly) the owner does NOT answer a correlated status/settle probe while =AwaitGate= blocks | Worker mailbox probe, bounded wait |
+| GB-7 | owner death inside the native wait -> guardian control-EOF settlement (OS oracle) | native process, =kill -0=, stack witness |
+| GB-8 | pre-GO / queued terminal record precedence (G-N3 stages) | scripted executor states and the real Worker |
+
+* Prototype (test support only): =AiOrchestrator.Test.GateDeadlineAuthority=
+Server-side timer authority double: arms ONE =Run.DeadlineFence= per operation identity from one wall and one
+monotonic read of the injected clock (=Test.StepClock=, persistent_term, set by the test: no wall/real-timer
+conflation, no sleep-only expiry), sleeps in bounded chunks (=cap_ms=) and validates EVERY dequeued wake against
+the fence's canonical monotonic due: early -> =:early= (re-chunk, nothing fired), due -> fires
+={:gate_deadline, op}= to the owner once, later -> =:stale=; a re-arm of a fired/cancelled identity is
+=:duplicate=, an unknown identity =:foreign=; cancels on completion; =terminate/2= cancels timers; never actuates
+anything itself. A timer identity is not due-time proof. =timer_remaining_ms/2= (=Process.read_timer=) exposes the
+chunk. The authority is started with =start_supervised!= and its supervised stop is witnessed (=stop_supervised!=
++ monitor DOWN + not alive + no late wake); an ordinary =start_link= surviving its starter's normal exit is link
+semantics, not the invariant.
+| Row | Property |
+|-----+----------|
+| GP-2 | positive future due with two early wakes and the due wake; GP-2b cancel then stale; GP-2c the chunk is <= =cap_ms= (1000) for a 3 s due and again after an early wake, nil after cancel (a mutant scheduling the full due fails) |
+| GP-3 | duplicate / foreign wakes classified, never actuated; GP-3b already due |
+| GP-L | lifecycle: supervised start and witnessed stop |
+| GP-1, GP-4, GP-5 | (planned here) Port record through =handle_info= while answering status/settle; owner death tears down the owned Port with guardian proof as the only descendant-death evidence (measured by GB-7); no Runtime/Port/memo crosses a process boundary - delivered by the owner integration |
+The imported lifetime probe is =test/run/gate_authority_review_probe_test.exs=.
+
+* Resumable primitives on =Gate.Execution= (delivered; =await/2= and =expire/1= unchanged)
+- =begin_await(running, opts) :: {:done, answer} | {:pending, waiting}= ; =answer= is the existing =await/2=
+  grammar (={:exit, map} | {:timeout, map} | {:error, rejection}=). Semantics = the exact prefix of =await/2=:
+  termination memo first; =next_record(port, 0)= consumes an already-queued EXIT/DEAD before any clock read;
+  otherwise pending with no clock decision and no further receive. Caller MUST be the Port owner; any other
+  caller: =ArgumentError= (contract violation), the owner's handle untouched.
+- =resume_await(waiting, port_message) :: {:done, answer}= (resume never answers pending; a non-terminal record is
+  the closed =await_failed= exactly as in =await/2=) ; =port_message= is ONE message the owner already dequeued:
+  ={port, {:data, {:eol, line}}}= (parsed by the existing private parser: EXIT -> =exit_outcome=, DEAD ->
+  =memo_dead= with the memo written in the calling owner), ={port, {:data, {:noeol, _}}}= and ={port,
+  {:exit_status, _}}= before a terminal record -> ={:done, {:error, %{clause: "await_failed"}}}= closed (no raw
+  bytes in the rejection). A message for a different Port: =ArgumentError=, never silently pending.
+- Valid =waiting= value :: an opaque map =%{port, running, opts, ref}= created by =begin_await= in the owner; valid
+  only in that process, only until its terminal answer (single consumer): resuming a consumed value raises
+  =ArgumentError=; a =waiting= whose handle has since been expired answers ={:done, {:timeout, memo}}= (memo reuse,
+  never a fresh run); a handle whose Port is closed answers ={:done, {:error, guardian_gone | await_failed}}=
+  (existing clauses only).
+- Owner-local bookkeeping: ONE process-dictionary entry ={Execution, port, :descriptor}= holding the active
+  descriptor, reused by a duplicate =begin=, replaced by =:finalized= on any terminal answer (from =resume= or from
+  a =begin= that consumed a queued terminal). Every activation carries a fresh =make_ref()= (internal lifetime
+  bookkeeping, not a public attempt-generation API): the consumed old descriptor never matches a new one (stale), a
+  fresh begin after a terminal error is a new distinct wait (fresh), a duplicate begin of the active wait returns
+  the SAME stored descriptor (active-duplicate), and no fresh native GO/release occurs (same Port, release memo
+  untouched). Memos stay where the baselines measured them. Nothing crosses a process.
+- =begin_await= order: =owner!= (a Port alive and connected to ANOTHER pid raises =ArgumentError=; a closed Port
+  is judged ONLY by this process's retained evidence - the release memo, a termination memo, or a descriptor; none
+  -> =ArgumentError=, no permissive nil branch), memo first, then =next_record(port, 0)= (queued EXIT/DEAD finalised
+  through the legacy path), then closed Port -> existing =guardian_gone=, else ={:pending, descriptor}=; NO clock
+  read.
+- =resume_await= order: exact Port (foreign Port raises), then =active!= (the caller's dictionary must hold THIS
+  descriptor: a non-owner or a finalized descriptor raises), then memo (first valid resume after external expiry
+  answers it and finalises), then decode (=:eol= through =parse_record=, =:noeol= -> =malformed=, =:exit_status=
+  -> =exited N=), every answer finalising the descriptor.
+- Blocking inside the primitives (disclosed) :: the zero-timeout scan in =begin_await=; the terminal finalisation
+  in =resume_await= (=barrier(:after_exit)=, =drain_exit= up to 1000 ms, evidence hashing) and =memo_dead='s
+  =drain_exit=; =expire/1= waits =wait_ms(opts) = settle_ms x rounds + 2000 ms margin= (test opts 200 x 2 + 2000 =
+  2400 ms; defaults =@default_settle_ms 2000 x @default_rounds 2 + 2000 = 6000 ms=) THEN =drain_exit/1=.
+  Everything else is the owner's own =handle_info= cadence. No claim of non-blocking finalisation follows from the
+  primitives alone.
+- Ownership retained :: the Port stays connected to the owner across begin/resume; memos stay ={Execution, port,
+  *}= in the owner's dictionary; failure cleanup goes through the ORIGINAL =running= handle (=expire/1= /
+  =abandon/1=), never through =waiting=.
+
+** Ownership / lifecycle precedence (pinned)
+New input-contract errors are =ArgumentError= or existing closed clauses only.
+| Situation (same owner unless stated) | =begin_await= | =resume_await= |
+|--------------------------------------+---------------+----------------|
+| any call | caller must be the Port owner (else =ArgumentError=) | FIRST validates the retained descriptor's ownership (caller == Port owner) and the EXACT message Port; failures raise =ArgumentError= and never consult the memo |
+| termination memo present (after =expire/1= or a DEAD), Port drained/closed, =Port.info= nil | ={:done, {:timeout, memo}}= = an idempotent READ; it does NOT consume an active descriptor | ACTIVE descriptor whose handle was expired externally: the FIRST valid resume (any content for the right Port) returns the exact memo and FINALIZES it; a second resume raises |
+| terminal record already queued, Port open or already closed | ={:done, {:exit, outcome}}= before any clock read (G-N3); this FINALIZES any active descriptor for that handle | n/a |
+| no memo, no queued record, Port open | ={:pending, waiting}=, zero clock reads; a duplicate =begin= reuses the ACTIVE descriptor (same value) | one dequeued matching record -> ={:done, _}= always (EXIT/DEAD finalise; anything else is the closed =await_failed=, as =await/2=); resume never answers pending |
+| no memo, no queued record, Port closed (owner closed it / guardian gone) | ={:done, {:error, %{clause: "guardian_gone"}}}= | n/a |
+| descriptor already FINALIZED by resume (EXIT, DEAD or =await_failed=) or by a =begin= that consumed a queued terminal | a new =begin= answers from memo/queue (read) | =ArgumentError= on reuse |
+| =:noeol=, premature =:exit_status=, malformed =:eol= (active descriptor, no memo) | n/a | ={:done, {:error, %{clause: "await_failed", record: <existing describe_record>}}}=, no raw bytes; finalizes |
+Same-owner retained evidence (memo, queued record) permits a closed Port; ownership is never inferred from
+=Port.info= nil.
+
+** Rows (=test/gate/execution_resumable_red_test.exs=)
+RB rows are baselines on the pre-existing API, R rows the primitive rows, PG rows imported probes.
+- RB-1 :: a TERM sent to the process GROUP kills the leader by signal and the guardian reports =EXIT kind=signaled
+  signal=15= (control); RB-2 :: a TERM written on the OWNER's control channel makes the guardian settle by force
+  and report =DEAD reason=command= through =await/2=; RB-2b :: the declared duplicate DEAD line =DEAD reason=command
+  kind=signaled signal=15 settled=1 leftovers=0 proof=gone escaped=unknown= measured through the unchanged parser
+  (timeout memo); RB-3 :: the =:eol= malformed matrix measured FIRST through the existing parser (lines injected
+  ahead of =await/2=): the matrix derives from the complete valid =EXIT kind=exited status=0 settled=1 leftovers=0
+  proof=gone escaped=unknown= changing ONE property per row (unknown head, missing field, extra key, duplicate key,
+  invalid enum with the canary as the sole defect, DEAD invalid reason) and pins the EXACT closed diagnostic
+  (=malformed EXIT= / =malformed= / =malformed DEAD=, the existing =describe_record= classes) while accepting the
+  valid neighbour.
+- R-1 :: prompt pending (< 200 ms, far deadline) with a counting clock activated after setup pinning ZERO wall reads
+  for the pending return, for the past-due pending case, and for the queued-precedence case.
+- R-2 :: memo reuse after =expire/1=.
+- R-3 :: queued EXIT before the clock past the deadline; the EXACT queued Port EXIT record is witnessed in the
+  owner's mailbox with a NON-consuming read (=Process.info(self(), :messages)=) before =begin_await=; a terminal
+  record received before closure stays valid evidence; begin consuming a queued terminal finalizes the active
+  descriptor.
+- R-4 :: EXIT via one dequeued record == what =await/2= answers (pins =exit_status 3=, =kind "exited"=,
+  settlement/proof/leftovers and full field parity with an unchanged =await/2= baseline run on its own gate,
+  =duration_ms= normalised only), and DEAD memoised in the owner (through =Port.command(port, "TERM\n")= from the
+  owner after ={:pending}=, never through =expire/1=, which would pre-consume and memoise it; begin = idempotent
+  read, reuse raises). R-4 and R-7 release a file-gated command only after ={:pending, waiting}= is in hand.
+- R-5 :: =:noeol= (canary never in the rejection) and premature =:exit_status= -> closed =await_failed=; the RB-3
+  matrix required identical through =resume_await= (the WHOLE diagnostic equal to the unchanged =await/2= on a
+  sibling gate with the same line); =:noeol= -> =malformed= (the parser's overlong class), premature
+  =:exit_status= -> =exited N=.
+- R-6 :: wrong Port / wrong caller (=ArgumentError=), closed Port (=guardian_gone= or =await_failed=): the
+  closed-Port row closes the ORIGINAL handle's Port from the owner and observes =Port.info(port) == nil= (no sleep,
+  no fabricated map); R-6b/R-6c :: the consumed descriptor never matches a new one; a fresh begin after a terminal
+  error is a new activation; a duplicate begin of the active wait is the same descriptor; a foreign begin after
+  close WITHOUT memo raises while the owner gets =guardian_gone=.
+- R-7 :: single consumer.
+- R-8 :: expiry during pending then begin/resume idempotence: foreign Port refused before memo, the first valid
+  resume returns the exact memo and finalizes, a second raises, begin still reads; after =expire/1= the row INJECTS
+  the declared duplicate DEAD line addressed to the retained Port (explicitly not captured data), binds the
+  injected tuple with =assert_receive ^tuple= before resuming, requires =resume_await= to run within 1 s and return
+  the exact memo, and adds the wrong-Port late record control (=ArgumentError=); a malformed-but-right-Port record
+  after expiry is answered from the memo.
+- PG-1 / PG-2 :: native probes imported from review: PG-1 permits refusal or a fresh lifecycle after a consumed
+  descriptor and forbids resurrection (controls: memo read after cleanup; a later queued terminal is still
+  consumed by begin; a consumed descriptor stays consumed after that); PG-2 pins that a closed Port is judged only
+  by retained evidence.
+
+* Owner integration (delivered elsewhere)
+The proposal this document carried for =Effects= (a resumable seam returning a pending value), =Run.Worker= (a
+Port clause ahead of the catch-all, a ={:gate_deadline, op}= clause, pending correlation in the Worker state) and
+=Run.Server= (one timer per =AwaitGate= at =deadline_unix= from its injected clock, cancelled on the effect's
+answer, completion-vs-expiry decided by the Worker's single mailbox) was delivered with a refined grammar in
+=gate-async-await-proposal.org=: =Effects.begin/3= (={:done, _} | {:pending, runtime}=), =resume/4=,
+=settle_await/3= and =pending/1=; a third primitive =Execution.settle_await/1=; the Server's gen_statem generic
+timeout driven through =Run.DeadlineFence= in chunks. Two design notes recorded here still hold: replacing
+=Runtime.entry.handle= by a composite would break =abandon_one/2 -> executor.abandon(handle)= (the original opaque
+handle stays in the entry; the resumable descriptor lives separately), and =Effects.execute= must not globally
+return a pending value (the synchronous =Host.advance= and the Worker's synchronous boundary are unchanged
+consumers; the opt-in is a separate entry point). Explicitly NOT part of either unit: an adapter task for
+=AwaitGate=, =Port.connect=, process-dictionary relocation, a grace period (G-N4), a new observation or event
+type, a change to =await/2= callers, a schema/fixture change.
+
+* Constraints recorded by this document and their resolution
+- C-1 :: the guardian record parser is entirely private (=defp=, module attributes); an owner-resident resumable
+  wait cannot decode a dequeued Port record without a public =Execution= entry point or a duplicated grammar
+  (forbidden). Resolved by =begin_await/2=, =resume_await/2= and =settle_await/1=.
+- C-2 :: =gate-execution-wiring.org= pins "awaiting IS its work; nothing schedules elsewhere" for the Host; the
+  Worker path now schedules the deadline in the Server. That sentence remains true of the Host path only.
+- C-3 :: =Run.Server= had no timer machinery for a gate deadline; the Server-side authority was net-new (test
+  double first, then the gen_statem generic timeout).
+- C-4 :: the Worker's catch-all =handle_info/2= dropped a Port record; resolved by the retention Port clause
+  (=gate-record-retention-proposal.org=) and, for the pending Port, by the resume clause. Record routing/retention
+  begins at handle ownership (not at =:awaiting= registration), bound to the exact retained Port and gate/attempt
+  lifecycle, retaining early EXIT/DEAD/exit_status (or their validated terminal state) in order until
+  AwaitGate/cleanup consumes them; never an effect result for an op the Server has not issued; a dead/closed Port
+  does not invalidate a terminal record already received; one-time finalisation and foreign-Port refusal
+  preserved; no Port/memo transfer.
+
+* History
+This document went through five reviewed revisions: a scope ruling and source survey, a checkpoint review that
+corrected the timer double (fence-validated wakes, supervised lifetime) and recorded the idle-drop finding, a
+review of the primitive rows that corrected the TERM semantics (group signal vs owner control channel), the
+witness ordering and the assertion strength, and an implementation review that replaced structural descriptor
+comparison by per-activation refs and removed a permissive closed-Port branch. Every correction is folded into the
+text above; the revision ledger is not reproduced here.

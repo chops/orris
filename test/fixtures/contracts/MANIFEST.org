@@ -1,0 +1,50 @@
+#+TITLE: Contract fixture provenance manifest
+
+This manifest records fixture origins and contract purposes. Synthetic cases are
+authored examples; parity cases are deterministic implementation-derived oracles;
+IPC fixtures are shared protocol examples imported from the coordination runtime.
+These origin claims do not replace content review or the all-file redaction gate.
+Any fixture seeded from an operational capture must record its source and review.
+
+- journals/valid_minimal :: synthetic · EJ-4 durable spec-invalid receipt fold
+- journals/reject_seq_gap :: synthetic · EJ-13 seq contiguity clause
+- journals/reject_unknown_event_type :: synthetic · EJ-1 closed vocabulary (uses retired prototype event name as the unknown)
+- journals/reject_first_event_not_run_created :: synthetic · EJ-13 seq-1 clause
+- journals/reject_second_terminal_run :: synthetic · EJ-13 single-terminal clause
+- journals/reject_schema_version_string :: synthetic · EJ-1 numeric-version trap
+- journals/reject_missing_event_id :: synthetic · envelope required-field clause
+- run_specs/invalid_missing_gate :: synthetic · EJ-8 no-gateless-items at spec boundary
+- plans/invalid_cycle :: synthetic · EJ-13 DAG cycle rejected at plan_recorded
+- journals/fold_happy_writer_reviewer :: synthetic · full grammar happy path (36 events: preamble, writer+reviewer assignment cycles, review accepted_clean, gate pass, work-item + run completion, post-terminal release brackets); pane_ref placeholders per redaction ruling
+- journals/fold_resume_mid_run :: synthetic · open assignment bracket (intent without result) at seq 12; resume/replay surface
+- run_specs/valid_minimal :: synthetic · smallest ratifiable spec
+- run_specs/valid_full :: synthetic · every optional field (agent_id, pane_hint w/ pane_ref, concurrency_cap, effort_hint, notification argv, fingerprint_policy)
+- run_specs/invalid_agent_grammar :: synthetic · EC-12 name grammar
+- run_specs/invalid_reserved_agent :: synthetic · EC-12 reserved names
+- run_specs/invalid_oracle_freeform :: synthetic · EJ-8 argv-only gate commands
+- run_specs/invalid_schema_version :: synthetic · EC-1 unknown major
+- plans/valid_linear :: synthetic · writer→reviewer chain
+- plans/valid_diamond :: synthetic · fan-out/fan-in with integration item
+- plans/invalid_duplicate_ids · invalid_missing_dep :: synthetic · EJ-13 DAG clauses
+- plans/invalid_undeclared_agent :: synthetic · EC-12 closed-at-roster
+- plans/invalid_effort_hint_value :: synthetic · research-fold enum bound
+- plans/invalid_stretch_overlap :: synthetic · EJ-6 stretch disjointness (placed in plans/, not run_specs/ as first drafted — overlap is a plan-level fact)
+- journals/reject_* (Class C sweep, 15 added) :: synthetic · one per remaining EJ-13 clause; entity-bearing clauses carry entity_id, position-bearing carry at_seq
+- journals/fold_cancel_converged · fold_budget_exhausted · fold_attention_block · fold_attention_resolved :: synthetic · terminal + blocked/resumed states; summary uses *_ids key convention
+- NOTE: reject_notification_altering_state is NOT expressible as a journal-shape fixture (the invariant constrains the notifier implementation, not event sequence legality) — deferred to a notifier unit/property test
+- journals/reject_run_completed_mismatch · reject_preamble_violation · reject_run_id_mismatch · reject_gate_unknown_artifact :: synthetic · reject inconsistent run completion, preamble ordering, run identity and gate artifact references
+- run_specs/invalid_allowed_roots_escape · plans/invalid_paths_outside_roots :: synthetic · path-containment rejection at the spec/plan boundary
+- envelopes/* :: synthetic · Class D per EC-8/11/13 + EC-1 (string "1.0" envelope version — distinct from numeric journal version by design); peers use pane_ref per redaction ruling
+- scenarios/* :: synthetic · Class E full-run fixtures (spec+plan+journal+expected): gated_run_seed (E2E core-gate seed), auth_blocked_pane (wedge + attention, no duplicate send), kill9_resume (3 crash-window truncations), gate_failure_summary_feedback (bounded failure_summary on gate_failed + retry-to-green), fingerprint_drift (run_environment blocks on resume drift, policy escalate), concurrency_cap (cap=1 serialization visible in journal order). Mid-run workspace-lease release in retry/cap scenarios: legal during a nonterminal run in the shipped fold; post-terminal releases are also supported.
+- parity/* :: oracle · Gate C slice-1 replay parity: 11 ScenarioHarness cases (NN_<case>.jsonl = persisted event lines, NN_<case>.summary.json = fold summary) captured using deterministic RunFSM scenarios under FixedClock base 2026-09-01T12:00:00Z and FixedId; both RunFSM and Lifecycle.Host must reproduce them byte for byte; regenerate only with an explicitly reviewed behaviour change and record the new combined digest here. Combined sha256 of `cat parity/*.jsonl parity/*.summary.json`: a28f48171e7eff57acbd5ec7f6437ccbd562e1ec7ff9f99d929ae2a73307bae2
+- plans/invalid_nonpositive_timeout :: synthetic · F-4 (clock review): timeout_s must be a positive integer once deadline-load-bearing
+- vocabulary note (Wave 1, NS-40) :: journals/reject_context_revision_skip, reject_agent_ratified_contract_change, reject_auto_accepted_oracle_change, fold_budget_exhausted, reject_event_id_repeat, valid_minimal, reject_seq_gap, reject_second_terminal_run, and assignment_failed-bearing fixtures contain RESERVED types on purpose: reserved means not appendable by current production code, never fold-illegal history (docs/contracts/event-vocabulary.org)
+- journals/valid_requested_by :: synthetic · ADR-0001 (Wave 1, NS-09): start + cancel commands carry data.requested_by {class,id,command_id,verb,args_hash} (operator variant of the per-class union); args/seq_0001.json and args/seq_0005.json are the argument documents whose ARGS-CANON-1 (length-prefixed) bytes the test hashes to reproduce both args_hash values; derived events carry none; envelope actor stays run_supervisor; run_cancel_requested data mirrors the runtime builder (run_cancel_data) plus requested_by; the optional run_lock_path field is omitted from these fixtures; live writer ownership is enforced separately by Journal.Ownership and Journal.RunLock
+- ipc/v1/* :: shared protocol examples imported from the coordination runtime (CONTRACT_HASH f1cacf8b… pinned in test/contracts/ipc_contract_hash_test.exs) · daemon reply shapes for ping, pane_status (4), send (10); dynamic fields use <name> placeholders so no literal pane ids or paths appear; authoritative contract text is docs/contracts/ipc-v1.md (EC-6)
+- journals/valid_envelope_version_2_minimal :: synthetic · OPEN-01(a) envelope version 2 baseline; two events pin =prev_line_sha256= to exact prior persisted line bytes including newline
+- journals/reject_chain_field_on_version_1 :: synthetic · envelope version 1 forbids the version 2 chain field; historical version 1 journals remain byte-stable
+- journals/reject_missing_chain_on_version_2 :: synthetic · envelope version 2 requires =prev_line_sha256= on every event
+- journals/reject_invalid_prev_line_sha256 :: synthetic · envelope version 2 rejects malformed chain digests with a named clause
+- journals/reject_unsupported_schema_version :: synthetic · unknown numeric envelope versions fail closed with a named clause
+- journals/reject_data_required_fields/spec.json :: synthetic · Gate B negative fixture names one required-field removal and expected rejection for each of the 33 appendable event payloads; tests apply each mutation to an immutable positive journal event
+- journals/fold_recovery_reserved :: synthetic · U1a-R (docs/contracts/recovery-reservation.org) reservation vocabulary: start, attention block, run_recovery_reserved attempt 1 (executor, writer_timeout, lost_generation 1), resume resolving the attention, attempt 2 (host, owner_down, lost_generation 7), then an assignment; expected fold in_flight / last_seq 9 with recovery_reservations 2; RESERVED type on purpose (no producer); placeholder hashes, no operator data

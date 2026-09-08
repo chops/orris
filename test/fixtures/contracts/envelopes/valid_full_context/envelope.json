@@ -1,0 +1,32 @@
+{
+  "schema_version": "1.0",
+  "msg_id": "m_0000000007_aaaa0007",
+  "ts": "2026-01-01T00:00:00Z",
+  "from": {
+    "agent": "claude",
+    "pane_ref": "pane_a"
+  },
+  "to": {
+    "agent": "codex",
+    "pane_ref": "pane_b"
+  },
+  "kind": "answer",
+  "subject": "example subject",
+  "body": "example body",
+  "in_reply_to": "m_0000000006_aaaa0006",
+  "trace": {
+    "traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+  },
+  "context": {
+    "project": "example",
+    "run_id": "run_fixture_0002",
+    "work_item_id": "item_a",
+    "assignment_id": "as_0001",
+    "gate_run_id": "gr_0001",
+    "review_id": "rev_0001",
+    "attention_id": "att_0001",
+    "context_revision": 1,
+    "context_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "topic_slug": "free-form-allowed"
+  }
+}

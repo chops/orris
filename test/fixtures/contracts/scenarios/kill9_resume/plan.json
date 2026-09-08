@@ -1,0 +1,23 @@
+{
+  "schema": "ai-orchestrator/run-plan",
+  "schema_version": 1,
+  "plan_id": "plan_scenario",
+  "work_items": [
+    {
+      "id": "item_a",
+      "title": "Work item item_a",
+      "role": "writer",
+      "deps": [],
+      "allowed_paths": [
+        "lib"
+      ],
+      "acceptance": [
+        "tests"
+      ],
+      "expected_artifacts": [
+        "lib/item_a.ex"
+      ],
+      "kind": "implement"
+    }
+  ]
+}

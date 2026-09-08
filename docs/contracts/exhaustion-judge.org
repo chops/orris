@@ -1,0 +1,102 @@
+#+TITLE: Exhaustion judge (pure budget calculation)
+#+PROPERTY: status delivered contract
+
+* Implementation status
+Delivered: =AiOrchestrator.Run.Recovery.Exhaustion.judge/2= (=lib/ai_orchestrator/run/recovery/exhaustion.ex=,
+public surface exactly =judge/2=), exported by the =Run= boundary whose deps include =Spec=; rows R-1..R-10
+and controls C-1..C-4 are =test/run/exhaustion_judge_red_test.exs=. The facts it consumes (=RunSpec.budgets/1=,
+=Spec.Budgets.validate/1=, the Fold's =recovery_reservations= count) ship. No producer of
+=run_recovery_reserved= or =run_budget_exhausted= calls the judge in the shipped source; the producer is the
+subject of =reservation-producer-proposal.org= and =recovery-reservation.org=.
+
+* Scope
+This contract covers one pure module, =AiOrchestrator.Run.Recovery.Exhaustion=, and its test
+=test/run/exhaustion_judge_red_test.exs=. The reservation PRODUCER is NOT in scope; its interface is a separate
+proposal (=reservation-producer-proposal.org=).
+
+* The facts the judge is allowed to consume (delivered elsewhere)
+- =AiOrchestrator.Spec.RunSpec.budgets/1= -> ={:typed, map}= (schema_version 2; ={:typed, %{}}= when absent),
+  ={:legacy, map}= (schema_version 1, never typed), ={:error, rejection}= otherwise. It authenticates nothing
+  about a run directory (its own doc says so).
+- =AiOrchestrator.Spec.Budgets.validate/1=: standalone strict schema; every known field optional, bounded
+  integer (=restart_attempts >= 0=); unknown key / non-map / null / non-integer / below-minimum refused with
+  =budget_invalid= and never echoed.
+- =AiOrchestrator.Journal.Fold=: =run_recovery_reserved= folds as bookkeeping only into
+  =State.recovery_reservations= (count keyed by =run_id=, never reset by generation).
+No producer for =run_recovery_reserved= or =run_budget_exhausted= exists in the shipped source (=Journal.Event=
+lists them among its reserved types and the Fold treats them as bookkeeping and terminal respectively); the
+Writer applies no Fold validation at append.
+
+* Interface
+=AiOrchestrator.Run.Recovery.Exhaustion.judge(budget_view, consumed)=
+
+- PURE. No IO, no process creation, no clock, no diagnostics, no event building, no state. Same inputs, same
+  output. It authenticates no run, no Writer, no journal, and grants NO capability: the result is a calculation
+  over supplied facts, never permission to append or to replace effects.
+- =budget_view= is exactly the =RunSpec.budgets/1= result shape, but the tag is NOT validation evidence: the
+  function is directly callable, so a ={:typed, map}= payload is re-judged by =Spec.Budgets.validate/1=.
+- =consumed= is a caller-supplied non-negative INTEGER (the count of =run_recovery_reserved= already in the
+  verified prefix). The judge does not know where it came from. No snapshot, handle or cause argument.
+- Public surface of the module is exactly =judge/2=.
+
+** Returns (closed)
+| result | when |
+|--------+------|
+| ={:reserve, consumed + 1}= | typed, =restart_attempts= configured, =limit > consumed= |
+| ={:exhausted, %{limit: limit, consumed: consumed}}= | typed, configured, =consumed >= limit= (including 0/0 and =consumed > limit=) |
+| ={:error, %{clause: "restart_budget_unset"}}= | typed and VALID, =restart_attempts= absent (R-e) |
+| ={:error, %{clause: "restart_budget_untyped"}}= | proper ={:legacy, map}= with =is_map(map)=, whatever it contains (R-e) |
+| ={:error, %{clause: "restart_budget_invalid"}}= | any other budget view: ={:typed, x}= failing =Budgets.validate= (nil, struct, unknown key, bool, integral float, below minimum, null, any known-field bound), ={:legacy, non_map}=, ={:error, _}=, bare map, nil, atom, wrong-arity tuple, anything else |
+| ={:error, %{clause: "recovery_count_invalid"}}= | =consumed= not a non-negative integer (negative, float, boolean, nil, list, map, struct, binary) |
+Refusal maps carry the =clause= key ONLY. Nothing from the input is copied into any REFUSAL (no field names, no
+values, no unknown keys); the =exhausted= return intentionally carries the =limit= and =consumed= integers. Integers are unbounded: no finite upper bound is imposed absent a declared one, and
+large integers are compared exactly (no coercion, no overflow, no default).
+
+** Precedence (deterministic, pinned)
+1. Classify and validate the budget view. Outcomes: =typed(map)= (validated), =untyped=, =invalid=. =untyped= and
+   =invalid= refuse HERE, before =consumed= is inspected.
+2. Validate =consumed=. Invalid refuses =recovery_count_invalid=.
+3. Decide: absent =restart_attempts= -> =restart_budget_unset=; else reserve/exhausted.
+Consequences pinned by tests: a VALID typed view missing the key with an invalid count -> =recovery_count_invalid=
+(count precedes unset); an invalid view with an invalid count -> =restart_budget_invalid=; a legacy view with an
+invalid count -> =restart_budget_untyped=. =max_attempts_default= is never a fallback for =restart_attempts=.
+
+* R-e (eligibility rule)
+Omission of =restart_attempts= is neither 0 nor infinity: automatic reservation is NOT eligible and the judge
+refuses =restart_budget_unset= without any implicit terminal, attention or resume action. A legacy (v1) budget
+map refuses =restart_budget_untyped= even when it carries the same numeric field; v1 is never silently typed and
+=max_attempts_default= is never substituted. This fixes eligibility only; operator-response events and migration
+policy are NOT chosen. The mapping of exhaustion onto an unrecoverable terminal and the fresh reconciliation
+facts a producer would need are separate open questions not consumed by this module.
+
+* Controls (baseline facts the test reproduces)
+| id | control |
+|----+---------|
+| C-1 | =RunSpec.budgets/1=: v2 with the key -> ={:typed, %{"restart_attempts" => n}}=; v2 without -> ={:typed, %{}}=; v1 =valid_full= fixture -> ={:legacy, map}=; v1 carrying the numeric key -> still ={:legacy, _}=; version 99 -> =unsupported_schema_version= |
+| C-2 | =Budgets.validate/1= malformed domains: nil -> =not_map=; struct -> =unknown_key= (not echoed); boolean/integral float -> =not_integer=; negative -> =below_minimum=; JSON null -> =null=; canary unknown key -> refusal without the canary; every known field bound |
+| C-3 | the =fold_recovery_reserved= fixture folds on the unchanged Fold to its measured =recovery_reservations= count (2), equal to the number of =run_recovery_reserved= lines it contains |
+| C-4 | =Run.Recovery= public surface today is exactly =acquire/2=, =evidence/1=, =evidence/2=, =release/1= (the judge is a sibling module, not an addition here) |
+
+* Rows (=test/run/exhaustion_judge_red_test.exs=; the module is addressed by =Module.concat= so the rows also
+  document the failure mode of an absent module)
+| id | row |
+|----+-----|
+| R-1 | below / equal / above limit: limit 3 with consumed 0 -> reserve 1; 2 -> reserve 3; 3 -> exhausted {3,3}; 5 -> exhausted {3,5} |
+| R-2 | limit 0: consumed 0 -> exhausted {0,0}; consumed 4 -> exhausted {0,4}; never reserve |
+| R-3 | typed, key absent, =max_attempts_default= 7 present -> =restart_budget_unset=; the fallback mutant (reserve 1) must fail |
+| R-4 | legacy with the key -> =restart_budget_untyped=; legacy empty -> =restart_budget_untyped= |
+| R-5 | every malformed view -> =restart_budget_invalid=, refusal is exactly =%{clause: ...}=, no canary anywhere in the return |
+| R-6 | every invalid count with a valid typed view -> =recovery_count_invalid= |
+| R-7 | two-error precedence: valid typed missing key + bad count -> =recovery_count_invalid=; bad view + bad count -> =restart_budget_invalid=; legacy + bad count -> =restart_budget_untyped= |
+| R-8 | large integers: limit 2^70 with consumed 2^70 - 1 -> reserve 2^70 exactly; consumed 2^70 -> exhausted exact; limit 1 with consumed 2^70 -> exhausted exact |
+| R-9 | purity/closure: same inputs twice give identical results; every result over a domain sweep matches one of the closed shapes; refusal maps have exactly the =clause= key; no pid/ref/fun in any result |
+| R-10 | the module's public surface is exactly =[judge: 2]= |
+
+* Delivered surface
+One pure module =lib/ai_orchestrator/run/recovery/exhaustion.ex=, exported by the =Run= boundary, which carries
+the =Spec= dependency it needs; nothing else. No =Spec= / =RunSpec= / =Budgets= changes, no
+Writer/Event/Vocabulary/Fold changes, no fixture bytes.
+
+* Non-goals
+No =run_recovery_reserved= append, no terminal append, no diagnostic, no reaper/OS-group facts, no replacement
+effect, no Server/Executor wiring, no OTel, no defaults, no migration, no reservation producer.

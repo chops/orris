@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@8aa03977d8d733052d78f4e008a241fd1dbf36b3 # v31.10.6
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve Nix toolchain cache tag
+        run: |
+          nix develop --command bash -c '
+            set -euo pipefail
+            tag="${MIX_HOME##*/}"
+            test -n "$tag"
+            test "${MIX_BUILD_ROOT##*/}" = "$tag"
+            test "${MIX_DEPS_PATH##*/}" = "$tag"
+            printf "TOOLCHAIN_TAG=%s\n" "$tag" >> "$GITHUB_ENV"
+          '
+
+      - name: Restore Dialyzer PLTs
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/ai-orchestrator/mix/${{ env.TOOLCHAIN_TAG }}
+            _build/${{ env.TOOLCHAIN_TAG }}/dev/dialyz*
+          key: dialyzer-${{ runner.os }}-${{ env.TOOLCHAIN_TAG }}-${{ hashFiles('mix.lock') }}
+
+      - name: Verify
+        run: nix develop --command bin/verify
+
+      - name: Evaluate supported Nix outputs
+        run: nix flake check --no-build --all-systems
+
+      - name: Build native gate guardian
+        run: nix build --no-link .#gate-guardian

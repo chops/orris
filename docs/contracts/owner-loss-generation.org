@@ -1,0 +1,103 @@
+#+TITLE: Observed owner-loss Writer generation (contract)
+#+PROPERTY: status delivered contract
+
+* Implementation status
+Delivered. =AiOrchestrator.Run.Server= (=lib/ai_orchestrator/run/server.ex=) builds the post-admission
+owner-loss result through one shared helper, =owner_loss/1=, for both loss paths; the positive
+=writer_generation= comes only from the registration captured at discovery for the exact Writer sibling, and
+without that binding the clause stands alone. The controls and witnesses below are
+=test/run/owner_loss_generation_red_test.exs=; the migrated pins live in
+=test/run/effect_owner_standalone_red_test.exs=, =test/run/worker_green_review_probes_test.exs= and
+=test/run/effect_owner_native_red_test.exs=. Nothing beyond the result shape is delivered by this contract: no
+loss record, no reservation, no recovery input.
+
+* Scope
+This document plus =test/run/owner_loss_generation_red_test.exs= and the Server's result construction. No
+journal event, schema or fixture delta, no reservation append, no new effect, no changed admission or
+teardown behaviour, no retained loss-record service, no restart, no owned recovery input, no external
+command. A combined host reservation/continuation producer is outside this contract.
+
+* The evidence boundary this closes
+Before this contract a post-admission owner loss answered only ={:error, %{clause: "run_effect_owner_down"}}=
+(the direct DOWN in =:driving=; =owner_down/1= for the queued-DOWN-before-reply priority). The generation of
+the Writer that was lost with that subtree is known to the Server at discovery: =discover/2= requires
+=Ownership.status(run_dir) = {:ok, %{writer: ^writer, state: :live}}= and keeps the registration in
+=siblings.ownership=; the registration's =generation= is the RunLock generation recorded by =Ownership.claim=
+from =held.generation=, i.e. the exact lock generation of the discovered Writer sibling. It is NOT
+=Server.gen= (the effect-protocol cap/gen for matching replies; =mismatch/6=). Nothing retains it after
+teardown except lock residue with =ours :unknown=.
+
+* Interface
+The EXISTING post-admission owner-loss result gains one closed integer:
+={:error, %{clause: "run_effect_owner_down", writer_generation: g}}=
+- =g= is the =generation= of the registration captured at discovery for the exact Writer sibling
+  (=registration.writer == siblings.writer=), a positive integer in the declared lock-generation domain
+  (=run.lock.<gen>= grammar: 1..999_999_999_999). It is never a new lookup after loss, never the next
+  acquisition, never a residue guess, never =Server.gen=.
+- Both post-admission paths produce the SAME enriched result: the direct correlated worker DOWN in =:driving=
+  and the queued-DOWN priority through =owner_down/1= during a reply.
+- Unchanged: pre-admission =run_worker_start_failed= (clause only), =run_server_down=, =await_timeout= (a
+  wait timeout is not owner loss), and =run_executor_teardown_incomplete= precedence in =Executor.Owner=.
+- No cause label, pid, ref, token, path, exit reason or cleanup claim is added. Result keys are exactly
+  =[:clause, :writer_generation]=.
+- The enriched result survives the EXISTING teardown to the caller unchanged: Server's cached repeated
+  =await=, and =Executor.Owner.run/2= pass-through after its observed teardown and the owner's DOWN, with no
+  lookup of the dead Writer to decorate the result. If discovery/binding cannot be established no positive
+  generation is invented (the discovery failure path is unchanged).
+- Delivery: Server result construction only (one shared helper, =owner_loss/1=, for both paths) and the result
+  type/doc. Owner/Host/Reducer/Writer/Event/Vocabulary/Budgets untouched.
+
+* Intentional shape migration (named here, not weakened silently)
+Exact-equality pins that asserted the clause-only shape now assert the enriched shape:
+- =test/run/effect_owner_standalone_red_test.exs= L-2a and L-2b.
+- =test/run/worker_green_review_probes_test.exs= "worker death already observed before dequeue".
+- =test/run/effect_owner_native_red_test.exs= shares one pin across nine parameterised crash-boundary tests
+  (=consistent_boundary!/5= and =skew_boundary!/5=, both through =crash!/5=). This fourth site was found by
+  the full verification run rather than by the originally named list and is migrated with the same
+  independent binding (registration captured in =crash!/5= while the run executes, before the worker is
+  killed).
+The controls record the clause-presence observation as baseline evidence (control C-4) and do NOT require
+both shapes to hold at once; the named pins moved to the enriched shape in the same change as the helper, and
+this document names them so a review can check nothing else moved.
+
+* Controls (baseline behaviour, unchanged by this contract)
+| id | control |
+|----+---------|
+| C-1 | RunLock/registration binding: after a direct RunLock acquire+release on the run dir (advancing the generation past 1), a started subtree's =Ownership.status= registration has =writer == the Writer sibling= and =generation == RunLock.holder's generation= and =generation != 1= (so it is provably not =Server.gen=) |
+| C-2 | effect-protocol =gen= is distinct: the =run_effect_requested= trace carries =gen: 1= while the registration generation is > 1 |
+| C-3 | existing lifetimes: post-admission owner loss leaves root/Writer/Server/Work alive, no rebirth, Work empty; Server status =:failed=; repeated =await= returns the same cached term |
+| C-4 | baseline before-shape observation: the owner-loss result matches the clause (clause-presence match; the exact shape is asserted by the named pins, not here) |
+| C-5 | =Executor.Owner.run/2= passes a successful Server result through unchanged after teardown and the owner's DOWN (does not exercise teardown-incomplete) |
+| C-6 | pre-admission loss and wait timeout keep their clauses: =run_worker_start_failed= (worker start injected failure) and =await_timeout= (await 0 on a held run) |
+| C-7 | reply-then-DOWN path executable on an advanced lock: Server suspended, the worker's correlated reply (bound to this server AND worker by cap/gen/ref) is queued FIRST, the worker is killed and its real DOWN is queued SECOND, both observable before dequeue; on resume the selective-receive liveness priority yields the owner-loss clause and the correlated reply is never traced applied |
+| C-8 | =Executor.Owner.run/2= returns the owner-loss clause after its teardown and the Writer's observed DOWN (barrier =:subtree_started= hands the facts to the test) |
+| C-9 | existing-journal acquisition: a =:resume= subtree (open =:existing=) on the journal of a lost run acquires a strictly greater registration generation |
+| C-10 | privacy surface: with a canary in a real option key and in the run directory name, the loss result, =:sys.get_status= (through =format_status=) and the captured log carry neither |
+
+* Witnesses (the =writer_generation= rows)
+| id | witness |
+|----+---------|
+| L1 | real held post-admission worker killed after a RunLock advance: =writer_generation= equals the independently captured registration generation AND =RunLock.holder= generation captured BEFORE the kill; it is not 1 |
+| L2 | direct DOWN in =:driving= and the reply-then-DOWN path (each on its own advanced lock; registration bound to =RunLock.holder= and the exact Writer, distinct from traced protocol gen 1) produce the SAME enriched result; the correlated reply for that exact server/ref is never traced applied |
+| L3 | cached await proven before teardown; then a supported =:resume= acquisition on the same journal has a strictly greater generation, and the first run's SAVED returned evidence keeps its original =g= (compared as an immutable value, never a new await on the stopped Server) |
+| L4 | the enriched result is returned by repeated cached =await=, and by =Executor.Owner.run/2= after its observed teardown (the Writer is dead when the caller reads it; no lookup) |
+| L5 | pre-admission loss stays clause-only =run_worker_start_failed= with no =writer_generation=; =await_timeout= has none; a forged/mismatched effect reply (wrong cap) does not produce owner-loss evidence |
+| L6 | whole returned result equals ={:error, %{clause, writer_generation: registration}}= for the independently captured registration, the RETURNED integer within 1..999_999_999_999, keys exactly =[:clause, :writer_generation]=; with the canary injected through a real option key and the run directory, the result, =:sys.get_status= and the captured log carry neither (OTP's own status metadata is not asserted pid-free) |
+
+* Teardown-incomplete precedence
+=Executor.Owner.finish/2= returns the teardown error over ANY Server result, so
+=run_executor_teardown_incomplete= takes precedence over the enriched loss result by construction. An attempt
+to force it (suspend the Writer, kill the worker) only established that suspending THAT Writer did not force an
+incomplete teardown in that experiment (Owner's =:kill= joined it); no wider inference is drawn. An
+independent review accepted the structural argument for the unchanged =Owner.finish/2=; this contract does not
+touch =Owner=. The generic =run_server_down= exact shape is preserved and its existing foundation witness ("a
+Server killed while a subscriber's call is pending: exactly run_server_down",
+=test/run/run_server_foundation_red_test.exs=) is cited rather than duplicated.
+
+* History
+The interface went through two review revisions (the queued-DOWN path, the independent registration
+binding, the fourth pin site and the privacy witness); all corrections are folded into the text above.
+
+* Non-goals
+No writer_exit / writer_timeout loss records; no vocabulary promotion; no owned recovery input; no fenced sink;
+no reservation; no replacement admission; no change to Owner's teardown mechanism.

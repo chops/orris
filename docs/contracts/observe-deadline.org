@@ -1,0 +1,286 @@
+#+TITLE: Observe deadline actuation under the Run.Worker fence
+#+PROPERTY: status delivered contract
+
+* Implementation status
+Delivered. =AiOrchestrator.Effects= honours =opts[:adapter_runner]= for =Effect.Observe= (=observe_through/3=), maps a
+runner =:expired= to =Observation.TimedOut= from the owner's retained intent, and raises =Effects.AdapterFailure=
+for a validated closed diagnostic; =AiOrchestrator.Effects.AdapterRunner= (=run/1=, =diagnostic?/1=) is the shared
+runner boundary. =AiOrchestrator.Run.Worker= takes a zero-arity bootstrap closure in =start_link/2=, owns a linked
+=Task.Supervisor=, arms the fence once per fenced execute through =AiOrchestrator.Run.DeadlineFence=, runs the
+adapter in a supervised task and kills it when the fence is due. The same fence has since been generalised to
+=Dispatch= / =ReconcileSend= (see =delivery-deadline.org=); the Worker's =observe_fence_kinds= seam defaults to
+=[Effect.Observe]= so this document's fact stream is unchanged. Rows C-1..C-10 and O-1..O-18 live in
+=test/run/observe_deadline_red_test.exs=; the Port-retention baseline is
+=test/run/observe_port_retention_control_test.exs=; the imported carrier-validation probe is
+=test/run/observe_green_review_test.exs=; the FixedClock monotonic decoupling controls are
+=test/clock/fixed_clock_decoupling_test.exs=. Nothing here claims settle responsiveness, OS/remote containment, or
+deadline coverage for gate effects, =SnapshotArtifact=, =ReadReview= or =Timer=.
+
+* Scope
+This contract covers ONLY =Effect.Observe= (=dispatch_module.observe/2=). =Timer= is an owner-side =Process.sleep=;
+gate effects, =SnapshotArtifact=, =ReadReview= and =Timer= are explicitly UNCOVERED. The unit retires one specific
+gap: a blocked non-cooperative observe adapter. No runtime-wide deadline coverage is claimed.
+
+* Source facts the contract rests on
+- =Run.Worker.handle_info({:execute, cap, gen, ref, intent, receipt})= calls =Effects.execute= SYNCHRONOUSLY for a
+  generic effect; =Effects.execute= -> =run_effect= -> =guarded(runtime, fn -> adapter ... end)= ->
+  =adapter(%Effect.Observe{command, deadline_unix}, opts)= = =dispatch_module(opts).observe(command,
+  observe_opts(deadline_unix, opts))=, where =observe_opts= caps the adapter's =observe_timeout_ms= to the
+  remaining window and =dispatch_opts(opts)= is exactly =opts[:dispatch_opts]=.
+- Raw adapter results map in =Effects.observe/3=: ={:ok, artifact}= -> =ArtifactObserved=, ={:blocked, r}= ->
+  =Blocked=, ={:pending, d}= -> =Pending=, ={:error, map}= -> =ObserveFailed=, other ->
+  =ObserveFailed(invalid_return)=. =Observation.TimedOut= is ADMISSIBLE for =Observe=; before this unit it had no
+  producer anywhere in lib (only its definition, the Diagnostic list and the reducer's =unwrap=).
+- COOPERATIVE baseline: =LocalPane.observe= polls until =monotonic_ms >= deadline_ms= and =retry_observation=
+  returns ={:error, %{"reason" => "observation_timeout", "last_observation" => reason}}= -> =ObserveFailed= ->
+  =unwrap= ={:error, reason}= -> =assignment_observed/4= or =artifact_observed/5= -> =ret(state, {:error,
+  reason})= -> with an empty stack =halt(state, value)= -> =Host.advance= returns ={:halt, {:error, rejection}}=.
+  No event is emitted by those clauses. What the Executor/Server finally return and what the durable prefix
+  contains after that halt is MEASURED by control C-2 from a real run (a Host halt surfaced as the Server's cached
+  =:failed= result, no exit, no event), never assumed.
+- Raw adapter failures: =guarded= re-raises as =Effects.Interrupted=; the Worker's execute boundary closes it
+  (kind, class, digest, frames, cleanup summary after =Effects.settle=) and answers =effect_failed=; the Server
+  EXITS =run_step_failed= on it, it never reaches the reducer (=Server.closed_diagnostic?= admits exactly five keys
+  and kind =error|exit|throw=).
+- The Worker cannot service =settle= or system messages while inside =Effects.execute= (control C-1). An adapter
+  runner invoked INSIDE =Effects.execute= is a nested receive while =handle_info= is active: it does NOT free the
+  Worker's loop; only the runner's own selective receive dequeues during the wait. This unit pins that model; it
+  claims no settle responsiveness.
+
+* Interface (fence, runner, expiry model)
+- =adapter_runner= seam on =Effects= inputs (=opts[:adapter_runner]=; default: invoke the closure in the calling
+  process with the EXISTING =guarded= / =Interrupted= / Host semantics, byte-identical behaviour). Used at the
+  =Effect.Observe= adapter site; the seam wraps the RAW invocation
+  =fn -> dispatch_module(opts).observe(command, observe_opts(deadline_unix, opts)) end=. The raw -> =Observation=
+  mapping stays in =Effects.observe/3=.
+- Runner result grammar, DISJOINT: ={:ok, raw}= (the adapter returned; =raw= may itself be ={:error, map}=, which
+  then takes the existing =ObserveFailed= mapping), ={:failed, diagnostic}= (a raw =raise= / =throw= / =exit=
+  inside the task, closed INSIDE the task as the existing closed diagnostic: =kind= error|exit|throw, =class=
+  =Diagnostic.result_class=, =digest=, =frames= = the MEASURED task stack depth; depth-parity differences from the
+  in-process path are disclosed, never fabricated), =:expired= (the owner's fence selected expiration before any
+  result; the expiry data, =deadline_unix=, comes from the OWNER's retained intent/fence, never from the task or a
+  supplied map). A malformed runner envelope fails closed on the normal path and never enters the precomputed
+  diagnostic path by map shape alone.
+- Owner-side failure carrier within the root =Effects= boundary: a small typed =Effects.AdapterFailure= holding
+  ONLY the validated closed diagnostic, raised by =Effects= under =guarded= so the existing =Interrupted= adds the
+  latest OWNER Runtime; the Worker handles that tagged case by settling that runtime and building the existing
+  five-key closed failure plus cleanup, preserving the original kind/class (never re-hashing the precomputed
+  diagnostic as if it were the original cause). No public diagnostic field, kind or EventData change.
+- Expiration mapping: =:expired= is mapped by =Effects= to =Observation.TimedOut{assignment_id, deadline_unix:
+  <the owner's retained intent deadline>, now: now(opts)}=, making this unit the FIRST producer of that admissible
+  type (disclosed: it is not a previously emitted baseline). The cooperative shape (=ObserveFailed= with
+  =observation_timeout= + =last_observation=) is UNCHANGED and remains a separate baseline; the expiry shape is
+  distinct (unwrap = =observation_timeout= + =deadline_unix=) and is disclosed as such; no =last_observation= and
+  no event is fabricated. The full-path baseline (what the Executor returns and what the durable prefix holds
+  after the halt) is measured before any no-event assertion.
+- Worker-owned fence: the earliest AVAILABLE deadline is the intent's =Effect.Observe.deadline_unix= as the
+  reducer built it (its relation to the accepted =assignment_requested= prefix is pinned by a baseline control);
+  armed ONCE at the VALIDATED Worker =:execute= dequeue, BEFORE adapter invocation, from one =Clock.unix_now= and
+  one =Clock.monotonic_ms= of the SAME configured owner-side Clock (no system-clock bypass); the absolute due
+  instant and the bounded wait cap are retained; already due => =:expired= with ZERO adapter invocations; late
+  admission consumes the REMAINING deadline, never a fresh =timeout_s=; identity = the Server's =cap/gen/ref= of
+  that request, applied on every dequeue.
+- Owner-side runner RECEIVE loop: =Effects= stays SYNCHRONOUS in the Worker; the runner's own selective receive
+  handles ONLY the correlated task facts (reply, DOWN) and its timer, then returns to the existing Worker flow;
+  other settle/system messages may stay queued until it returns. No claim that the task launch frees the outer
+  GenServer loop; this unit delivers deadline responsiveness and truthful cleanup, not an async rewrite.
+- Worker-internal linked =Task.Supervisor= started in =Worker.init=: the observe task runs under it with the GO
+  handshake and an independent death monitor; task input = the raw closure and the deadline only (no Runtime,
+  Interrupted, gate handle, owner memo). Partial start (=Task.Supervisor.start_link= failure) fails =Worker.init=;
+  the Server's existing pre-admission =run_worker_start_failed= is source-measured as a control before being
+  pinned; owner hard death BEFORE GO is witnessed; no outer topology change; no global =trap_exit=.
+- Winner and facts: the timeout winner is retained; an actual raced raw reply is acknowledged/consumed with CLOSED
+  metadata only (presence, outcome class, correlated identity) and never applied to the reducer nor read as
+  settlement; a result dequeued first preserves normal behaviour with no kill; an ordinary task-error result wins
+  if first; due wake, kill request, observed DOWN, shutdown return and late-result presence are SEPARATE facts;
+  early / foreign / duplicate wakes never kill; a no-reply death is a truthful closed failure with current-op
+  correlation retained through completion or death proof.
+- No deliver/reconcile is ever called by this path (measured with counters); a task that dies without a reply
+  yields the existing closed failure + join facts, never a hang, never an observed result; a late raw result
+  after a selected expiration never becomes an observation, never completes the assignment, never releases a
+  lease as success, never resets the winner; a killed task proves nothing about OS or remote work.
+
+* Boundary decisions
+- Default direct =Effects.execute= (no =adapter_runner=) keeps EXISTING behaviour in every respect: no arming, no
+  expiry, the adapter runs in the calling process. Expiry is owned by the WORKER: it arms at its validated
+  =:execute= dequeue and decides expiry before invoking =Effects=. Consequence: an already-due deadline at the
+  product Worker yields =Observation.TimedOut= with ZERO task starts and ZERO adapter entries AND the runner seam
+  is NOT invoked at all (a runner call is not a task start, but not invoking it is the simplest closed rule); a
+  direct =Effects.execute= with a runner and an already-due deadline still invokes the runner (Effects does not
+  arm) - that is the boundary, pinned by O-1 and O-3 respectively.
+- The owner Clock is the configured =:clock= seam; arming reads it EXACTLY once each for =unix_now= and
+  =monotonic_ms= (call counts witnessed by a counting Clock); no second owner read, no system-clock bypass; the
+  chunk cap is =opts[:observe_fence_cap_ms]= (test-only override; runtime default =60_000= ms, supplied to
+  DeadlineFence); every early wake carries the SAME =due_ms=; an independent oracle recomputes the expected due and
+  each expected wait from the same scripted values with =Run.DeadlineFence= directly.
+
+* Engineering decisions (D1..D4)
+- D1: at the Worker, already due => no runner invocation, no task start, no adapter entry; direct =Effects=
+  unchanged. On a resume of an already-expired prefix the same rule holds (control C-3 below).
+- D2 seam transport: =Run.Worker.start_link(server, bootstrap)= where =bootstrap= is a ZERO-ARITY CLOSURE (never a
+  map, never a raw MFA): the child start MFA carries only the closure, so supervisor start/crash reports render
+  =#Function<...>= and no payload; the closure is EXECUTED inside =init= under the closed failure boundary and may
+  yield ONLY the closed keys =:task_supervisor_start=, =:fence_observer=, =:fence_hold=, =:fence_cap_ms= (a later
+  unit added =:retention_observer=; an unknown key refuses at init); the Server builds the closure at Worker birth
+  from its own =config.opts=; =format_status= redacts the bootstrap and the yielded seams; existing
+  =worker_module= doubles and the Server protocol are preserved.
+- D3 (no deferral): owner Port/memo retention is witnessed with a test GateDouble WRAPPER that opens =/bin/cat= in
+  =prepare= and asserts the same-process memo and Port in =abandon= (a baseline helper imported from review); no
+  native guardian needed. Control C-8 proves a real =PrepareGate= alone succeeds under the standalone admitted
+  Worker BEFORE O-11b is asserted.
+- D4: the frames relation is EQUALITY against an INDEPENDENT measurement of the SAME raw failure site: the test
+  adapter wraps its raw =raise= / =throw= / =exit= in a test-owned =try ... catch k, r= that records
+  =length(__STACKTRACE__)= to the test and re-raises the ORIGINAL stack with =:erlang.raise(k, r, stack)=; the
+  production diagnostic's =frames= must equal that observed length (a constant-frames mutant fails). The untouched
+  raw-failure canary rows (C-5 parity, O-6b) stay separate. The public runner boundary
+  =AiOrchestrator.Effects.AdapterRunner.run(closure) -> {:ok, raw} | {:failed, diagnostic}= remains the shared
+  small boundary but is NOT the reference. An earlier =<= 4= tolerance was withdrawn.
+
+* Test-only seams (never set in production; default nil)
+- =observe_fence_observer= (pid): facts ={:observe_fence, worker, %{op: %{cap, gen, ref}, task: %{ref, pid} | nil,
+  fact}}= for =:task_supervisor= (pid, sent once at Worker init), ={:armed, %{deadline_unix, due_ms}}=,
+  ={:task_started, pid}=, ={:early, %{wait_ms, due_ms}}=, =:due=, =:kill_requested=, ={:shutdown_return, :ok_reply
+  | :exit | nil}=, ={:death, class}=, ={:late_result, :stale}=, ={:stale, :foreign | :duplicate | :retired}=.
+  Facts also carry =kind:= (the intent struct) and =observe_fence_kinds= (default =[Effect.Observe]=) selects
+  which kinds report (see =delivery-deadline.org=).
+- =observe_fence_hold= is a plain map with optional =:before_go= and =:after_expiry= pid values. An absent stage
+  means no hold there; a bare pid, unknown stage or non-pid controller refuses at bootstrap/admit validation. The
+  bootstrap's =:fence_hold= carries this same shape. The Worker sends ={:observe_fence_held, worker, token, %{op,
+  task, stage}}= and waits without a timeout for ={:observe_fence_proceed, token}=, monitoring that stage's
+  controller. The pre-GO stage is after task allocation but before execution; controller loss joins the task
+  without granting GO. The after-expiry stage is after expiry selection but before shutdown; controller loss
+  proceeds only to that selected shutdown. Full-subtree expiry rows select only =:after_expiry=.
+- Timer wake message: the Worker's own timer sends ={:observe_fence_wake, %{cap, gen, ref}}= to the Worker; a test
+  may inject the same shape to deliver a foreign, duplicate or retired wake.
+- =observe_task_supervisor_start= (zero-arity fun): replaces =Task.Supervisor.start_link= in =Worker.init=
+  (partial-start witness).
+
+* Named baseline -> after-implementation transitions (decided BEFORE code, never relaxed silently)
+| control | before (baseline) | after implementation |
+|---------+-------------------+----------------------|
+| C-1 | the observe adapter runs IN the Worker (=entered_in == worker=) and =:release_ok= is sent to the Worker | the adapter runs in the TASK; =:release_ok= goes to the task pid; the Worker still cannot dequeue settle while inside the runner receive (the model, not a gain) |
+| C-2 | the cooperative poll runs in the Worker (=poll_entered= from the Worker pid) | the poll runs in the task; the RESULT shape is unchanged (=ObserveFailed=, =observation_timeout= + =last_observation=) |
+| C-5 | raw raise/throw/exit inside observe in the Worker -> closed =effect_failed= -> Server exits =run_step_failed= | same closed failure and same Server exit, now via the task-side diagnostic; kind/class/digest equal, frames = task depth (disclosed) |
+| C-6 | synthetic direct =Effects= control (fake handle) | unchanged: direct Effects never arms |
+| C-9 | the raw raise runs IN the Worker (=observe_entered= from the Worker pid) and the Worker's own failure boundary settles the latest Runtime | the raw raise runs in the TASK and the task-side diagnostic reaches the same closed boundary; the SAME settlement facts and cleanup counts are required (disclosed: only =entered_in= changes) |
+Everything else (C-4, and C-3 as re-pinned below) is invariant.
+
+* Controls (baseline)
+Ten controls in the row file, plus the imported Port-retention control
+=test/run/observe_port_retention_control_test.exs= as the ownership-witness baseline for O-11b.
+| id | control |
+|----+---------|
+| C-1 | SYNCHRONOUS blocked observe in the Worker; a settle-shaped message stays in its mailbox; both scenario observations released; the run completes |
+| C-2 | COOPERATIVE timeout with ONLY the artifact reader replaced: poll entered in the Worker; =Server.await= = the Host halt ={:error, %{"reason" => "observation_timeout", "last_observation" => %{"reason" => "artifact_absent"}}}=; Server alive in =:failed=; nothing appended after =assignment_observation_started=. (An earlier =run_server_down= measurement from an incomplete pane-client double was withdrawn.) |
+| C-3 | TRANSITIONED at implementation (explicit D1 behaviour change): the UNCHANGED expired kill9 =events_awaiting_artifact= prefix (deadline 2026-01-01T00:00:00Z, before its own lifecycle timestamps) resumes to EXACTLY ={:error, %{"reason" => "observation_timeout", "deadline_unix" => 1767225600}}= with ZERO adapter entries for the due assignment (nothing observed, delivered or reconciled), =:armed= at the durable deadline, no task allocated, the input prefix bytes preserved and the MEASURED resume-acceptance suffix =[run_resumed, workspace_lease_release_requested, workspace_lease_released, workspace_lease_acquired, pane_lease_release_requested, pane_lease_released, pane_lease_acquired]=. Before implementation the unchanged product took ONE adapter look (=LocalPane= observes once before honouring a zero budget) and completed, with call order =[observe as_0001, snapshot as_0002, deliver as_0002, observe as_0002]=; that measurement is retired with the transition |
+| C-4 | default direct invocation for a SnapshotArtifact (this control exercises snapshot only) |
+| C-5 | raw =raise=, =throw= AND =exit= inside observe: closed =effect_failed=, Server exits =run_step_failed= with kind =error= / =throw= / =exit=, =await= answers =run_server_down=; the exact closed diagnostic (kind, class, digest, frames, cleanup) is recorded per kind as the parity target |
+| C-6 | synthetic direct =Effects= retention control (labelled fake handle, owner Port, memo); NOT the product retention witness |
+| C-7 | positive leaking-source control: a plain GenServer holding the canary DOES show it in =:sys.get_status= (the probe can see leaks) |
+| C-8 | a real =PrepareGate= alone succeeds under the standalone admitted product Worker with the scenario gate seams (=supervisor_instance= and =run_id= supplied): nonempty Runtime, one settlement |
+| C-9 | failure-path latest-Runtime settlement with the =PortGate= wrapper: after a real =PrepareGate= a raw raise inside observe settles the retained Port/memo: =:settling= as the same owner, =gate_closed=, =effect_failed= with =cleanup: %{attempts: 1, settled: 1}=, Port gone. This passed on the unchanged product, so it is a baseline, not a missing feature |
+| C-10 | ordered trace-reader control with all messages queued before consumption: old clock reads are excluded from the arm snapshot, duplicate arm reads stay visible, and each early/due event uses its own preceding clock read rather than the newest queued one |
+
+* Rows (pinned before implementation; all pass on the shipped source)
+| id | row |
+|----+-----|
+| O-1 | seam: with =adapter_runner= supplied to direct =Effects.execute= for an Observe (future deadline) the runner is invoked with a zero-arity closure and =%{deadline_unix}=; for a snapshot it is not; with an ALREADY-DUE deadline direct Effects STILL invokes the runner (Effects does not arm: boundary) |
+| O-3 | already due at the product Worker (controlled Clock, standalone admitted Worker): =:arming= then ={:armed, %{deadline_unix}}= then =TimedOut{deadline_unix}= with ZERO =task_started= facts, ZERO adapter entries and the runner NOT invoked; exactly one =unix_now= and one =monotonic_ms= read BETWEEN =:arming= and =:armed= (the arm snapshot; lifetime reads are not counted) |
+| O-3b | remaining deadline: arm snapshot has deadline minus unix = 1 s and due = monotonic + 1000 ms; the returned result cannot precede that due instant, and enqueue-to-result is under 5 s, never a fresh timeout_s; the task is dead afterwards. Timing starts before enqueue, not after an arbitrarily delayed receipt of the armed fact |
+| O-2 | armed once at the Worker's execute dequeue: one =:arming= and one =:armed= fact correlated to the traced request; the expected deadline is the DURABLE accepted intent (=assignment_observation_started.data.deadline_unix=), never Worker unix + =timeout_s= (the FixedClock is process-local); =due_ms= equals =DeadlineFence.arm= applied to the arm-snapshot reads (exactly one =unix_now= and one =monotonic_ms= between =:arming= and =:armed=); the cap is the explicit test seam =observe_fence_cap_ms= (DeadlineFence supplies no runtime default) |
+| O-4 | early chunks with an explicit cap: every =:early= fact carries the SAME =due_ms=; its wait equals DeadlineFence.next at the independently traced monotonic read immediately preceding THAT fact in Worker send order, not the latest read in a delayed consumer's mailbox; task alive at each early point, no kill_requested before due; due checked against its own traced read |
+| O-5 | actual timer interruption of a blocked observe (real timer, real subtree): =:due=, =:expiry_selected=, held ={:observe_fence_held, worker, token, %{op, task}}= (hold AFTER selection, BEFORE the shutdown request), then on =proceed=: =:kill_requested=, ={:shutdown_return, nil}=, ={:death, :killed}=; =Server.await= == the EXACT expiry result ={:error, %{"reason" => "observation_timeout", "deadline_unix" => d}}= (TimedOut unwrap), Server alive in =:failed=, durable prefix: nothing after =assignment_observation_started= |
+| O-6 | result first, FORCED: standalone admitted Worker, +600 s deadline, controlled release of the task; the reply wins with no kill; a hand-injected wake for the completed op A while op B is live -> ={:stale, :retired}=, B's task untouched; kill count 0 over the whole test |
+| O-6b | raw error first, FORCED: +600 s deadline, controlled owner; a raw raise before due wins: ={:death, :normal}=, closed =effect_failed= with the C-5 kind/class/digest and exactly the keys kind/class/digest/frames/cleanup; a LATER wake for that op is ={:stale, :retired}=; no kill; canary absent from the log |
+| O-7 | genuine raced result via the held point: =:expiry_selected= then held with a token correlated to the CURRENT op and task (=%{ref, pid}=); the test releases the task and proves the reply queued in the Worker mailbox for the current task ref; =proceed= then REQUIRES =:kill_requested=, ={:shutdown_return, :ok_reply}= and ={:late_result, :stale}=; the expiry result stands (exact shape as O-5) |
+| O-8 | foreign / duplicate wakes: a foreign identity wake while an op is live -> ={:stale, :foreign}=, task untouched; a duplicate due wake after selection -> ={:stale, :duplicate}=; the kill count over the COMPLETE acknowledged operation (after death, await and flush) is exactly 1 |
+| O-8b | hold controller death AFTER =:expiry_selected=: the Worker proceeds ONLY to the already-selected shutdown (=:kill_requested=, =TimedOut=); it never retains success and never permits new work; no stranded hold |
+| O-8c | hold controller death at the pre-GO hold (allocated before GO): the Worker FAILS CLOSED: the allocated task is joined (DOWN), the adapter never enters (GO never granted), the closed =effect_failed= carries kind =exit=, canary absent from the log; pinned separately from O-8b |
+| O-9 | RAW raise/throw/exit under the runner: the Server's =run_step_failed= diagnostic has EXACTLY the C-5 kind, class and digest for that kind; =frames= EQUALS the depth independently observed by the test-owned catch/re-raise wrapper at the SAME raw site (D4); grammar: ={:ok, {:error, map}}= maps to =ObserveFailed= parity; every malformed runner return (=:garbage=, ={:failed, non-diagnostic map}=, ={:failed, diagnostic-shaped map with canary and frames -1}=, an unrelated struct, ={:ok}=, a valid depth with a class outside the vocabulary, a valid class with a raw digest, an upper-case digest) fails closed as =ObserveFailed{reason: %{"reason" => "observe_invalid_return"}}= with EXACTLY the keys =digest=/=reason=/=result_class= and the canary absent (bare =is_struct= acceptance withdrawn); a task killed WITHOUT reply -> closed failure with kind =exit=, observed join, no hang |
+| O-10 | lifetime: orderly Worker stop, HARD Worker kill and TASK-SUPERVISOR kill with a blocked task: third-party monitors join Worker, task supervisor (pid from the =:task_supervisor= fact) and task; task-supervisor death takes the Worker and the Server answers the existing =run_effect_owner_down= |
+| O-11b | owner Port/memo retention under the product Worker (D3): the imported =PortGate= wrapper (opens =/bin/cat= in =prepare=, process-local memo) under the standalone admitted product Worker: a REAL =PrepareGate= yields ={:gate_owned, :prepared, worker, port, memo}= and =GatePrepared=; the retained handle carries that Port and memo; THEN a future-deadline (+1 s) blocked observe is interrupted by =TimedOut=; the handle is unchanged, the Port is still connected to the Worker; =:settle= witnesses =:settling= as the same owner, closes the Port and reports EXACTLY =[%{"gate_run_id" => "gr_0001", "attempt" => 1, "settle" => %{"settled" => true}}]=; a second settle reports =[]= |
+| O-12 | redaction on a CONTROLLED owner: standalone admitted Worker with a closure bootstrap; the task SUPERVISOR must answer =:sys.get_status= (required, no pass on unavailable); the task (an arbitrary closure) need not answer and its non-answer is recorded as the limit; after a raw failure the Worker is REQUIRED alive and its =:sys.get_status= must be type-valid (={:status, pid, {:module, :gen_server}, items}=), carry =:redacted= and no canary; canary absent from the log and from the DOWN reason |
+| O-13 | bootstrap closure partial start (D2): a closure yielding a failing =task_supervisor_start= makes =Worker.start_link/2= return ={:error, _}=; the start result and the captured start/crash log never carry the canary; NO EXIT reaches the linked trapping caller (measured; OTP proc_lib flushes it on nack) and that absence is observed within a bound; a live Worker's status never renders the bootstrap |
+| O-13b | before-GO kills: PRE-ALLOCATION (no execute yet): a hard Worker kill joins the Worker and its task supervisor independently; ALLOCATED-BEFORE-GO: the Worker holds at stage =:before_go= with the allocated task pid (adapter not entered), the test binds monitors first, kills the Worker while GO is withheld, and independently joins Worker, task supervisor and task; the adapter never enters |
+| O-13c | malformed bootstrap/hold domain refuses without echoing payload in the start result or the logs: bare hold pid, unknown hold stage, non-pid controller, unknown bootstrap key; no EXIT reaches the trapping caller (same measured protocol fact as O-13) |
+| O-14 | expiry-produced prefix resume: after O-5's expiry the run dir is resumed with counting doubles: the resume result is EXACTLY ={:ok, _}=, the seeded journal is preserved as an exact prefix, the expired assignment is never re-delivered or reconciled, and the measured re-observation policy is RECORDED (printed), not assumed |
+| O-15 | raw clock failure (raise/throw/exit) at the arm with a retained PortGate handle -> closed =effect_failed= with the C-5 kind/class/digest, cleanup attempts 1 / settled 1, Port gone, no task, Worker alive, canary absent |
+| O-16 | raw clock failure at the first chunk after GO -> the live task is killed and joined (=:kill_requested=, =:death=, DOWN) before the same closed settlement |
+| O-17 | positive unexpired resume from a freshly GENERATED awaiting prefix (a real run under FixedClock blocked in its first observe, hard-killed, Writer ownership released) -> deadline ahead at the owner arm, the pending assignment observed first, never re-delivered or reconciled, seeded prefix preserved, resume =:ok= |
+| O-18 | carrier validation companions with a retained Port: a nil carrier, an unvalidated (raw string) carrier and a valid-carrier control; an invalid =AdapterFailure= carrier raised by ANY effect's adapter is described as the ordinary raw failure it is (the original kind/reason/stack, the latest runtime settled). The imported review probe is =test/run/observe_green_review_test.exs= |
+Attribution rule: failures are attributed by FIRST cause, never by row membership.
+
+* Harness rules folded into the rows
+The arm reader consumes arm and wake traces in sender order (control C-10 proves delayed-consumer and duplicate-read
+handling); O-8 accounts for its consumed kill fact and requires no additional kill after completion; the direct
+grammar caller is tracked before execution and explicitly joined; early wakes are validated until due under one
+bounded wait (at least two are required), not a fixed count. O-13/O-13c inspect the linked caller's EXIT reason
+(canary-free) under the test-wide exit trapping; on a real refused init no ={:EXIT, _, _}= reaches the linked,
+trapping caller within a bound - the source-explained guarantee is OTP =proc_lib= =sync_start*= / =flush_EXIT=
+unlinking and flushing on nack.
+
+* Delivered implementation
+- Effects: =run_effect(%Effect.Observe{})= honours =opts[:adapter_runner]= (absent: unchanged in-process path);
+  =observe_through/3= builds a closure capturing ONLY the dispatch module, the command and the observe options;
+  grammar ={:ok, raw}= -> the existing =observe/3= mapping (={:ok, {:error, map}}= parity), =:expired= -> the FIRST
+  producer of =Observation.TimedOut= from the OWNER's retained intent, ={:failed, diagnostic}= with a CLOSED
+  diagnostic -> =Effects.AdapterFailure= raised under =guarded= (the owner settles its latest runtime and answers
+  the diagnostic plus cleanup), anything else -> =ObserveFailed(observe_invalid_return)=.
+  =Effects.AdapterRunner.run/1= is the shared runner boundary (=length(__STACKTRACE__)= at its catch);
+  =diagnostic?/1= admits ONLY kind in =[:error, :throw, :exit]=, class in =Diagnostic.result_classes/0=, a lowercase
+  =sha256:<64 hex>= digest and a non-negative depth. The Worker's boundary VALIDATES the =AdapterFailure= carrier
+  with =AdapterRunner.diagnostic?/1= before honouring it.
+- Worker: =start_link/2= takes a ZERO-ARITY bootstrap closure executed in =init= under the closed boundary (closed
+  keys only; refusal ={:stop, {:shutdown, :worker_bootstrap_invalid | :worker_bootstrap_failed |
+  :worker_task_supervisor_failed}}=); an internal linked =Task.Supervisor= per Worker; the fenced execute path
+  arms ONCE inside the owned boundary (=:arming=, one =unix_now= + one =monotonic_ms= read on the configured
+  clock, =DeadlineFence.arm=, =:armed=); already due -> =:expired= with no task, no adapter, no runner seam
+  invocation; else a =Task.Supervisor.async_nolink= task that waits for GO, stage-selective holds
+  =%{before_go, after_expiry}= with the stage controller monitored (pre-GO loss: kill + join, closed failure kind
+  =:exit=; post-selection loss: shutdown only), bounded chunks through =DeadlineFence.observe= (one monotonic read
+  per chunk, =:early= / =:due= facts), =:expiry_selected= -> hold -> =:kill_requested= ->
+  =Task.shutdown(:brutal_kill)= -> ={:shutdown_return, :ok_reply | :exit | nil}= -> ={:death, class}= (and
+  ={:late_result, :stale}= after an =:ok_reply=); wake classes =:foreign= / =:duplicate= / =:retired= (a retired
+  wake is reported against its own identity and kind); an owner failure after task allocation kills and joins the
+  task FIRST, then re-raises the original kind/reason/stack into the closed boundary. After a future-at-arm
+  admission the first wait is a TIMER established from one read (a wall already due schedules a zero-delay wake);
+  expiry is selected ONLY on a dequeued eligible wake in the same correlated receive, so a reply already queued
+  ahead of that wake wins; D1 (already due at execute) is unchanged. Runtime default cap 60_000 ms. The =:armed=
+  fact carries the arm's own =unix_now= read. =format_status= is unchanged (state/message redacted).
+- Server: the child start stays ={worker_module, server_pid}= for every run without birth seams (all
+  =worker_module= doubles untouched); only when =observe_fence_observer= / =observe_fence_hold= /
+  =observe_fence_cap_ms= / =observe_task_supervisor_start= are configured does it become
+  ={worker_module, {server_pid, fn -> boot end}}=.
+- Boundary declaration: =AiOrchestrator.Run= lists =AiOrchestrator.Clock= as a dep (the Worker's default clock);
+  no external dependency added.
+- Test-support correction: =FixedClock.monotonic_ms= advances its OWN counter and never consumes a wall tick
+  (previously a tick moved the wall clock the reducer's Clock effects journal by +2 s per Observe on the Server
+  path); regression controls in =test/clock/fixed_clock_decoupling_test.exs=; base, wall and id behaviour
+  preserved.
+- Disclosed side effect: a hard-killed Worker takes its linked =Task.Supervisor= down, which logs the standard
+  "GenServer terminating ** (stop) killed" supervisor report (payload-free).
+- Integrated foundation/executor rows (in =test/run/run_server_foundation_red_test.exs= and
+  =test/run/command_executor_red_test.exs=): 4 parity rows (the named cases "kill9 resume pre_dispatch" and "kill9
+  resume awaiting_artifact"; the pre_gate resume is not expired and stays on unconditional parity) pin the
+  independent oracle's completion AND the Worker path's exact expiry separately, with acceptance-first, the
+  command stamp, Writer v2 receipts and the preserved prefix bytes asserted on the ACTUAL journal; 3 repair rows
+  (M3 clean prefix, M3 Writer repair wins, R-G torn tail) pin the exact expiry and re-pin their tail-repair subject
+  on the actual journal suffix (cancel mode unaffected); 13 completion/recovery rows use DERIVED-LIVE input through
+  =AiOrchestrator.Test.DerivedLive.shift_deadlines/2=: ONLY the =assignment_requested= /
+  =assignment_observation_started= =data.deadline_unix= fields move to one verified future value (FixedClock base
+  + 3600 s), every other line stays byte-identical, the exact source -> derived delta is verified by the helper,
+  the historical fixture bytes are never edited, and each row witnesses the fresh owner's arm with the retained
+  deadline ahead. The parity pins carry real head-receipt evidence (=Chain.decode_receipt= of =events.head= naming
+  the last journaled line). (The expired =pre_dispatch= cases later moved to the dispatch expiry; see
+  =delivery-deadline.org=.)
+
+* Non-goals
+No deliver/reconcile actuation in this unit (delivered separately by =delivery-deadline.org=); no
+delivery-unknown vocabulary; no cold-skew policy; no Server timeout owner for observe; no schema/fixture delta;
+no settle responsiveness claim; no OS/remote containment claim.
+
+* History
+The interface went through several review revisions (scope, interface rulings, source review, a hold-shape
+correction, an arm-snapshot correction, an implementation review of the carrier validation) before and during
+implementation. Every correction is folded into the text above; the original revision-by-revision ledger is not
+reproduced here.

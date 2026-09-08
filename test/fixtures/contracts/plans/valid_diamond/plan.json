@@ -1,0 +1,78 @@
+{
+  "schema": "ai-orchestrator/run-plan",
+  "schema_version": 1,
+  "plan_id": "plan_fixture_0003",
+  "work_items": [
+    {
+      "id": "item_a",
+      "title": "Implement core",
+      "role": "writer",
+      "deps": [],
+      "allowed_paths": [
+        "lib"
+      ],
+      "acceptance": [
+        "tests"
+      ],
+      "expected_artifacts": [
+        "lib/item_a.ex"
+      ],
+      "kind": "implement"
+    },
+    {
+      "id": "item_b",
+      "title": "Implement branch b",
+      "role": "writer",
+      "deps": [
+        "item_a"
+      ],
+      "allowed_paths": [
+        "lib"
+      ],
+      "acceptance": [
+        "tests"
+      ],
+      "expected_artifacts": [
+        "lib/item_b.ex"
+      ],
+      "kind": "implement"
+    },
+    {
+      "id": "item_c",
+      "title": "Implement branch c",
+      "role": "writer",
+      "deps": [
+        "item_a"
+      ],
+      "allowed_paths": [
+        "lib"
+      ],
+      "acceptance": [
+        "tests"
+      ],
+      "expected_artifacts": [
+        "lib/item_c.ex"
+      ],
+      "kind": "implement"
+    },
+    {
+      "id": "item_d",
+      "title": "Integrate branches",
+      "role": "writer",
+      "deps": [
+        "item_b",
+        "item_c"
+      ],
+      "allowed_paths": [
+        "lib"
+      ],
+      "acceptance": [
+        "tests"
+      ],
+      "expected_artifacts": [
+        "lib/item_d.ex"
+      ],
+      "kind": "integration"
+    }
+  ]
+}

@@ -1,0 +1,41 @@
+{
+  "schema": "ai-orchestrator/run-plan",
+  "schema_version": 1,
+  "plan_id": "plan_fixture_0003",
+  "work_items": [
+    {
+      "id": "item_a",
+      "title": "Implement module",
+      "role": "writer",
+      "deps": [],
+      "allowed_paths": [
+        "src"
+      ],
+      "acceptance": [
+        "tests"
+      ],
+      "expected_artifacts": [
+        "lib/item_a.ex"
+      ],
+      "kind": "implement"
+    },
+    {
+      "id": "item_b",
+      "title": "Review module",
+      "role": "reviewer",
+      "deps": [
+        "item_a"
+      ],
+      "allowed_paths": [
+        "review"
+      ],
+      "acceptance": [
+        "tests"
+      ],
+      "expected_artifacts": [
+        "review/item_a.org"
+      ],
+      "kind": "review"
+    }
+  ]
+}

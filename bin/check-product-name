@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
+
+if [[ $# -gt 1 || ! -d "$root" ]]; then
+  printf 'usage: bin/check-product-name [root]\n' >&2
+  exit 2
+fi
+
+root="$(cd "$root" && pwd)"
+cd "$root"
+
+# MC-2 bans the retired product-version branding, not versioned protocols.
+# Match repo/app/module/executable spellings in either word order while allowing
+# phrases such as "ai-orchestrator protocol v2" required by NS-42.
+pattern='(^|[^[:alnum:]_])ai[._ -]?orchestrator[._ -]*v2([^[:alnum:]_]|$)|(^|[^[:alnum:]_])v2[._ -]*ai[._ -]?orchestrator([^[:alnum:]_]|$)'
+
+set +e
+raw_hits="$(rg -n -i --hidden "$pattern" . \
+  --glob '!docs/history.md' \
+  --glob '!.git/**' \
+  --glob '!deps/**' \
+  --glob '!_build/**')"
+status=$?
+set -e
+
+if [[ $status -gt 1 ]]; then
+  printf 'product-name scan failed (rg exit %s)\n' "$status" >&2
+  exit 2
+fi
+
+hits="$(printf '%s' "$raw_hits" | sed 's|^\./||')"
+
+if [[ -n "$hits" ]]; then
+  printf 'forbidden prototype product-version marker:\n%s\n' "$hits" >&2
+  exit 1
+fi

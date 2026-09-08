@@ -1,0 +1,140 @@
+#+title: Lifecycle command, effect, and observation contract
+#+PROPERTY: status delivered contract
+
+* Implementation status
+
+The contract values ship as =AiOrchestrator.Contract= and its submodules under
+=lib/ai_orchestrator/contract/= (=Command=, =Observation=, =Effect=, =Moment=,
+=SendId=, =SensitiveBytes=, =PromptObject=, =PromptRejection=); every effect and
+observation struct named below is defined in =Contract.Effect= and
+=Contract.Observation=. The suspension machine is
+=AiOrchestrator.Lifecycle.Core.Reducer= (=init/3=, =resume/4=, =cancel/2=,
+=step/2=); the in-process host is =AiOrchestrator.Lifecycle.Host=, and
+authorization is =AiOrchestrator.Commands=. The gate route is wired through
+=AiOrchestrator.Run.Server= and =Run.Worker=. The sentences of this document that
+state the machine's shape are checked verbatim by
+=test/lifecycle/reducer_contract_test.exs= and =test/lifecycle/host_clock_test.exs=.
+
+* Boundary
+
+=AiOrchestrator.Contract= is dependency-free. It contains data values shared by
+the functional lifecycle reducer, foreground and daemon hosts, effect workers,
+and the framework-neutral command API.
+
+Authorization is owned by =AiOrchestrator.Commands=. Lifecycle admissibility is
+owned by the reducer. Execution is owned by the host and supervised workers.
+The contract values perform none of those jobs.
+
+* Inputs
+
+=Contract.Command= carries the =requested_by= stamp, run id, exact string
+argument document, and a supplied arrival moment. Verb and command id live only
+inside the stamp so two copies cannot disagree. Arrival time is evidence, never
+journal truth. Every effect result returns as a tagged =Contract.Observation=
+carrying its own supplied moment. Lifecycle wall-clock deadline values recorded in
+event data derive only from correlated =Effect.Clock= observations delivered
+after preceding intent events are durable. Durations and stability intervals are
+effect-executor monotonic measurements or configured bounds; they are never
+treated as wall-clock facts. The envelope =ts= is the append stamp the
+host writes at commit under writer semantics; it is never a reducer input:
+the reducer emits a placeholder =ts= and its decisions are =ts=-independent. The
+reducer never reads a process clock.
+
+* Suspension and resumption
+
+The reducer is an explicit suspension machine, not an observation-log replay
+coroutine. Journal replay itself remains real and pure: =resume/4= still folds a
+run's prior events forward into state, and that fold is the only way a run is
+rehydrated. What the machine no longer does is re-derive where it left off by
+matching a log of past observations against effects it rebuilds as it goes.
+
+=Reducer.init/3=, =resume/4= and =cancel/2= run until an effect site or a
+terminal outcome. At an effect site they suspend, handing back the intent, the
+reified continuation, and only the event suffix emitted since the previous
+suspension; a terminal outcome (a finished run, a cancellation, or a rejection)
+returns without suspending and names no pending effect. The host stamps and
+journals each suffix. Because no committed event is ever re-emitted, a suffix
+must continue the journal by sequence number with neither a gap nor an overlap,
+and anything else is a named error.
+
+=Reducer.step/2= then consumes exactly one observation and advances exactly one
+effect/observation boundary. An observation is admissible only when its struct is
+one of the pending effect's admissible observation types and its typed
+correlation id equals the pending effect's: an observation of the right type
+carrying a different correlation id is a named rejection, never a silent
+divergence, and a rejected step neither consumes nor mutates the suspended state.
+The machine retains no observation transcript.
+
+* Effects
+
+The reducer may describe prompt retention, prompt fetch, dispatch, send
+reconciliation, observation, review reads, gate execution, notification, and
+timer ownership. Intent events
+are durably appended before a host executes an effect. Effect results are
+observations; adapters never decide lifecycle state.
+
+Prompt retention is the one effect emitted with no events: the reducer renders
+and hashes the prompt, asks the host to retain the bytes as a content-addressed,
+create-only object, and only the object the host answers with can name the
+=assignment_prompt_projected= event. Blob strictly precedes event because the
+reducer cannot name the object until the put has answered, and the host
+serves an effect emitted with an empty event suffix without advancing the journal.
+A resumed send whose projection already names an object fetches and verifies
+that object instead of rendering again: under the content-addressed scheme an
+absent or drifted object is a durability fault that stops the run, never a
+re-render, because the renderer is a function of the whole event prefix and
+its output on resume is not the bytes the journal committed.
+
+A =queued= send is a waypoint, not a delivery: the daemon holds the bytes and
+has not pasted them. The reducer asks the adapter what became of the send
+(=Effect.ReconcileSend=, answered by one of the five outcomes) and
+begins observation only on =delivered=; a =queued= answer is re-asked after a
+host-owned wait (=Effect.Timer=) until the assignment deadline, at which point
+the assignment is attention. An =absent= answer -- the daemon proves it never
+pasted -- is retried once under the same send id, and the retry is journaled
+as a second =assignment_dispatch_sent=; =ambiguous= and =conflict= are
+attention, never a second paste. On resume a recorded =queued= send with no
+=assignment_observation_started= is converged the same way, with the sends
+already journaled counted against the single retry.
+
+The bytes travel wrapped in =SensitiveBytes= across the retention effect, the
+fetch observation and the dispatch command; the wrapper prints and encodes
+facts about the bytes, never the bytes, and is revealed only by the store that
+writes them and the pane adapter that sends them. A store rejection is a pair;
+the host normalizes it into the observation's reason map at the effect where
+the store ran, so the reducer never learns the rejection vocabulary and a class
+the table does not admit is dropped rather than reflected. A retention or fetch
+failure is durable attention carrying a closed =detail= map -- =error=, =stage=,
+=prompt_hash=, =prompt_bytes=, and =prompt_path= once the object had a name --
+and no =agent_wedge_detected=, because nothing about the pane was measured.
+
+The dispatch =message_id= is the send id minted for the run and the assignment
+together (=SendId.mint/2=, =snd_= plus the SHA-256 of a pinned length-prefixed
+preimage), journaled as =assignment_dispatch_sent.data.send_message_id=. It binds
+the run because the daemon's receipt store is global: two runs that contained the
+same assignment id would otherwise ask one question and receive one another's
+answer. A resumed run reuses the journaled value for a send it already recorded,
+whatever grammar that journal used.
+Observation effects carry the exact adapter command; poll options are host-owned.
+Gate effects carry the complete journaled request plus both repository and run
+directories. A nonzero gate result is evidence, distinct from a runner error.
+
+The orchestrated gate route (=docs/contracts/gate-execution-wiring.org=)
+is four effects in a fixed order: =Effect.PrepareGate= (the guardian prepares the
+worker and the claim is durably published; answered by =GatePrepared=, whose
+=started= is the complete =gate_started= v2 payload the reducer then emits verbatim,
+or =GatePrepareFailed=), =Effect.ReleaseGate= (carrying =started_seq=, the pure
+reference to the committed =gate_started= event: the host builds the Ack from the
+Writer's own persisted map for that seq and releases the retained handle once;
+=GateReleased= / =GateReleaseFailed=), =Effect.AwaitGate= (bounded by the ORIGINAL
+deadline, which the host services inside the await through the injected clock and
+the guardian's original channel; =GateFinished= only for a proven pass, =GateFailed=
+with =gate_failed= v2 data, =GateUnsettled= for exit 0 with an unsettled or unknown
+group, =GateError= for unreadable evidence), and on resume =Effect.ReconcileGate=
+(read-only; =GateReconciled= with a closed verdict, or =GateReconcileFailed=).
+=Effect.RunGate= remains the standalone runner API and is never yielded on the
+orchestrated route. Runtime objects (Ports, handles, Ack state) live only in the
+host process.
+
+Monotonic time remains private to effect executors. It measures durations and is
+never recorded as a wall-clock fact.

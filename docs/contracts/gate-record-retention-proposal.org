@@ -1,0 +1,219 @@
+#+TITLE: Owned gate record retention (retention-only): interface contract
+#+PROPERTY: status delivered contract
+
+* Implementation status
+Delivered. =AiOrchestrator.Gate.Execution.stage/2= (dispositions =:staged | :foreign | :finalized | :overflow |
+:not_owner | :unsupported=, a per-Port owner-local queue of 4 live slots plus one overflow sentinel) ships in
+=lib/ai_orchestrator/gate/execution.ex=, and its two retention-aware consumers =next_record/2= (pops the staged
+head first) and =drain_exit/1= (removes the first staged =exited= slot anywhere in the queue) are wired in the same
+module. =AiOrchestrator.Run.Worker= has the Port clause ahead of its catch-all: with at least one owned entry and an
+executor that exports =stage/2= it routes the record through =route_port_message/2=, treats any escape or
+out-of-set return as the Worker-side =:stage_failed= disposition, and hands the verdict to the test-only
+=:retention_observer= boot seam (=lib/ai_orchestrator/run/worker.ex=). =AiOrchestrator.Effects= exports
+=owned_entries/1= and the narrow =gate_executor/1= accessor the Worker uses. Rows RT-* live in
+=test/gate/gate_record_retention_red_test.exs=; imported review probes in =test/run/retention_review_probe_test.exs=;
+GB-8b in =test/run/gate_ownership_baseline_test.exs= measures the staged answer (its former drop measurement is
+retired; GB-8b-neg keeps the invalid old witness order on record). This document is retention-only: the
+asynchronous owner-resident =AwaitGate= that it deferred was delivered afterwards under
+=gate-async-await-proposal.org= (the Worker's pending-Port clause sits ahead of the retention clause, so a pending
+op's own record resumes it and every other owned Port's record is staged).
+
+* Scope
+Remove one loss: a guardian record for an OWNED Port that the Worker's GenServer loop dequeues while idle (or at
+the loop return between two operations) was dropped by the catch-all =handle_info/2=. Retention only: no timer, no
+asynchronous wait, no new production cleanup/drop vocabulary, no Port transfer, no process-dictionary relocation.
+
+* The loss this slice removes (source-attributed)
+Guardian records reach the Port owner (the process running the loop: =Run.Worker=, or =Lifecycle.Host=) as
+={port, {:data, {:eol | :noeol, _}}}= and ={port, {:exit_status, _}}=. Record consumers dequeue them through the
+private choke point =Execution.next_record/2=: ={:eol, line}= -> =parse_record/1=, ={:noeol, _}= -> ={:malformed,
+"overlong"}=, ={:exit_status, s}= -> ={:exited, s}=, else =:timeout=. Its callers: the RELEASED wait, READY, DEAD
+at settle, =await_records/2=, =await_record/3=, the =begin_await= scan. One more consumer receives directly:
+=drain_exit/1= selectively receives ONLY ={port, {:exit_status, _}}= with a 1000 ms timeout then =safe_close=,
+called by =exit_outcome/3=, =memo_dead/2=, =terminate/2= and the prepare failure paths. Both consumers are
+selective receives on =^port=: while an op is awaiting one Port, a record for ANOTHER owned Port stays in the
+mailbox untouched; while the Worker sits in a fenced op's receives (which match only fence/wake shapes) the same
+holds. The one place a record was LOST is the Worker's GenServer catch-all =handle_info(_other, state)=, reached
+when a record is dequeued by the loop itself: an idle Worker (measured by GB-8b) or the loop return between two
+ops. The Host has no catch-all and no loop-level dequeue, so the Host path is unchanged and outside this slice.
+
+* Interface
+
+** =Gate.Execution.stage/2= (owner-only, pure staging)
+#+begin_example
+@type disposition :: :staged | :foreign | :finalized | :overflow | :not_owner | :unsupported
+@spec stage(handle :: running() | prepared(), message :: tuple()) :: disposition()
+#+end_example
+- Binding: =message= is ={port, payload}=; the handle's own =:port= field must equal =port=, else =:foreign= and
+  NOTHING is stored (no key is created for a foreign Port, no tombstone). Ownership is judged exactly as =owner!/1=
+  does: connected to =self()=, or a closed Port with retained =:released= / =:termination= / =:descriptor=
+  evidence; otherwise =:not_owner=, nothing stored.
+- Finalized: if ={Execution, port, :termination}= exists, or the retained descriptor is the =:finalized= marker,
+  the answer is =:finalized= and nothing is stored: a late record after the terminal answer is dropped exactly as
+  before (existing memos protect release-once and closed-Port ownership and are never read for anything else
+  here).
+- Staging: the payload is classified by the SAME pure functions =next_record/2= applies (=parse_record/1= for
+  =eol=; the literal ={:malformed, "overlong"}= for =noeol=; ={:exited, status}= for =exit_status=) and appended,
+  in dequeue order, to an owner-local slot list ={Execution, port, :staged}=. Nothing is interpreted: no
+  =memo_dead/2=, no =exit_outcome/3=, no =drain_exit/1=, no =Port.close=, no clock read, no barrier, no receive.
+  =stage/2= returns =:staged=.
+- Bounds: the staged list is a QUEUE with capacity 4 live slots per owned Port (the guardian protocol emits at
+  most READY, RELEASED, one terminal EXIT|DEAD and one exit_status); the lifetime count is unbounded because pops
+  free capacity. A message that would need a fifth live slot is not stored; a single sentinel slot ={:malformed,
+  "staged_overflow"}= is appended once as a bounded TAIL marker and the answer is =:overflow=; while the sentinel
+  is present, later messages answer =:overflow= and store nothing (repeated overflow adds nothing). After partial
+  pops (capacity available, no sentinel present) later staging appends normally. The sentinel is consumed like any
+  record in FIFO order; it is NOT promoted above earlier slots and it is NOT an unconditional fail-closed terminal:
+  an earlier staged terminal at the head finalises first (first-record parity), and then the sentinel may never be
+  observed. Promotion of overflow above earlier records would need a separate decision.
+- Diagnostics carry no raw bytes: slots hold only what =parse_record/1= already yields (head and validated fields)
+  or the closed classification atoms; =describe_record/1= renders them.
+- =:stage_failed= is NOT an =Execution= disposition: it is the Worker's boundary policy for an executor that
+  escaped or returned outside the set above (retention not certified, side effects unknown, nothing rolled back).
+  The default =Execution.stage/2= validates everything before its single final storage write, so ITS escapes store
+  nothing.
+
+** =Gate.Execution.next_record/2= and =drain_exit/1= (the two retention-aware consumers)
+Before its receive, =next_record/2= pops the HEAD of ={Execution, port, :staged}= if the list is non-empty and
+returns it, in FIFO order. =drain_exit/1= keeps its selective semantics: before its receive it removes the FIRST
+={:exited, _}= slot anywhere in that Port's staged list (position independent, exactly as its selective receive is
+position independent in the mailbox) and answers =:ok= without waiting; intervening non-status slots stay in place
+and in order; only when no such slot exists does it fall through to the 1000 ms receive-or-close. So an idle Worker
+that staged EXIT then exit_status is finalised by =await/2= with NO artificial 1000 ms drain (RT-1e witnesses the
+consumed slot in the dictionary plus the elapsed bound; RT-18/RT-19 the mailbox and intervening cases). =stage/2=
+itself stays non-blocking and interpretation-free. Consequences, stated as behaviour changes (no byte-identity
+claim for the consumers):
+- =await/2=, =begin_await/2=, =settle_await/1=, the RELEASED/READY/DEAD waits: public signatures and answers are
+  unchanged in kind; each answers a staged record before consulting the mailbox or the clock.
+- Order preservation: a staged ={:exited, s}= or ={:malformed, _}= that arrived BEFORE a later EXIT is answered
+  first, so =await_records/2= and the resume decoder produce the same =await_failed= they produce for the same
+  mailbox order. An earlier failure is never skipped to accept a later EXIT, and DEAD is never promoted ahead of
+  prior evidence.
+- Ordering rule (narrowed to the Worker-dequeued path): a staged slot precedes any mailbox message for the same
+  Port because the Worker loop staged it only after dequeuing it, so the mailbox holds only later messages. This
+  is the only FIFO claim made. =resume_await/2= consumes the message it is handed directly and is NOT a
+  =next_record= consumer; no global mixed-API ordering is defined here.
+- Lifecycle of =:staged= (separate from existing memos): slots are removed as they are consumed; an unconsumed
+  remainder is bounded per Port (at most 4 live slots plus one sentinel, never for foreign Ports) and lives exactly
+  as long as the owner process, the same lifetime every existing memo has (Execution has no =Process.delete= path
+  and this unit adds none). Run-wide the bound is therefore 5 x (Ports this owner ever held), and remainders of
+  DROPPED handles accumulate like the existing memos do; lifecycle reclamation of both is explicitly DEFERRED to a
+  separate unit (existing memos stay untouched). =Runtime.drop/2= and =release_terminal/2= keep doing only what
+  they do (Map.delete / Map.reject); dropping an entry does not remove memos.
+
+** =Run.Worker= (one clause ahead of the catch-all)
+#+begin_example
+def handle_info({port, _payload} = message, %{runtime: %Runtime{}} = state) when is_port(port) do
+  _ = route_port_message(state, message)   # the verdict only reaches the test-only observer
+  {:noreply, state}
+end
+#+end_example
+Routing rule, exact: with no owned entries (=Effects.owned_entries/1= empty, or before admission) the message is
+ignored before any executor configuration is resolved; otherwise the executor selection (=Effects.gate_executor/1=
+over the admitted seams) must be a loadable module exporting =stage/2= (=Code.ensure_loaded?= and
+=function_exported?=), else the closed "no capability" verdict (the message is dropped exactly as the catch-all
+dropped it; nothing stored, nothing observed; never a crash). =route_port_message/2= then walks the owned entries
+in key order with =Enum.reduce_while=, calling =mod.stage(handle, message)= for each; it CONTINUES on =:foreign=
+(a truthy disposition never stops the walk) and STOPS on any other disposition, which is the verdict. A custom
+executor's opaque handle is the executor's own to recognise: its =stage/2= answers =:foreign= for a handle it does
+not own, and no fact is invented for a non-matching handle. If the walk ends with no verdict (all =:foreign=) the
+message is dropped. Non-Port messages never enter this clause (=is_port/1= guard). Payload classes: a Port message
+whose payload is not ={:data, {:eol | :noeol, _}}= or ={:exit_status, _}= is UNSUPPORTED (=next_record='s selective
+receive ignores it): =stage/2= answers =:unsupported= and stores nothing; a malformed native LINE is a classified
+record (={:malformed, head}=) and IS staged.
+- No task, no Port transfer, no process-dictionary relocation (the =:staged= list is written by =Execution= in
+  the Worker, where every existing memo already lives).
+- Callback boundary: the =stage/2= call runs under a =try/catch= of every class (raise, throw, exit); any escape,
+  and any return outside the closed disposition set, becomes the closed INTERNAL disposition =:stage_failed=,
+  which means exactly 'retention NOT certified; side effects unknown'. No rollback of arbitrary executor state and
+  no atomicity is claimed: a custom =stage/2= may have written before escaping (RT-27b pins that the slot then
+  remains). No =effect_result= / =effect_failed= is sent: an idle Port message carries no op ref and none is
+  fabricated.
+- Observer: the disposition is handed to the test-only observer seam =:retention_observer= (a closed boot key
+  beside =:fence_observer=, validated by the bootstrap like the others; a 1-arity fun) AFTER the verdict is final,
+  as ={:retention, {gate_run_id, attempt}, disposition}= (the payload-free Runtime key); the observer's return is
+  ignored and its own escape (any class) is caught, so it cannot change the verdict already taken or crash the
+  Worker. The observer runs in the owner and is TRUSTED test-only code, not sandboxed: it can touch the owner's
+  dictionary, which is why it is a boot seam and never a production configuration. Loop service after an observer
+  escape is proven by a bounded =:sys.get_state/2= call, not by =Process.alive?=. A custom executor without
+  =stage/2= keeps the drop (no observer call). No production cleanup field, no Server drop counter, no new closed
+  result vocabulary.
+- During another operation: the GenServer loop does not run while a synchronous =handle_info= blocks (a
+  synchronous =AwaitGate= or any generic effect) or while =fenced_run= sits in its selective receives; a record
+  for an owned Port arriving then stays in the MAILBOX, is not consumed by any nested receive (those match only
+  =^port= of the awaited Port or fence/wake shapes), and is staged when the loop next dequeues it. Retention
+  during another op is therefore mailbox retention followed by staging at loop return; the slice changes only
+  what happens at that dequeue. (With the later owner-resident =AwaitGate=, a record for the PENDING Port is
+  handled by the resume clause ahead of this one; other owned Ports are still staged here.)
+- Owner death: the Worker's Ports close with it; the guardian sees control EOF and runs its own cleanup; the
+  Server observes DOWN. A dead Worker certifies nothing about group death, and staged slots die with the process.
+  Unchanged by this slice, stated for completeness.
+- =abandon_one/2= is =executor.abandon(handle)= then =Runtime.drop= and it DOES consult staged slots: =abandon/1=
+  -> =terminate/2= -> =next_record/2=; so does =expire/1= via =terminate_and_memo/2=.
+
+Staged-input transition table for =terminate/2=, preserving the first-record and error semantics exactly:
+| Precondition                                   | Staged head            | Result                                                        |
+|------------------------------------------------+------------------------+---------------------------------------------------------------|
+| Port closed: =safe_command= TERM answers false | anything, even valid DEAD | ={:error, guardian_gone}=; =next_record= is NOT consulted (safe_command precedence first), but =drain_exit= ALWAYS runs and removes the first staged =exited= slot; EXIT/DEAD slots remain in order |
+| TERM written                                   | valid DEAD             | =dead_proof= ok -> ={:ok, proof}= (native settlement proven by the record) |
+| TERM written                                   | DEAD line rejected by the parser (e.g. proof=CANARY) | ={:error, settle_unproven, record: "malformed DEAD"}= (=parse_record= rejects it; the ="DEAD"= form arises only when the line parses and =dead_proof= fails) |
+| TERM written                                   | EXIT (valid) before DEAD | ={:error, settle_unproven, record: <EXIT>}=: the earlier EXIT is answered, DEAD is NOT skipped to |
+| TERM written                                   | malformed / exited / unsupported-classified | ={:error, settle_unproven, record: describe_record(...)}= |
+| TERM written                                   | none                   | the mailbox receive with =wait_ms= |
+In every row =drain_exit/1= then runs with the retention-aware selective pop above. =abandon/1= maps ={:ok,
+%{settled: true}}= to =:ok=, other ={:ok, _}= to =abandon_unsettled=, errors through; =expire/1= writes the
+termination memo only on ={:ok, _}= and answers the error otherwise, so a staged EXIT ahead of DEAD yields an error
+and NO memo, exactly as a mailbox EXIT does (RT-22b pins this directly rather than inferring it from abandon).
+READY and RELEASED reachability, truthfully: both waits run inside the synchronous prepare / release calls on the
+Worker's own clause, during which the loop cannot stage; a READY can never be staged (the Port is opened inside
+prepare); a DEAD staged while idle BEFORE the release op is popped by the RELEASED wait and answers
+=release_failed= with the settle summary, the same answer a mailbox DEAD gives.
+
+* Row-to-test map (=test/gate/gate_record_retention_red_test.exs=; every row below exists there)
+| Row   | Pins                                                                                                            |
+|-------+-----------------------------------------------------------------------------------------------------------------|
+| RT-1  | Idle Worker, real EXIT dequeued by the loop (permit-gated command, trace armed before the permit, bounded loop barrier before the dictionary read): staged; a later =await/2= answers the exit; inverts the former GB-8b drop. RT-1e is the Execution-level twin with the drain witness |
+| RT-2  | Order: staged =exit_status= then later EXIT -> =await_failed= "exited 0"; RT-2c is the mailbox differential control |
+| RT-3  | Order: staged malformed/noeol then later EXIT -> =await_failed= malformed; the EXIT is not promoted             |
+| RT-5  | Foreign Port: =:foreign=, no =:staged= key created, no tombstone; catch-all behaviour preserved for it              |
+| RT-6  | Finalized by termination memo -> =:finalized=, nothing stored, memos byte-identical; RT-6b pins the finalized-DESCRIPTOR branch separately (no termination memo) |
+| RT-7  | =stage/2= under the purity checker (unique probe token armed AFTER setup; setup's own barrier events carry a nil token): neither clock method read, no barrier crossing with the token, Port still open, same-Port EXIT canary unconsumed; RT-7c control: the checker passes a no-op and rejects an injected clock read (each method), barrier crossing and canary consumption |
+| RT-8  | Existing memos =:released= / =:termination= / =:descriptor= are unchanged by any staging                          |
+| RT-9  | =begin_await/2= consumes a staged terminal first and finalizes exactly as its zero-timeout scan does              |
+| RT-10 | Fenced Observe held at =:before_go=: an owned gate record is proven in the Worker mailbox during the nested receive, not staged; after proceed the Observe answers =ArtifactObserved= unchanged and the record is staged at loop return |
+| RT-11 | Control: a delegating executor that provably lacks =stage/2= (=function_exported?= refuted): catch-all drop, =guardian_gone= later, as the former GB-8b |
+| RT-12 | Closed Port with retained evidence stages; closed Port without evidence -> =:not_owner=; RT-12b: a LIVE Port owned by another process -> =:not_owner=, nothing stored |
+| RT-C1 | Control: a non-Port message still reaches the catch-all unchanged                                               |
+| RT-13 | Routing: two retained handles, target Port in EACH enumeration position -> staged for the target, nothing for the other |
+| RT-14 | Control: foreign Port with two handles -> no store, no key, loop serves (dropped either way)                    |
+| RT-15 | Controls: RT-15a PRE-admission (=runtime: nil=) and RT-15b admitted empty runtime -> Port message dropped, loop serves |
+| RT-16 | Unsupported payload -> =:unsupported=, nothing stored; malformed native line -> classified slot (distinguished)  |
+| RT-1e | Drain: real EXIT then exit_status both staged -> await answers exit; the =exited= slot is consumed by =drain_exit= (dictionary witness) and the return lands < 500 ms after the =:after_exit= barrier crossing, which kills a 'consume then still legacy-drain' mutant (>= 1000 ms) |
+| RT-18 | Drain: EXIT staged, exit_status still in the mailbox -> drain receives it (mailbox empty after), same barrier-anchored bound |
+| RT-19 | Drain: intervening non-status slot between EXIT and exit_status is preserved in place, same bound              |
+| RT-20 | Settle (synthetic lines = parser/consumer proof): staged EXIT before DEAD -> abandon settle_unproven record EXIT; RT-20c mailbox control |
+| RT-21 | Settle: staged valid DEAD -> abandon :ok; RT-21b rejected DEAD line -> "malformed DEAD"; RT-21c its mailbox control |
+| RT-22 | Settle: closed Port + staged EXIT/status/DEAD -> guardian_gone; only the =exited= slot is removed (unconditional drain); RT-22b expire on staged EXIT-before-DEAD -> error and NO termination memo |
+| RT-23/25 | Overflow: fifth enqueue -> single sentinel, =:overflow=; repeated overflow adds nothing                       |
+| RT-24 | Overflow: enqueue after partial drain -> stored normally, no sentinel                                              |
+| RT-25b | Overflow: the sentinel is consumed FIFO like any slot and staging recovers afterwards                            |
+| RT-26 | Overflow: earlier staged terminal at head finalises first; the sentinel is never observed by that await          |
+| RT-27 | Boundary (owner-side =stage_mode= through the handle opts, mode witnessed from the executing pid): pre-write raise / throw / exit / invalid return -> =:stage_failed=, nothing stored, loop serves; RT-27b write-then-raise -> =:stage_failed= and the custom slot REMAINS. These CUSTOM-executor rows prove the boundary policy only; the default =Execution.stage/2='s validate-before-write is its own obligation. RT-B control proves the bootstrap runs in the Worker pid |
+| RT-28 | Boundary: observer raises AFTER a real =:staged= verdict -> slot kept, loop serves; RT-28b observer throws after =:stage_failed= -> loop serves |
+
+* Deferred by this slice, delivered later
+Everything asynchronous was deferred out of this slice: an owner-resident pending wait, =Effects.begin/3= and
+=resume/4=, an =:awaiting= Runtime phase, a Server-armed gate timer, responsiveness claims. The reasons the
+earlier owner-wait proposal (=gate-owner-wait-proposal.org=) could not be built as written are recorded there
+(the Worker's synchronous =boundary/2= / =answer/3= accept only ={observation, runtime}= shapes, so a ={:done, _}=
+/ ={:pending, _}= grammar needs its own boundary; =resume_await/2= requires a real ={port, payload}= before any
+memo lookup, so a termination memo cannot be "handed" to it; =expire/1= can answer ={:error, _}= and write no
+memo). The later design that ships defines the full success/error/settlement mapping and the Server deadline
+authority coherently with the asynchronous wait: =gate-async-await-proposal.org=.
+
+* History
+This interface was a corrective successor to a broader owner-wait proposal whose review narrowed it to retention
+only; it went through review revisions on the staging bounds, the consumer ordering rules, the routing walk, the
+callback boundary policy and the observer seam, then an implementation review that added the no-owned-entries
+short-circuit and closed capability resolution. Every correction is folded into the text above; the revision
+ledger is not reproduced here.

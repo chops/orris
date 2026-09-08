@@ -1,0 +1,1 @@
+{"schema":"ai-orchestrator/journal-event","schema_version":1,"event_version":1,"seq":1,"event_id":"ev_version_1_chain_0001","type":"run_created","ts":"2026-09-03T00:00:00Z","run_id":"run_fixture_version_1_chain","actor":"run_supervisor","prev_line_sha256":"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","data":{}}

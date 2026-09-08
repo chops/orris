@@ -1,0 +1,56 @@
+#+title: Actor-aware command contract
+#+PROPERTY: status delivered contract
+
+* Implementation status
+Delivered: =AiOrchestrator.Commands= (=lib/ai_orchestrator/commands.ex=) with =Commands.Arguments=
+(ARGS-CANON-1 encoding and validation), =Commands.CommandId=, =Commands.Executor=, =Commands.Idempotency=
+(=compare/2=) and =Commands.Policy= under =lib/ai_orchestrator/commands/=; exercised by
+=test/commands/commands_test.exs=. The design rationale is =docs/adr/0001-actor-aware-command-contract.md=.
+The run-host obligations named below (durable command-id lookup, accepted-but-incomplete recovery, result
+replay, open-assignment verification) belong to =Run.Server= and are specified in
+=command-executor-migration.org=.
+
+* Authority boundary
+
+=AiOrchestrator.Commands= is the single framework-neutral entry point for
+mutating operator, console, agent, and supervised-system commands. It applies a
+closed actor-class policy before constructing =Contract.Command= or invoking an
+executor. A rejected command has no durable consequence.
+
+The lifecycle reducer, not this boundary, decides whether an authorized command
+is admissible in the current run state. The run host owns durable command-id
+lookup, accepted-but-incomplete recovery, and result replay.
+
+* Identity and arguments
+
+Callers may supply a command id or use =Commands.CommandId=, which encodes 128
+CSPRNG bits inside the opaque command-id grammar. The command carries identity
+only in its =requested_by= stamp. When the caller does not supply the
+arrival moment, Commands reads Unix time once and derives both moment fields
+from that single observation; the two representations cannot straddle a clock
+tick.
+
+Every verb has one exact flat string argument document. =ARGS-CANON-1= hashes
+the verb and byte-sorted, length-prefixed key/value pairs. Unknown, missing, or
+extra fields are rejected before execution. Every value is valid UTF-8 between
+1 and 4096 bytes so an accepted command cannot inflate a journal line without
+bound.
+
+* Idempotency comparison
+
+After a run host locates an acceptance event by command id,
+=Commands.Idempotency= compares actor class and id, verb, and argument hash. An
+exact match returns the durable result; a mismatch is an
+=idempotency_conflict=. The run host never executes either case a second time.
+
+Agent =run_id= and =assignment_id= scope fields are attribution, not retry
+identity. Command ids are run-directory scoped, actor =run_id= must match the
+command at build time, and =Run.Server= must independently verify that an agent's
+assignment is currently open. This preserves honest retries across assignment
+recovery without granting authority.
+
+For =start=, the caller allocates =run_id= through the Id seam before building the
+command; its command id is indexed at host scope because no run directory exists
+yet. Unknown verbs are rejected by policy before argument validation. Executors
+must revalidate the requested-by stamp and argument hash because a caller can
+construct a struct without using this boundary.

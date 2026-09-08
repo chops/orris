@@ -1,0 +1,115 @@
+#+TITLE: Journal event vocabulary
+
+The source vocabulary is =lib/ai_orchestrator/journal/vocabulary.ex=, checked
+against declared event types, runtime emit sites and fixture journals by
+=test/contracts/event_vocabulary_test.exs=.
+
+This source snapshot declares54types:33produced and21reserved. Produced means a
+runtime emit site exists; it does not certify the complete surrounding product
+feature. Reserved means current production code cannot append that type.
+Historical fixtures containing reserved types can remain fold-legal.
+
+The production emit source for the33produced rows is
+=lib/ai_orchestrator/lifecycle/core/reducer.ex=. The native vocabulary retains
+historical producer labels and target-wave metadata; those labels are not a
+second runtime owner or a promise of release dates.
+
+| Type | Status | Fold handling |
+|------+--------+---------------|
+| =agent_wedge_detected= | produced | generic |
+| =artifact_observed= | produced | clause |
+| =assignment_completed= | produced | clause |
+| =assignment_dispatch_sent= | produced | clause |
+| =assignment_failed= | reserved | clause |
+| =assignment_observation_started= | produced | clause |
+| =assignment_prompt_projected= | produced | clause |
+| =assignment_requested= | produced | clause |
+| =context_conflict_detected= | reserved | generic |
+| =context_patch_accepted= | reserved | clause |
+| =context_patch_proposed= | reserved | generic |
+| =context_patch_rejected= | reserved | generic |
+| =contract_change_proposed= | reserved | clause |
+| =contract_change_ratified= | reserved | clause |
+| =contract_change_rejected= | reserved | generic |
+| =gate_failed= | produced | clause |
+| =gate_passed= | produced | clause |
+| =gate_requested= | produced | clause |
+| =gate_started= | produced | clause |
+| =human_attention_required= | produced | clause |
+| =notification_failed= | reserved | clause |
+| =notification_requested= | reserved | clause |
+| =notification_sent= | reserved | clause |
+| =pane_lease_acquired= | produced | clause |
+| =pane_lease_failed= | reserved | generic |
+| =pane_lease_release_requested= | produced | clause |
+| =pane_lease_released= | produced | clause |
+| =pane_lease_requested= | produced | clause |
+| =plan_recorded= | produced | clause |
+| =review_disposition_recorded= | produced | clause |
+| =review_received= | produced | clause |
+| =review_requested= | produced | clause |
+| =run_budget_exhausted= | reserved | clause |
+| =run_cancel_requested= | produced | generic |
+| =run_cancelled= | produced | clause |
+| =run_completed= | produced | clause |
+| =run_created= | produced | clause |
+| =run_failed= | reserved | clause |
+| =run_pause_requested= | reserved | generic |
+| =run_paused= | reserved | generic |
+| =run_recovery_reserved= | reserved | clause |
+| =run_resumed= | produced | clause |
+| =run_spec_loaded= | produced | clause |
+| =run_started= | produced | clause |
+| =scheduler_stalled= | reserved | generic |
+| =stop_policy_evaluated= | reserved | generic |
+| =work_item_completed= | produced | clause |
+| =work_item_failed= | reserved | clause |
+| =work_item_retry_scheduled= | produced | generic |
+| =workspace_lease_acquired= | produced | clause |
+| =workspace_lease_failed= | reserved | generic |
+| =workspace_lease_release_requested= | produced | clause |
+| =workspace_lease_released= | produced | clause |
+| =workspace_lease_requested= | produced | clause |
+
+* Schema and append boundaries
+Payload-schema availability and append permission are separate checks. Twelve
+reserved types have payload schemas without production producers:
+
+- =assignment_failed=
+- =context_patch_accepted=
+- =context_patch_proposed=
+- =contract_change_proposed=
+- =contract_change_ratified=
+- =notification_failed=
+- =notification_requested=
+- =notification_sent=
+- =run_budget_exhausted=
+- =run_failed=
+- =run_recovery_reserved=
+- =stop_policy_evaluated=
+
+The remaining nine reserved types have no payload schema:
+
+- =context_conflict_detected=
+- =context_patch_rejected=
+- =contract_change_rejected=
+- =pane_lease_failed=
+- =run_pause_requested=
+- =run_paused=
+- =scheduler_stalled=
+- =work_item_failed=
+- =workspace_lease_failed=
+
+Reading one of those nine types fails closed with =event_schema_unavailable=.
+Appending any reserved type fails earlier with =reserved_event_type=.
+
+The exact payload schemas live in
+=lib/ai_orchestrator/journal/schemas/event_data.ex=. Promoting a reserved type
+requires its producer, typed payload, fold handling and positive/negative controls
+in the same reviewed change, with this table updated.
+
+For read compatibility, the only historical string accepted for =requested_by=
+is exactly =operator=. New appends require the structured actor shape and bind
+every string value to valid UTF-8 of at most4,096bytes. Historical reads remain
+unchanged. The exported JSON Schema describes the structural version-2 append
+envelope but does not encode this runtime byte bound.

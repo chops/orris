@@ -1,0 +1,259 @@
+#+title: Effects extraction: the host-side executor boundary
+#+PROPERTY: status delivered contract
+
+* Implementation status
+Delivered: =AiOrchestrator.Effects= (=lib/ai_orchestrator/effects.ex=) with =execute/3=, =release_terminal/2=,
+=settle/1= and =classify/1= as specified below, =Effects.Runtime=, =Effects.Interrupted= and
+=Effects.Unreachable= (=lib/ai_orchestrator/effects/=); =AiOrchestrator.Contract.Diagnostic= with
+=Lifecycle.Core.Diagnostic= delegating =describe/1= and =describe_rejection/1=; and the Host's =guard/2=
+(=lib/ai_orchestrator/lifecycle/host.ex=) that settles the latest runtime and re-raises the original triple
+with =:erlang.raise/3=. Tests: the four files under =test/effects/=. The shipped =Effects= has since grown
+beyond this document (=begin/3=, =resume/4=, =settle_await/3=, =pending/1=, the =:awaiting= runtime phase and
+the =:adapter_runner= seam) for the supervised run host; those additions are specified in
+=gate-async-await-proposal.org=, =observe-deadline.org= and =delivery-deadline.org=, not here.
+
+* Purpose and bound
+
+Move effect EXECUTION out of =AiOrchestrator.Lifecycle.Host= into a root boundary
+=AiOrchestrator.Effects=, behind the smallest executor API, with the gate runtime state as an
+explicit value instead of the three process-dictionary keys. WHAT happens does not change: same
+adapters, same observations, same diagnostics, same journal bytes, same suffix-commit boundary.
+One limited behavioural change is named and pinned (R-1 revised, below). This is preparation for
+the supervised run host (Writer -> Server -> Work under =rest_for_one=), which is a separate contract
+(=run-server-foundation.org=) and NOT part of this unit.
+
+Non-goals (pinned): no new processes or timers, no worker hand-off (Ports stay owned by the
+process that runs the loop), no =Run.Server=, no CLI/caller migration, no event type, schema or
+oracle-byte change, no registry/host-root/exhaustion work, no activation or removal of any
+effect's reachability (Timer keeps its executable AND emitted path, RunGate its executable-only
+compatibility path, Notify none), no change to clock/id consumption, no one-module-per-family
+requirement.
+
+The Host keeps: entry points and public signatures (=run/3=, =resume/4=, =cancel/2=), the drive
+loop, suffix commit (=stamp_and_sink=, =sink_failure=), receipt selection for =ReleaseGate= (the
+persisted event whose =seq= is =started_seq=), observer notification order (after execution), the
+fold, and the no-event commit behaviour of =RetainPrompt=/=SnapshotArtifact= (an empty suffix
+commits nothing; the journal does not move).
+
+* The executor API (exact)
+
+#+begin_src elixir
+@spec Effects.Runtime.new(keyword()) :: Runtime.t()
+#   From the Host opts: executor module (opts[:gate_executor] | Gate.Execution). Nothing ambient.
+
+@spec Effects.execute(Contract.Effect.t(), Runtime.t(), inputs :: keyword()) ::
+        {Contract.Observation.t(), Runtime.t()}
+#   inputs ALWAYS carries opts: the Host's opts keyword (the context; no new struct in this unit);
+#   for %Effect.ReleaseGate{} it also carries receipt: map() | nil, SELECTED BY THE HOST from the
+#   committed events by started_seq (the executor only checks it through Execution.ack/2).
+#   Raises %Effects.Interrupted{kind, reason, stacktrace, runtime} on any :error/:throw/:exit
+#   escaping the adapter or executor code: runtime is the LATEST runtime (staged boundaries below).
+#   Raises %Effects.Unreachable{effect: Effect.Notify} for Notify (measured at runtime).
+
+@spec Effects.release_terminal(Runtime.t(), committed_suffix :: [map()]) :: Runtime.t()
+#   Pure. Called by the Host only after commit/3 returned :ok for the WHOLE suffix.
+
+@spec Effects.settle(Runtime.t()) :: {cleanup :: [map()], Runtime.t()}
+#   Abandons every registered handle through the executor; reports the ACTUAL executor answer per
+#   handle through the closed settle shapes (gate-execution-wiring.org, Cleanup settlement); an
+#   abandon that raises/throws/exits is caught, reported {clause settle_unproven}, and settle
+#   CONTINUES with the remaining handles (authority never disappears). Returned runtime is empty.
+
+@spec Effects.classify(module()) :: %{executable: boolean(), emitted: boolean()}
+#   executable = execute/3 has a path; emitted = the reducer constructs it (AST). Both are measured
+#   by the extraction test against runtime behaviour and the reducer's AST, never asserted from a table.
+#+end_src
+
+Adapter helpers (=dispatch_module/1=, =fs/1=, =now/1=, =unix_now/1=, =prompt_root/1=,
+=observe_opts/2=, =gate_opts/2=, the value-domain mappers =gate_reason/1=, =cleanup_settle/1=,
+=invalid_return/2=) move with the executors that use them.
+
+* Shared normalizer (MUST-4, R-3)
+
+The Host's =invalid_return/2= and the prompt observations call
+=Lifecycle.Core.Diagnostic.describe/1= and =describe_rejection/1=. Moving those callers into
+=Effects= would create a forbidden =Effects -> Lifecycle= edge. Prerequisite inside this unit:
+the implementation moves verbatim to =AiOrchestrator.Contract.Diagnostic= (it depends only on
+Contract structs, =PromptRejection= and =:crypto=; Contract stays dependency-free), exported by
+the Contract boundary; =Lifecycle.Core.Diagnostic= becomes =defdelegate= for both entry points
+(its Boundary deps and the reducer are untouched; the file is touched - disclosed). The test asserts
+byte-equality of both functions over a sample of known structs, raw terms and closed/off-domain
+rejections. In the delivered tree =Lifecycle= drops =Dispatch= and =Gate= from its deps and =Effects=
+takes them (R-3 accepted).
+
+Baseline finding (disclosed, not changed here): =Diagnostic.digest/1= is sha256 over
+=term_to_binary=; for an atom-keyed map (every struct) the binary depends on the VM's atom
+creation order (flatmap keys serialize in atom-table order), so struct digests are comparable
+only within one VM instance, not across runs. The pinned corpus therefore holds literal digests
+for non-map terms and the formula (computed in the running VM) for structs. Whether cross-run
+comparability is wanted is a separate question for the Diagnostic owner.
+
+* Runtime state (explicit, a value)
+
+#+begin_src elixir
+%Effects.Runtime{
+  executor: module(),
+  gates: %{{gate_run_id :: String.t(), attempt :: pos_integer()} => %{phase: :prepared | :running, handle: term()}}
+}
+#+end_src
+
+Replaces =:host_gate_registry=, =:host_gate_executor= and =:host_gate_stragglers=. The handle is
+the executor's opaque prepared/running value (it holds the Port; the Port is owned by the process
+running the loop: same-process Port authority, unchanged).
+
+Payload discipline (MUST-4): =Interrupted= and =Runtime= implement =Inspect= to render only kind,
+gate keys and phases (never handles, reasons or stacks); =Exception.message/1= is a fixed sentence
+naming the kind. The Host never emits the wrapper or the runtime into any diagnostic, rejection
+or attention. The test asserts a sentinel handle/reason never appears in =inspect= or =message=.
+
+* Staged boundaries and ownership (MUST-2)
+
+=execute/3= for a gate effect is written as ordered stages; the runtime is UPDATED THE MOMENT a
+handle is transferred, and every later stage runs inside a =try= whose =rescue/catch= wraps with
+the updated runtime:
+
+| Stage | Runtime after the stage | If this stage escapes, Interrupted.runtime holds |
+|-------+-------------------------+--------------------------------------------------|
+| native prepare returns =:error= or escapes BEFORE transferring a handle | input | input (nothing to clean) |
+| prepare returns ={:ok, prepared}= | put {id,attempt} => {:prepared, h} | - |
+| started_data / clock / observation construction after prepare | unchanged | the NEW prepared handle |
+| ack or release rejects | prepared handle abandoned; entry removed; settle carried in the reason | - |
+| ack or release escapes | unchanged | the PREPARED handle |
+| release returns ={:ok, running}= | replace with {:running, h'} | - |
+| clock / GateReleased construction after release | unchanged | the RUNNING handle |
+| await escapes | unchanged | the RUNNING handle |
+| evidence / observation construction after await | unchanged | the RUNNING handle |
+
+The Host loop holds the runtime returned by =execute/3=; observer and sink exceptions are
+Host-side and settle that runtime. There is no rescue anywhere that closes over a runtime older
+than the last transition.
+
+* Every trappable exit closes in the same invocation (MUST-3/MUST-8; R-1 revised)
+
+Baseline fact (an audit probe imported from review, measured on the pre-extraction Host): the Host loop
+rescues =:error= only. A caught
+=:throw= (or =:exit=) from the observer leaves the running handle in the process dictionary,
+unabandoned; the NEXT =Host.run= in the same process finds it and reports it as a straggler in
+=gate_cleanup=. So "stragglers only on process death" was FALSE at baseline.
+
+Pinned change (limited, intentional): the Host wraps execution, observer call
+and commit in =try ... rescue/catch= over =:error=, =:throw= and =:exit=; on any of them it
+settles the LATEST runtime (=Effects.settle/1=, which itself never drops a handle when one abandon
+fails), then re-raises the ORIGINAL kind, reason and stacktrace (=:erlang.raise/3=; the
+=Interrupted= wrapper never escapes the Host). Consequence: a later invocation has nothing to
+inherit, so the next-entry straggler report is retired WITH this pin, not by assertion.
+Untrappable process death stays what it is: the Ports close, the guardian settles the group on
+EOF, the journal is unchanged, resume reconciles.
+
+Wording (SHOULD-3): what the Host does at a trappable exit is "cleanup ATTEMPTED for every
+retained handle; unproven failures REPORTED"; never "all resources proven settled". An empty
+runtime after a failing abandon means tracking was relinquished, not that native closure was
+proven; the native contract and its tests own control-channel close/EOF evidence.
+
+Exact-origin matrix (MUST-8): the test injects an escape of each kind (=:error=, =:throw=, =:exit=)
+from each origin after handle ownership - the observer (after =ReleaseGate=), the executor
+(=await=, running handle owned) and the sink (the =gate_passed= commit) - records the exact kind,
+reason and stacktrace at the injection point, and asserts the Host propagates that exact triple
+while abandoning the running handle exactly once in the same invocation and leaving nothing for
+the next invocation. A cleanup that itself fails (any kind) during the close never replaces the
+primary failure. At the Effects level a first-attempt cleanup failure of each kind is traced in
+attempt order: the failing attempt is reported =settle_unproven= and a later handle is still
+attempted (no assumption about the production iteration order). The test pins: observer throw / exit / error
+after ReleaseGate each abandon the running handle exactly once in the same invocation and
+propagate the original escape; the next invocation reports no cleanup; an abandon that raises
+leaves every other handle abandoned and reports the failing one =settle_unproven=.
+
+* Suffix-commit boundary (MUST-5; ruling R-4: KEEP)
+
+=Host.commit/3= persists a reducer suffix LINE BY LINE through the sink (non-atomic: earlier
+lines of the suffix are already persisted when a later line is refused or the sink raises) and
+HALTS on the first refusal; a sink exception propagates. Terminal release runs only after the
+WHOLE suffix has been committed. Consequence, measured on the pre-extraction Host (a review probe
+imported as a disclosed baseline pin): when the =gate_passed= line was persisted and a later line of the
+same suffix (=run_completed=) is refused or raises, the gate's handle is still registered and is
+abandoned at the exit. The cleanup report carries ONLY the executor's actual answer for that
+abandon (whatever =abandon/1= returned - no inferred =guardian_gone= or "settled"). This is
+conservative extra cleanup of a gate whose EXIT record =await= already consumed; it is never a
+second release. The extraction preserves it exactly; per-persisted-line retirement would be a
+separate behavioural unit (R-4: not now). C4 probe assertions that read the process dictionary
+are replaced by observable assertions (=gate_cleanup= present/absent, abandon calls) so they cannot
+pass vacuously once the keys disappear.
+
+* Classification of the 15 Contract.Effect structs (MUST-1; corrected)
+
+| Effect | executable path | constructed by the reducer (AST) | runtime witness in the test |
+|--------+-----------------+----------------------------------+----------------------------|
+| Clock, Dispatch, SnapshotArtifact, ReconcileSend, Observe, ReadReview, RetainPrompt, FetchPrompt | yes | yes | scenario corpus through the Host with admissibility + correlation asserted per pair |
+| Timer | yes | YES: =queued_send_clock/3= (=purpose queued_send_poll=) | queued-delivery run through the Host (imported audit probe) + direct execute answers =Deadline= |
+| PrepareGate, ReleaseGate, AwaitGate | yes | yes | scenario corpus |
+| ReconcileGate | yes | yes | recovery resume witness (v2 start, dead, rerun) |
+| RunGate | yes (legacy standalone runner) | NO | direct execute with a scripted runner answers =GateFinished= |
+| Notify | NO | NO | direct execute raises =Unreachable= |
+
+Every Host witness asserts its result: the eleven scenario cases reproduce their parity oracle
+summaries; the queued-delivery run, the recovery resume and the prompt-projection resume complete.
+The FetchPrompt witness is a real one (MUST-7): the kill9 scenario is run through its writer prompt
+projection with a real prompt root, the journal is cut before =assignment_dispatch_sent=, objects of
+assignments the cut journal never requested are removed, and the resume fetches the retained object
+(precedent: run_fsm_prompt_retention_test "resume fetches through the store before it reconciles").
+This witness passed on the pre-extraction lib; only the assertions that go through =Effects= depended
+on the extraction.
+
+An earlier review note that Timer is not emitted is superseded by this AST and runtime evidence. The
+test enumerates the struct modules from the compiled application (=15), the constructors from the
+reducer's AST, and executes every executable effect.
+
+* Structural guard (asserted by the test)
+
+=host.ex= contains no =Process.put(:host_gate=, no =defp execute(%Effect.=, no
+=defp observe(%Effect.=, no =defp gate_reason(=, and still contains =defp stamp_and_sink(= and
+the receipt selection. =lib/ai_orchestrator/effects.ex= declares =use Boundary= without a
+=Lifecycle= dep; =Lifecycle= depends on =Effects=; =Lifecycle.Core= deps untouched (purity test).
+
+* Acceptance
+
+Run =bin/verify= to reproduce (format, warnings-as-errors, credo --strict, audits, dialyzer, the suite).
+The extraction's own witnesses are =test/effects/effects_extraction_red_test.exs=,
+=test/effects/extraction_ownership_review_test.exs= (the imported ownership probes, the sixth as the
+baseline pin), =test/effects/red_contract_audit_test.exs= (the imported audit probes and the pinned
+replacement of the third) and =test/effects/effects_green_review_test.exs=; the gate wiring suite, the
+parity corpus (zero oracle-byte delta), the determinism property and the Boundary/purity guards run
+alongside them.
+
+* Implementation notes and deviations
+
+- =lib/ai_orchestrator/effects.ex= (+ =effects/runtime.ex=, =effects/interrupted.ex=,
+  =effects/unreachable.ex=) holds the executors moved verbatim from the Host (adapter calls
+  renamed =adapter/2=, observation mapping =observe/3=, the gate stages, value builders and the
+  closed diagnostics mappers). Gate stages use =guarded/2=: the native prepare runs against the
+  input runtime; the runtime is updated the moment a handle transfers; every later stage runs
+  against the updated runtime; an =Interrupted= already carrying a newer runtime is never
+  re-wrapped.
+- =Lifecycle.Host= keeps run/resume/cancel, the loop, whole-suffix =commit/3= with linewise
+  =stamp_and_sink=, receipt selection, observer order, fold. =guard/2= wraps commit, execute,
+  observer and =Reducer.step= separately, each with the runtime that stage holds, settles the
+  latest runtime on any =:error=/=:throw=/=:exit= and re-raises the original triple with
+  =:erlang.raise/3=. The process-dictionary registry, the entry-straggler step and the
+  =gate_or_execute= dispatch are gone.
+- =Contract.Diagnostic= is the verbatim relocation; =Lifecycle.Core.Diagnostic= delegates.
+  =Lifecycle= depends on =Effects= and no longer on =Dispatch=/=Gate= (R-3).
+- Test correction (disclosed): the RED's =StagedExecutor.abandon/1= chained =Process.put(...) &&
+  :ok= and so returned the previous dictionary value (nil on the first call) instead of =:ok=; the
+  double now returns =:ok= explicitly. No assertion changed. No fixture or oracle byte changed.
+
+- Review corrections: each cleanup attempt AND its normalization run under
+  one per-handle catch, so an unclassifiable or escaping executor answer yields only
+  =settle_unproven=, later handles are still attempted, and the primary failure is never replaced;
+  the class mapper reads keys without =Access= (a struct answer has no =Access=). The
+  release-rejection leg builds its =GateReleaseFailed= under the POST-abandon runtime, so a
+  failure there cannot make the Host abandon the same handle twice; the prepare-failure legs are
+  guarded the same way. Four review probes are imported as =test/effects/effects_green_review_test.exs=.
+
+* Rulings
+- R-1 (revised after MUST-3): NOT "stragglers only on process death". All trappable exits settle
+  in the same invocation (pinned above); next-entry straggler reporting retires with that pin.
+- R-2: internal =Interrupted= state carrier accepted (payload-free rendering, original
+  failure kind/reason/stack preserved; never escapes the Host).
+- R-3: accepted - =Lifecycle= drops =Dispatch=/=Gate= deps; =Effects= takes them; shared
+  normalizer relocates to =Contract.Diagnostic= with Core delegation first.
+- R-4: KEEP the suffix-commit boundary, with the two precisions above.

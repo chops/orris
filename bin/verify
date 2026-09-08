@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+if [[ $# -ne 0 ]]; then
+  printf 'usage: bin/verify\n' >&2
+  exit 2
+fi
+
+required_elixir="1.20.4"
+required_otp="29.0.5"
+
+actual_elixir="$(elixir -e 'IO.write(System.version())')"
+actual_otp="$(
+  elixir -e '
+    release = :erlang.system_info(:otp_release) |> List.to_string()
+    path = Path.join([List.to_string(:code.root_dir()), "releases", release, "OTP_VERSION"])
+    path |> File.read!() |> String.trim() |> IO.write()
+  '
+)"
+
+if [[ "$actual_elixir" != "$required_elixir" || "$actual_otp" != "$required_otp" ]]; then
+  printf 'toolchain mismatch: expected Elixir %s / OTP %s, got Elixir %s / OTP %s\n' \
+    "$required_elixir" "$required_otp" "$actual_elixir" "$actual_otp" >&2
+  printf 'run verification through: nix develop --command bin/verify\n' >&2
+  exit 1
+fi
+
+printf 'verification profile: %s (Elixir %s / OTP %s)\n' \
+  "adopted" "$actual_elixir" "$actual_otp"
+
+mix deps.get --check-locked
+# Hex and mix_audit use distinct advisory sources. Run both so a clean result
+# from one cannot silently mask an advisory published by the other.
+mix hex.audit
+test/redaction_check_test.sh
+test/dialyzer_baseline_test.sh
+bin/redaction-check
+mix format --check-formatted
+mix compile --warnings-as-errors
+mix test --warnings-as-errors
+mix boundary.spec >/dev/null
+
+# Escript gate: the operator's CLI is a separate OS process that starts the OTP
+# application itself, so nothing running inside the project's own BEAM can
+# prove that process works. A --help or --version probe would not prove it
+# either: with the escript's `app:` left unset the binary still answers help,
+# while every journal writer inside it fails `ownership_unavailable`, because
+# the host root that owns the ownership arbiter is never started. The probe is
+# therefore a command that really opens a writer, run out of BEAM against a
+# disposable copy of a fixture run made outside the repository.
+escript_dirt_before="$(git status --porcelain)"
+rm -f bin/ai-orchestrator
+mix escript.build >/dev/null
+
+escript_work="$(mktemp -d "${TMPDIR:-/tmp}/ai-orchestrator-verify.XXXXXX")"
+trap 'rm -rf "$escript_work"' EXIT
+escript_run="$escript_work/run"
+mkdir -p "$escript_run"
+cp test/fixtures/contracts/scenarios/kill9_resume/events_pre_gate.jsonl "$escript_run/events.jsonl"
+
+escript_status=0
+./bin/ai-orchestrator cancel "$escript_run" \
+  >"$escript_work/out" 2>"$escript_work/err" || escript_status=$?
+
+escript_first_line=""
+IFS= read -r escript_first_line <"$escript_work/out" || true
+
+escript_fail() {
+  printf 'escript gate failed: %s\n' "$1" >&2
+  printf '  exit status: %s\n' "$escript_status" >&2
+  printf '  stdout first line: %s\n' "$escript_first_line" >&2
+  printf '  stderr: %s\n' "$(tr '\n' ' ' <"$escript_work/err")" >&2
+  exit 1
+}
+
+[[ "$escript_status" -eq 0 ]] || escript_fail 'the probe command did not succeed'
+[[ "$escript_first_line" == '#+title: Run summary'* ]] || escript_fail 'stdout is not the structured run summary'
+grep -q '^\* Status: cancelled$' "$escript_work/out" || escript_fail 'stdout does not carry the run outcome'
+
+# Only the writer path creates the head file, so this is what separates a real
+# out-of-BEAM writer open from a binary that merely printed something.
+[[ -f "$escript_run/events.head" ]] || escript_fail 'no writer ever opened the probe run directory'
+
+# stderr may carry third-party diagnostics; it may never carry the result.
+if grep -qE '^#\+title:|^\{"' "$escript_work/err"; then
+  escript_fail 'stderr carries result output, which belongs on stdout alone'
+fi
+
+# One diagnostic is not legitimate: it means the OTLP exporter reached
+# initialisation before `:inets` was started and the whole process is running
+# with no telemetry. `test/application_test.exs` is the deterministic guard --
+# it pins the application order that makes the race impossible. This is the
+# end-to-end backstop, in the only process that actually starts the
+# application the way an operator does.
+if grep -q 'OTLP exporter failed to initialize' "$escript_work/err"; then
+  escript_fail 'the OTLP exporter lost its startup race with :inets'
+fi
+
+if [[ "$(git status --porcelain)" != "$escript_dirt_before" ]]; then
+  escript_fail 'the escript run changed the working tree'
+fi
+
+# Gate C purity: the pure reducer may reference no effect adapter, clock, id seam, process, or file.
+reducer_source="lib/ai_orchestrator/lifecycle/core/reducer.ex"
+if [[ -f "$reducer_source" ]]; then
+  reducer_hits="$(bin/capture-rg 'reducer purity' -n 'AiOrchestrator\.Dispatch\b|\bDispatch\.[a-z]|\bGate\.|\bGateRunner\b|\bPaneRegistry\b|\bNotify\b|\bFile\.|\bSystem\.|Process\.sleep|:timer|\bclock\.|\bSystemClock\b|\bSystemId\b|\bAgent\.|\bGenServer\b|\bsend\(|\breceive\b|\bevent_sink\b' "$reducer_source")"
+  if [[ -n "$reducer_hits" ]]; then
+    printf 'reducer purity gate failed:\n%s\n' "$reducer_hits" >&2
+    exit 1
+  fi
+fi
+mix credo --strict
+mix deps.audit
+bin/dialyzer-check
+
+legacy_word="legacy""-bash"
+legacy_hits="$(bin/capture-rg 'legacy archive vocabulary' -n "$legacy_word" --glob '!docs/history.md' --glob '!deps/**' --glob '!_build/**' .)"
+if [[ -n "$legacy_hits" ]]; then
+  printf 'forbidden legacy archive references outside docs/history.md:\n%s\n' "$legacy_hits" >&2
+  exit 1
+fi
+
+bin/check-product-name
+
+if [[ -d lib ]]; then
+  vocab_hits="$(bin/capture-rg 'prototype domain vocabulary' -n 'task_id|round_' lib)"
+  if [[ -n "$vocab_hits" ]]; then
+    printf 'forbidden prototype domain vocabulary in lib/:\n%s\n' "$vocab_hits" >&2
+    exit 1
+  fi
+fi

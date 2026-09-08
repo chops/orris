@@ -1,0 +1,28 @@
+#+title: Journal event version fixtures (MUST-7 / NS-08)
+
+Per-type event versioning, ratified in =m_1788571429536242416_dca73dd4=: a fixture set
+exists before the first real read-time transform. =assignment_prompt_projected= is the one
+type whose current version is 2 (it gained the required =artifact_baseline=); every other
+type stays at 1. Read mode admits every version up to the current one; append mode requires
+the current one; a version beyond the current one is refused as =unsupported_event_version=.
+The read-side upgraded view of a version-1 projection carries
+={"status": "unrecorded"}= -- an explicit claim that the journal does not know -- and that
+shape is never valid on a journal line, in either mode; only the reducer's in-memory view
+mode (=:view=) admits it. The chain bytes are never rewritten.
+
+Files named =*.malformed.json= are rejected in both modes.
+
+* Gate types at version 2 (D3, rulings =m_1788583146000=)
+=gate_started= v2 adds the required =attempt=, =deadline_unix= and =execution{pid, pgid,
+start, claim_hash}=; the view of a v1 line carries =execution {"status": "unrecorded"}= and
+no attempt or deadline (an unresolved start). =gate_failed= v2 keeps the integer
+=exit_status= for a normal non-zero exit and uses =null= plus a required closed
+=termination{kind timeout|signal|recovery, signal only for kind signal, settled, leftovers,
+proof}= otherwise; the view of a v1 line carries =termination {"status": "unrecorded"}=.
+The stderr evidence union is preserved in both versions: at least one of =stderr_hash= /
+=stderr_merged=; v2 admits both together. Fixtures =gate_started.*= and =gate_failed.*=
+cover v1 (valid under the current read rules), v2 closed shapes, malformed shapes, and the
+future version. The public JSON Schema export is append-only: v2 present, v1 absent.
+=gate_v2_positive.jsonl= supplies the version-2 positive samples the contract suite draws
+from (the archived parity journals keep their version-1 gate lines byte-identical; the
+reducer starts emitting version 2 only in the wiring unit).

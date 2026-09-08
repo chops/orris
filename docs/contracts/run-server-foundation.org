@@ -1,0 +1,266 @@
+#+title: Run.Server foundation: foreground supervised run subtree
+#+PROPERTY: status delivered contract
+
+* Implementation status
+Delivered. =AiOrchestrator.Run.Supervisor= (=rest_for_one=, =max_restarts: 0=, traced child starts, config
+validation before any child, an opaque init thunk), =AiOrchestrator.Run.Server= (gen_statem; =:opening= discovery of
+the sibling Writer through the parent, =Ownership.status= live check, =:driving= one committed =Host.commit_step/1= stage per internal event with the staged work released to the
+=Run.Worker= (the foundation's original loop called =Host.advance/1= directly; that description survives below
+only as explicitly historical foundation behaviour), =await/2= postponed until =:finished= / =:failed=, closed =await_timeout= / =run_server_down=,
+=format_status/1= redaction), =AiOrchestrator.Run.Work.Supervisor= (DynamicSupervisor) and the stepping API
+=Lifecycle.Host.open/3= + =advance/1= over =Host.Loop= all ship in =lib/ai_orchestrator/run/= and
+=lib/ai_orchestrator/lifecycle/host.ex=. Rows R-A..R-N and the WT teardown controls live in
+=test/run/run_server_foundation_red_test.exs= (the same file also hosts later units' rows under other tags). Three
+statements of the original foundation have since been superseded by later units and are marked below: the Work
+supervisor now hosts exactly one =Run.Worker= that executes effects (=effect-owner-lifecycle.org=); the Server
+admits commands under the Writer lock (=command-executor-migration.org=); and an =AwaitGate= no longer executes
+sequentially inside the Server - the Worker holds it while the Server owns its deadline timer
+(=gate-async-await-proposal.org=). Automatic restart, exhaustion terminals, a registry/monitor or any daemon shape
+are still not delivered.
+
+* What this unit is, and is not
+A FOREGROUND SUPERVISION FOUNDATION: one run subtree hosting the Host loop for one run inside a gen_statem, started
+and awaited by a caller in the same node. It delivers the topology, ownership order, sibling discovery, the result
+channel and the crash/rehydration pins. It does NOT deliver automatic recovery (max_restarts 0 is exhaustion, never
+restart support), a registry/monitor or any daemon shape, exhaustion terminals, or schema/event/oracle changes. At
+the time of this unit it also left the Host/RunFSM signatures unchanged and =Commands.Executor= as a behaviour (the
+caller migration is =command-executor-migration.org=) and executed effects sequentially inside the Server (since
+moved to the Worker, see the status above).
+
+* Topology (rest_for_one)
+#+begin_example
+Run.Supervisor (rest_for_one, max_restarts: 0)        AiOrchestrator.Run.Supervisor
+|- Journal.Writer   {run_dir, writer_opts}           existing module, existing child_spec (permanent)
+|- Run.Server       gen_statem                       AiOrchestrator.Run.Server
+`- Work.Supervisor  DynamicSupervisor                AiOrchestrator.Run.Work.Supervisor
+   `- Run.Worker    (born by the Server; :temporary)  added by the effect-owner unit; empty in this foundation
+#+end_example
+Startup order is proven by child start traces (each child reports its pid on start), NOT by
+=Supervisor.which_children/1=, whose enumeration is reversed (an independent probe measured startup
+=[:writer, :server, :work]= and which_children =[:work, :server, :writer]=). Child intents stay =permanent=; with
+=max_restarts: 0= a qualifying child exit exhausts the subtree at once and the supervisor shuts down ALL remaining
+children, the Writer included, then exits =:shutdown=. This foundation makes no automatic side-effect replay and
+claims no failure guarantee beyond that.
+
+* The API (exact; internal executor context, not a command surface)
+#+begin_src elixir
+@spec AiOrchestrator.Run.Supervisor.start_link(config) :: Supervisor.on_start()
+#   config :: %{run_dir: Path.t(), mode: :run | :resume | :cancel, spec: map() | nil, plan: map() | nil,
+#              opts: keyword(), trace: pid() | nil}
+#   :run   -> Writer create: true; spec/plan required
+#   :resume/:cancel -> Writer create: false; prior events come ONLY from Writer.opened/1 (Reader-verified,
+#              repaired view). There is no prior_lines/raw-lines key; a config carrying one is rejected.
+#   opts is the Host's option keyword minus :event_sink (the Server binds &Writer.append(writer, &1)).
+#   Later units added optional keys: open, command, admission, owner_handoff (see their contracts).
+
+@spec AiOrchestrator.Run.Server.await(pid(), timeout()) ::
+        {:ok, map()} | {:error, map()}
+#   The foreground result channel. Blocks the CALLER only; the timeout is a wait timeout - it never
+#   cancels or takes over work. Terminal results are cached in :finished/:failed; repeated awaits
+#   return the same value without rerunning anything. Closed, payload-free errors:
+#     %{clause: "await_timeout"}      the wait expired (work continues)
+#     %{clause: "run_server_down"}    the Server process is not alive / exited (no DOWN reason bytes)
+#   A reducer rejection is the Host's {:error, rejection} map, cached and returned as such.
+@spec AiOrchestrator.Run.Server.status(pid()) :: :opening | :driving | :finished | :failed
+#   A call: in this foundation it queued behind the sequential driving step (D-3); with effects in the
+#   Worker it is answered while an effect is held.
+
+# Smallest shared stepping API (D-3): Run.Server never copies commit/receipt/cleanup logic.
+@spec AiOrchestrator.Lifecycle.Host.open(mode, inputs, opts) :: {:ok, Host.Loop.t()} | {:error, map()}
+#   mode :: :run | :resume | :cancel (a later unit added :continue); inputs :: %{spec, plan, prior_lines};
+#   opts as today.
+@spec AiOrchestrator.Lifecycle.Host.advance(Host.Loop.t()) :: {:continue, Host.Loop.t()} | {:halt, {:ok, map()} | {:error, map()}}
+#   One loop step: guard(commit) -> release_terminal -> receipt selection -> guard(execute) ->
+#   guard(observer) -> guard(Reducer.step). Host.run/3, resume/4, cancel/2 keep their signatures and
+#   are re-expressed as open + advance-until-halt (no behaviour change; parity corpus unchanged).
+#+end_src
+Run.Server states: =:opening= (post-init, D-2), =:driving= (one step per internal event), =:finished= / =:failed=
+(cached result). No work in =init/1=.
+
+* D-1..D-7 (pinned)
+- D-1 =max_restarts: 0=: exhaustion only. R-D/R-E prove the whole subtree down (Writer included), ownership
+  released or reclaimable, then a NEW subtree in =:resume= owning a NEW Writer whose Reader-verified current
+  journal is read before any effect. Named prerequisite for a later automatic-restart unit: =Writer.opened/1= is
+  init's cached snapshot (=append= moves =last_seq=, not =opened=), so restart + rehydrate-before-effect needs a
+  live snapshot owner. Not built here.
+- D-2 Deferred parent-based discovery: =Run.Supervisor= passes ITS OWN pid into the Server's start args;
+  =Run.Server.init/1= returns immediately; in =:opening= (an internal event) the Server asks the parent for its
+  started children, selects the exact Writer sibling by child id ={Journal.Writer, expanded_run_dir}=, reads
+  =Writer.opened/1=, checks =Ownership.status(run_dir)= == ={:ok, %{writer: writer_pid, generation: _, state:
+  :live}}=, confirms Work.Supervisor started, and only then proceeds. Discovery failure is fail-closed (=:failed=,
+  closed clause). No registry, no global name, no caller-supplied Writer pid, no adapter call before readiness.
+- D-3 Sequential execution/await inside the Server (labelled, and since superseded for effects by the Worker):
+  calls queue during the whole driving sequence; no statem-owned deadline timer in this unit; R-F is the inherited
+  =Execution.await= owner-timeout witness only. Host stays the impure driver; one stepping API.
+- D-4 =await/2= as above; the caller stops the supervisor after reading; a Server crash is =run_server_down=,
+  never the original triple across the process boundary (the triple is preserved INSIDE the Server invocation and
+  in the direct Host tests); failure observation is monitor-based, never dependent on a busy Server answering.
+- D-5 Work.Supervisor present, a DynamicSupervisor; readiness traced. (Empty in this foundation; one Worker child
+  since the effect-owner unit.)
+- D-6 Supervisor shutdown/kill relies on Port close and guardian EOF; no terminate callback closing over an older
+  Runtime; no fabricated terminal or cleanup proof; no historical-PID signalling. Same-invocation
+  trappable-failure cleanup (Effects) is unchanged.
+- D-7 Host/RunFSM/CLI signatures unchanged by this unit; the config above is internal executor context.
+
+* Crash and rehydration pins
+After any crash (Server killed mid-gate, Writer killed, subtree shutdown), the recovery authority is exactly the
+Writer/Reader-VERIFIED accepted-or-repaired durable prefix. It may end in a valid PARTIAL suffix (persistence is
+linewise, non-atomic) and may include an append that was durable (journal line + receipt synced) before the caller
+received its reply. Recovery MUST NOT discard valid durable evidence for lack of a caller acknowledgment and MUST
+NOT invent a record, an acknowledgment, or a terminal; raw decode is never authority. On the live path a gate
+release still requires the matching persisted acknowledgment. Killed-during-write repair (torn tail) remains the
+Writer's existing behaviour and is exercised through the Server.
+
+* Rows (pinned before implementation; controls marked)
+| id | pin | measure |
+|----+-----+---------|
+| C-0 (control) | OTP semantics of the shape | startup order by trace, which_children reversed, kill server at max_restarts 0 -> all children DOWN, supervisor DOWN :shutdown |
+| R-A | topology + ownership before driving | start trace [writer, server, work]; ONE ordered receive over the Server's readiness messages: :driving, then the Server's first configured-clock read (Host stamping the first committed event, before any effect), then the post-effect observer; start_link returns within 5 s (no deadlock) |
+| R-B | parity | every H.cases through Run.Supervisor/await == the oracle result (pre-stamp events + summary); appended events carry v2 receipts; Timer (queued), ReconcileGate (recovery), FetchPrompt (projection) witnesses |
+| R-C | Port ownership | real guardian: the process executing the gate (barrier self()) == the traced owner; Port connected to it; READY is a two-way barrier (identity tracked, then acknowledged by exact ref) |
+| R-D | Server crash mid-gate | kill Server after the GO token (=:after_go=; the marker proves the command ran): all DOWN + supervisor DOWN; guardian settles on EOF (dead? oracle); verified prefix == committed durable prefix, no terminal; Ownership released/reclaimable; NEW subtree :resume -> completed, gate attempt 2 under the original deadline; zero automatic restarts (start-pid trace) |
+| R-E | Writer crash | kill Writer while driving: all DOWN; guardian EOF; same recovery |
+| R-F (labelled) | inherited owner deadline | liveness measured INSIDE the barrier at GO (executing process, before the jump); SeamClock jump after ReleaseGate -> gate_failed kind timeout via the Server; backstop never fires; NOT a responsive-timer claim (the responsive Server timer is a later unit) |
+| R-G | rehydration source | torn tail -> the Server's resume sees the Writer-repaired view (run_resumed.tail_repair); config with prior_lines is rejected; a rejected open (locked dir) means zero adapter calls |
+| R-H | attention/cleanup | gate_settlement_unknown attention and sink-error cases report gate_cleanup through await exactly as Host |
+| R-I | cancel | :cancel mode == Host.cancel (parity cases 3 and 11) |
+| R-J | reducer-owned retry | flaky gate: work_item_retry_scheduled, child pids unchanged, restart count 0 by trace |
+| R-K | await semantics | timeout -> {:error, %{clause: "await_timeout"}} and work continues; caller death does not kill work; repeated awaits equal; crash -> {:error, %{clause: "run_server_down"}} with no DOWN-reason bytes |
+| R-L | shutdown EOF | Supervisor.stop during a real gate -> group dead by EOF; no terminal, no cleanup record appended |
+| R-M | durable write before reply | Writer killed after journal+receipt synced, before replying: the record is in the NEW Writer's verified prefix; the interrupted invocation never observed {:ok, _}; resume continues from it (needs a FaultFs dir_sync hook: harness extension, test support only) |
+| R-N | stepping API | Host.open/advance exist; Host.run/resume/cancel equal open+advance; Run.Server source contains none of `defp commit(`, `Enum.find(committed`, `Effects.settle(`, `Reducer.step(` |
+The R-C..R-F, R-H and R-K pins that named the Server as the executing/Port-owning process were migrated to the
+traced Worker when effects moved (=effect-owner-lifecycle.org=, "Migrated pins").
+
+* Decisions on the interface questions
+- Root =AiOrchestrator.Run= boundary with only the deps it needs; =Lifecycle= explicitly exports the minimal =Host= /
+  =Host.Loop= seam (an internal compiler boundary, not a supported actor-bypassing product path); =Core= purity
+  untouched. Pinned by source guards. (The Effects dependency later entered through =Run.Worker= only.)
+- Test-support seam: =FaultFs= gains ={:after, fun}= - the operation runs normally and only on =:ok= the fun
+  receives the trace (this op at its head) in the writer's own process, i.e. AFTER the real fsync succeeded and
+  BEFORE the append replies; a failed operation never reaches it. Targeted at the receipt publication by
+  inspecting the trace (the previous op is the rename to =events.head=), never a whole-test ordinal. Baseline
+  controls: exact ordering (hook before the reply; receipt already on disk) and the failed-publication negative;
+  the rename failure is a pre-sync publication failure; a failed underlying =dir_sync= with ={:after, fun}=
+  selected returns the error unchanged and never calls the hook. No production Writer change.
+- R-C reads =Port.info(port, :connected)= for the LIVE guardian Port found by its OS pid at READY (from inside the
+  barrier) and asserts it equals the owning pid; the barrier's =self()= alone is not the proof. Baseline control
+  on the existing native execution path.
+- =DynamicSupervisor=, present (D-5 stands).
+- No async await variant; =await/2= stays a closed synchronous result. "Caller death" means an await SUBSCRIBER
+  dying, never the linked parent that owns the supervisor.
+- Start trace: the SUPERVISOR wraps each real child start MFA and records the successful start, in order, as
+  ={:run_child_started, supervisor_pid, id, pid}= to the optional =config.trace= (nil in production); original
+  returns/errors, child ids and types are preserved; no Journal.Writer trace callback. The Server reports
+  ={:run_server_driving, server_pid, %{writer, work, ownership}}= once its post-init discovery succeeded; because
+  both that message and the first effect come from the Server, their mailbox order is the Server's order - a
+  deterministic, non-waiting readiness fact. Timestamps are diagnostic only.
+- A config carrying =prior_lines= is refused as =%{clause: "raw_lines_not_accepted"}= before any Writer, file or
+  effect activity, in every mode (internal input refusal, no new surface).
+
+* Corrected pins
+- Historical scenario priors are LEGACY on-disk fixtures (version-1 envelope, no receipt) that =Writer.open=
+  accepts; =Writer.append= rightly refuses historical versions and its policy is not weakened to seed history;
+  current-version seeds are written as v2 lines plus a matching receipt (test setup may write bytes; production
+  recovery enters only through =Writer.open= under ownership). Every fixture has a baseline control before any
+  module guard.
+- Every execution calls its =opts_fun= afresh (the flaky-gate options carry a counter Agent).
+- Cross-invocation clock: a recovery run's clock reads >= the recorded =gate_started= ts and < the original
+  deadline (asserted first), otherwise the reducer correctly reports clock skew.
+- Recovery reruns the JOURNALED =gate_requested.command_argv=, never a replacement spec argv: the same bounded argv
+  serves both attempts through an on-disk marker handshake.
+- Topology is pinned through =Run.Supervisor.init/1= (strategy, intensity, child types) and start traces, not
+  =which_children= order; startup is bounded by a monitored starter; the first effect is proven to follow every
+  sibling's start and live ownership.
+- Await/crash tests hold the Server in a known pending effect (a runner that blocks until released), monitor the
+  subscriber to a killed DOWN, and monitor ALL expected DOWNs rather than racing teardown.
+- Native cleanup is registered at READY (owner-independent tracker); R-F carries the configured 600 s window, a
+  live-group positive control and the DEAD =reason=command= evidence, and stays labelled inherited sequential
+  behaviour.
+- READY barrier: =:after_ready= reports identity, the live Port owner, the executing pid and a fresh ref, then
+  WAITS (bounded) for ={:ready_ack, ref}=; the harness tracks the identity under the owner's teardown BEFORE
+  acknowledging; without an ack the executing process exits ={:ready_not_acknowledged, ref}= (fails closed); its
+  Port closes and the guardian settles on EOF. =:after_go= measures the group's liveness inside the held boundary
+  and reports it (R-F asserts =:alive= there); READY is acknowledged for EVERY attempt (recovery attempts
+  included); the crash boundary is "after the GO token", distinct from the GateReleased observation.
+- R-M targets the 12th receipt publication and names the semantic event at that fixed, disclosed position
+  (=assignment_observation_started=), checked through the new Writer's verified view.
+
+* Harness rules
+- Lifetime: tests start the subtree through a trapping OWNER process that is the real linked parent and lives
+  until one failure-safe teardown stops it (bounded =Supervisor.stop= through the owner, then wait for every
+  native group tracked under that owner). A startup timeout kills and reaps the owner (and by link any partial
+  subtree) before failing. The on_exit cleanup takes its OWN monitors, stops the owner gracefully (bounded), then
+  checks every owned process (collected over links, deepest first); a timeout or survivor escalates to kill +
+  reap-to-DOWN of the whole owned subtree and is REPORTED as ={:escalated, killed}= (the on_exit raises on it).
+- Cross-process state: one named test seam Agent carries the recovery clock instant (=SeamClock=), the
+  abandon-notification subscriber and named flags across test, Server, Writer and the FaultFs Agent (a FaultFs
+  matcher reads the seam Agent, never its own). Production copies no process dictionary.
+- Receiver binding: every receiver-bound value (a config's =trace=, a held gate runner, a barrier) is built in the
+  TEST process; only the bare =start_link= crosses into the owner, through =start_run!/2=, which refuses a config
+  whose =trace= is not the calling test.
+- Readiness order: one receive clause set over the Server's readiness-relevant messages returns them in the
+  Server's send order; R-A asserts =:driving= first, then the Server process's FIRST configured-clock read
+  (=EntryClock=, test-only), then the post-effect observer. Pin: the Server performs no Host stepping (and reads
+  no configured clock) before reporting =:driving=.
+- Await witnesses: no =status/1= call while the gate is held; a pending await is witnessed by the subscriber
+  appearing in the Server's =monitored_by= set; kills are monitored to DOWN; no sleeps or pre-call announcements.
+- Test-owned Writer teardown (controls WT-1..WT-9 in the same file): a test-opened Writer holder is closed in the
+  owning test's =try/after= BEFORE the process exits and the real =:ok= is required; the =on_exit= fallback owns
+  its own monitor, reports an already-gone holder as such, closes a live one, tolerates a call meeting the
+  concurrent shutdown ONLY for the termination reasons and ONLY when the joined DOWN then proves termination, and
+  raises otherwise; a guarded directory is removed ONLY on proven absence of every owned actor, otherwise it is
+  PRESERVED and the failure raised; holders are registered at allocation (=:opening= before =Writer.open=, the pid
+  after), so an unknown record after a permitted start fails CLOSED.
+
+* Delivered implementation
+- Production files: =lib/ai_orchestrator/run.ex= (root boundary), =run/supervisor.ex= (rest_for_one, intensity 0;
+  traced child starts; config validation before any child; =supervisor_instance= resolved through the id seam
+  before the Writer's lock, as the CLI does; the child-start MFA and the init argument are carried as closures so
+  supervisor reports cannot print the config), =run/server.ex= (gen_statem, =handle_event_function=; =:opening=
+  discovery via =which_children= on the parent, exact Writer child id, =Ownership.status= live check; =:driving=
+  one =Host.advance/1= per internal event in this foundation; =await/2= postponed until =:finished=/=:failed=;
+  closed =await_timeout=/=run_server_down=; =format_status/1= redacts data/queue so crash reports carry no run
+  data), =run/work/supervisor.ex=, =lifecycle/host/loop.ex= + =Host.open/3= / =Host.advance/1= (run/resume/cancel
+  are open + advance-until-halt), =Lifecycle= exports Host, =Writer.tail_repair_data/1= (the CLI's private
+  repair-record mapping moved to the Writer so the Server and the CLI share it; CLI behaviour unchanged).
+- Executor bindings the Server gives the Host (all exactly what the CLI's =fsm_opts=/=run_then_close= give it):
+  =event_sink= (=Writer.append= on the sibling), =run_dir=, =run_lock_path= (=opened.lock_path=), =tail_repair=
+  (=opened.repair=), and =supervisor_instance= (resolved before the lock). Without =run_dir= Effects fall back to
+  "." and the real guardian cannot open its outputs (=prepare_failed/open_stdout=, measured); the other three are
+  journaled data. No event schema, fixture or oracle byte changed.
+- Closed process boundary: =gen_statem= takes a term THROWN out of a callback as that callback's return value, so
+  a throw re-raised by the Host's guard would reach the statem as a state transition (an observer throwing
+  ={:next_state, :finished, %{result: ...}}= fabricated a success). =Run.Server= runs every Host step inside
+  =closed/2=: any trappable kind becomes =exit({:run_step_failed, %{kind, class, digest, frames}})= (no stack
+  frames, no adapter atoms) AFTER the Host settled and re-raised the original inside the invocation (D-4
+  unchanged; direct Host semantics unchanged). Tests: observer next_state forgery, observer and EXECUTOR
+  action-bearing tuple throws, raise, exit -> all =run_server_down=, abandon exactly once, no terminal journaled.
+- Closed diagnostics: the class is the contract's CLOSED result-class vocabulary for EVERY kind
+  (=Contract.Diagnostic.result_class/1=: an exception is "map", an exit/throw atom is "atom"); no exception or
+  module name ever, since a structural =__exception__= marker is no trust boundary; the digest is the contract's
+  (present for known effect/observation structs too); the stack DEPTH only. =format_status/1= accepts a
+  =run_step_failed= envelope only when every key and value is inside the closed domain and re-describes anything
+  else; it renders callback-type-valid closed values for EVERY field (data =:redacted=, queue/postponed/timeouts
+  by event type with =:redacted= content, log =[]=, reason normalized) so OTP renders these and no default. (The
+  later effect-owner unit extended the closed shape to five keys with a =cleanup= summary.)
+- Repair authority: the Server DROPS every caller-supplied value under its owned bindings (=event_sink=,
+  =run_dir=, =run_lock_path=, =tail_repair=) before binding its own; a clean verified prefix never journals a
+  caller's repair; the Writer's actual repair wins over a conflicting record; resume and cancel covered.
+- Parity oracle: both sides get a FIXED explicit supervisor instance; =run_dir= from the test setup; lock path and
+  repair from the sibling Writer's own opening read from the Writer process, never learned from the journal under
+  test; the oracle runs after the Server only in time, not in information. A mutation control shows a wrong lock
+  path, instance or directory fails the comparison; a generated-identity control shows the resolved instance in
+  the lock file equals the journaled one. (The oracle later became =AiOrchestrator.Test.OwnerOracle= when effects
+  moved to the Worker.)
+- A real timeout (R-F) makes the reducer rework with a further assignment the scenario fixture never recorded; the
+  artifact-reader double serves exactly the two rework assignments a real timeout provokes (=as_0003= writer
+  rework, =as_0004= re-review), each with the fixture record of the same role under its own ids; every other
+  assignment reaches the fixture reader unchanged. R-F acknowledges the rework gate's READY as well and asserts
+  Execution's actual termination record (=kind=/=settled=/=proof=; there is no =reason= key).
+
+* History
+The interface went through four reviewed revisions (design questions, harness pins, harness closures) before
+implementation, an implementation review that added the closed process boundary and closed diagnostics, and a
+later test-only follow-up that replaced a racy Writer teardown with the owned-holder protocol above. Every
+correction is folded into the text; the revision ledger is not reproduced here.

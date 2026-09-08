@@ -1,0 +1,3 @@
+# Exact pattern:path:match-sha256 locator followed by " # " and a reason. Path-wide exclusions are forbidden.
+# The digest covers the regex capture including boundary characters. One entry allows every
+# occurrence of that exact captured value in that path.

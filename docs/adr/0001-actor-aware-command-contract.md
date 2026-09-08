@@ -1,0 +1,315 @@
+---
+status: accepted
+date: 2026-09-03
+supersedes: null
+---
+
+# ADR-0001: Actor-Aware Command Contract
+
+## Status
+
+Accepted. This ADR defines the actor-aware command path, durable acceptance
+stamp (`requested_by`, `verb`, `args_hash`), idempotency-conflict rule and
+ARGS-CANON-1 encoding.
+
+The current CLI enters through `Commands.invoke/4` and `Run.Executor` for
+`start`, `resume` and `cancel`. The policy vocabulary also describes future
+operations; authorization by that table does not establish executor support.
+The current executor rejects its unsupported verbs. Terminal no-op commands
+can return without appending an acceptance event.
+
+## Context
+
+Before the actor-aware path, mutating entry points called runtime internals
+without recording who requested the operation. The journal envelope's `actor`
+identifies the sole writer, `run_supervisor`; it is not the requesting identity.
+A retried command after an ambiguous timeout needs a durable acceptance stamp
+to distinguish continuation from a new operation.
+
+The design uses one framework-neutral command path for the CLI, console and
+agent tools, with an explicit actor, idempotency key and attribution on every
+command-originated fact. The requesting identity lives in event `data`, keeping
+the versioned envelope stable. Identifiers are opaque and never parsed for
+meaning. Agent operations have a closed allowlist that excludes operator control.
+
+Actor shape and policy authorization do not authenticate an external caller.
+Authentication and run/assignment scope must be enforced by each host or tool
+boundary before it supplies an actor. The local command API alone is not a
+multi-user security boundary.
+
+## Options Considered
+
+### Option 1: Actor as a new envelope field
+
+Add `requested_by` beside `actor` on the journal envelope.
+
+**Pros:**
+- One place to look for attribution.
+
+**Cons:**
+- Changes the ratified envelope shape (EJ-1) for every event, including the many
+  events no command originates.
+- Forces an envelope version bump before Wave 2's upcasters exist.
+
+### Option 2: Actor recorded in event data of command-originated events
+
+Keep the envelope unchanged; add a typed `requested_by` object to the `data` of
+each event that a command originates.
+
+**Pros:**
+- Additive within event version 1; existing fixtures stay valid.
+- Attribution sits exactly where the command's consequence is recorded.
+- Per-type data schemas (Wave 2, Z1) can make the field required per type.
+
+**Cons:**
+- Consumers must know which types are command-originated (this ADR lists them).
+
+### Option 3: Separate command log outside the journal
+
+Record commands in a side file keyed by `command_id`.
+
+**Pros:**
+- No journal change at all.
+
+**Cons:**
+- A second execution record; contradicts invariant 1 (the journal is the only
+  execution truth) and invariant 5 (projections are never inputs).
+
+## Decision
+
+The contract adopts Option 2.
+
+1. **Actor classes.** `operator` (local CLI, full control subject to reducer
+   admissibility), `console` (authenticated local operator session, same action
+   set), `agent` (scoped to one `run_id` and `assignment_id`, allowlisted tools
+   only), `system` (supervised internal operation carrying a `reason`).
+
+2. **`command_id`.** Every mutating command carries a caller-generated opaque
+   string matching `^[A-Za-z0-9_-]{16,64}$`, never parsed for meaning.
+   The grammar is defined locally by `Commands.CommandId`; no external source
+   checkout is needed to interpret it. It is stamped into `data.requested_by.command_id` of the one
+   acceptance event the command produces (item 4). Validation can only enforce
+   the grammar; every shipped generator must draw at least 128 bits from a
+   CSPRNG (`:crypto.strong_rand_bytes/1`) and encode them within the grammar,
+   so that a `command_id` is unguessable and collision-free in practice.
+
+3. **`requested_by` shape: a discriminated union on `class`** (event `data`,
+   required on the acceptance events in item 4; forbidden elsewhere). Every
+   variant carries `class`, `id`, `command_id` (item 2), `verb`, and
+   `args_hash`; scope fields are per class and unknown keys are rejected:
+
+   | class      | required in addition          | forbidden                        |
+   |------------|-------------------------------|----------------------------------|
+   | `operator` | —                             | `run_id`, `assignment_id`, `reason` |
+   | `console`  | —                             | `run_id`, `assignment_id`, `reason` |
+   | `agent`    | `run_id`, `assignment_id`     | `reason`                         |
+   | `system`   | `reason`                      | `run_id`, `assignment_id`        |
+
+   `verb` is the durable discriminator of which command was authorised. The
+   command set is closed per actor class; a variant whose `verb` is outside its
+   class's set is rejected by the schema:
+
+   | verb                     | classes                   | acceptance event                                                        | producer wave   |
+   |--------------------------|---------------------------|-------------------------------------------------------------------------|-----------------|
+   | `start`                  | operator, console         | `run_created`                                                           | Wave 1 (exists) |
+   | `resume`                 | operator, console         | `run_resumed`                                                           | Wave 1 (exists) |
+   | `resolve_attention`      | operator, console         | `run_resumed`                                                           | Wave 4          |
+   | `repair`                 | operator, console, system | `run_resumed`                                                           | Wave 2/4        |
+   | `cancel`                 | operator, console         | `run_cancel_requested`                                                  | Wave 1 (exists) |
+   | `pause`                  | operator, console         | `run_pause_requested`                                                   | Wave 4          |
+   | `update_context`         | operator, console         | `context_patch_proposed`                                                | Wave 9          |
+   | `propose_context_change` | agent                     | `context_patch_proposed`                                                | Wave 9          |
+   | `propose_plan`           | agent                     | Wave 9 vocabulary decision (e.g. `plan_proposed`); not appendable before | Wave 9          |
+   | `ratify_plan`            | operator, console         | Wave 9 vocabulary decision (e.g. `plan_ratified`); not appendable before | Wave 9          |
+
+   `context_patch_proposed` serves two verbs; the pair (`class`, `verb`) tells
+   an operator patch from an agent proposal, so the event type is not
+   ambiguous. Contract-change events (`contract_change_proposed`,
+   `contract_change_ratified`, `contract_change_rejected`, EJ-10) are not
+   command acceptance events in Wave 1: the verbs that produce them are a
+   Wave 9 ledger decision and are deliberately absent from this set rather than
+   overloaded onto an existing verb. `system` is limited to `repair` (boot-time
+   tail truncation and claim reconciliation, with a `reason`); a future exhaustion
+   terminal `run_failed(supervision_exhausted)` is a terminal fact, not a command,
+   and carries no `requested_by`. The current snapshot reserves `run_failed`
+   and does not implement that terminal producer. Extending any
+   class's set is a ledger amendment to NS-41.
+
+   `args_hash` is `sha256:<64 hex>` over the command's canonical argument bytes
+   (item 3a) and is what item 5 compares on retry.
+
+   Identifier grammars: `id` for `operator`, `console`, and `system` matches
+   `^[A-Za-z0-9_.-]{1,64}$`; `id` for `agent` is an agent name and matches the
+   ratified roster grammar `^[a-z][a-z0-9_-]{0,31}$` (EC-12); `run_id`,
+   `assignment_id`, and `reason` are non-empty strings whose exact grammar is
+   delegated to the Wave 2 per-type schemas (they are opaque under EC-7).
+
+3a. **Canonical argument bytes (ARGS-CANON-1).** No JSON canonicalization
+   library is in the dependency budget (MC-3) and RFC 8785 would add one, so
+   version 1 is an explicit, structurally unambiguous encoding. Every argument
+   document is a flat map of string-valued fields. The hashed bytes are:
+
+   ```
+   "ARGS-CANON-1\n"                         (13-byte ASCII tag; the version is in the tag)
+   field(verb)
+   for each key in byte-sorted order:  field(key) field(value)
+   field(s) = u32 big-endian byte length of s  followed by  the UTF-8 bytes of s
+   ```
+
+   Length prefixes delimit every element, so no value can impersonate a key, a
+   separator, or another field whatever bytes it contains; the encoding is
+   injective over (verb, document). `args_hash` is `"sha256:" <> hex(sha256(bytes))`.
+   A change to the encoding is a new tag (`ARGS-CANON-2`), never a silent
+   re-hash; adopting RFC 8785 later would be such a change.
+
+   Argument documents per verb (exact field sets; a verb's producer wave may
+   amend its own row by ledger amendment, never silently):
+
+   | verb | fields |
+   |------|--------|
+   | `start` | `spec_hash`, `plan_hash` |
+   | `resume` | `recovery_reason` |
+   | `resolve_attention` | `attention_ids` (ids joined by `,`; ids match `^[A-Za-z0-9_-]+$`, so the join is unambiguous) |
+   | `repair` | `kind` (`tail_truncate` or `claim_reconcile`), `detail_hash` |
+   | `cancel` | `reason` |
+   | `pause` | `reason` |
+   | `update_context` | `patch_hash` |
+   | `propose_context_change` | `patch_hash` |
+   | `propose_plan` | `plan_hash` |
+   | `ratify_plan` | `plan_hash` |
+
+   `start`'s accepted intent is the pair (`spec_hash`, `plan_hash`) even though
+   today's `run_created.data` stores only `spec_hash` and `plan_hash` first
+   appears on `plan_recorded`: binding both into `args_hash` on the acceptance
+   event means a retry of `start` with the same spec but a different plan is an
+   `idempotency_conflict` before `plan_recorded` exists, not a silent plan swap.
+   The fixture `journals/valid_requested_by/args/seq_NNNN.json` carries each
+   stamped command's argument document; the contract test recomputes both
+   hashes from those documents through this encoding, proves order independence
+   and verb binding, and proves that adversarial values (newlines, `=`, NUL,
+   field-looking text, boundary shifts between keys and values) cannot collide.
+
+4. **Where `requested_by` lives: the acceptance event only.** Each command
+   stamps `requested_by` on the first event it produces, which is the event that
+   proves the command was accepted, exactly as the verb table in item 3 maps
+   it: `run_created` for start; `run_resumed` for resume, resolve_attention,
+   and repair (three verbs on one event type, told apart by
+   `requested_by.verb`; its data already carries `resolves_attention_ids` and
+   the tail-repair record); `run_cancel_requested` for cancel;
+   `run_pause_requested` for pause (Wave 4); `context_patch_proposed` for
+   update_context and propose_context_change (Wave 9); and, for propose_plan
+   and ratify_plan, the event types a Wave 9 vocabulary decision declares.
+   Events the runtime derives afterwards
+   (`run_spec_loaded`, `plan_recorded`, `run_started`, dispatch, gates, leases,
+   `run_cancelled`) carry no `requested_by`; their cause is the preceding
+   acceptance event in the same journal.
+
+   Why not also on `run_started`: idempotency depends on a retry finding its
+   `command_id` on the earliest durable trace of the command. If the host
+   crashes after `run_created` is fsynced but before `run_started`, a retry of
+   start with the same `command_id` finds it on `run_created` and takes the
+   resume path instead of creating a second run directory; if the stamp lived
+   only on `run_started`, that crash window would produce a duplicate run.
+   Stamping both would make `run_started` a second, redundant place to look and
+   invite drift between the two copies.
+
+   Proposing or ratifying a plan is not a reuse of `plan_recorded` after the
+   preamble; the acceptance events for `propose_plan` and `ratify_plan` (for
+   example `plan_proposed` and `plan_ratified`) are a Wave 9 vocabulary decision
+   that requires its own ledger row and fixtures before any producer exists.
+
+5. **Idempotency, conflicts, and accepted-but-incomplete recovery.**
+
+   *Scope.* A `command_id` is scoped to the run directory for every verb except
+   `start`, whose scope is the host (the run directory does not exist yet).
+   Within its scope a `command_id` is recognised by the single acceptance event
+   that carries it.
+
+   *Match.* A retry is the same command only if `command_id`, the actor
+   (`class` and `id`), `verb`, and `args_hash` (recomputed from the retry's
+   arguments through ARGS-CANON-1) all equal the accepted stamp; a class that may
+   not invoke the verb is rejected by policy before any comparison. Then
+   the retry returns the durable result of the accepted command instead of
+   executing again.
+
+   *Conflict.* Reuse of a `command_id` with any of those four differing is
+   rejected with the typed error `idempotency_conflict`, naming the conflicting
+   field; it never returns the other command's result and never executes. The
+   conflict is not journaled (a rejection with no durable consequence), except
+   where an EJ-4a receipt already exists.
+
+   *Rejections.* A rejection with no durable consequence is re-evaluated on
+   retry. Only a rejection that already produces a receipt event (EJ-4a:
+   `run_created` followed by `run_failed(spec_invalid)`) is deduplicated
+   durably.
+
+   *Accepted but incomplete.* The acceptance event is durable intent. If the
+   host dies after it is fsynced but before the command's derived consequences
+   exist (for `start`: `run_spec_loaded`, `plan_recorded`, `run_started`; for
+   `cancel`: lease releases and `run_cancelled`), the next `Run.Server`
+   rehydration finds an acceptance without its terminal consequence and
+   continues that command from its journal position: it appends the missing
+   derived events and re-observes every open side effect before any re-send
+   (invariant 13). It does not return early on the mere presence of the
+   acceptance event, and it does not re-run effects that the journal shows as
+   already performed. A retry of the same command that arrives during this
+   continuation waits for it and then returns its result.
+
+6. **Envelope unchanged.** `actor` stays `run_supervisor` on every event (EJ-1,
+   EJ-2). No envelope field is added.
+
+7. **Command surface** (`AiOrchestrator.Commands`, framework-neutral): the
+   closed verb set of item 3, by class: operator and console may invoke
+   `start`, `resume`, `resolve_attention`, `repair`, `cancel`, `pause`,
+   `update_context`, and `ratify_plan`; agents may invoke `propose_plan` and
+   `propose_context_change`; `system` may invoke `repair`. Each takes `{actor, command_id, arguments}`, consults a policy
+   table (actor class × command → allow | deny), and only then calls
+   `Run.Server` (live host) or the locked offline path (no host). Policy never
+   encodes run-state rules; the reducer never encodes actor rules.
+
+## Justification
+
+Option 2 gives attribution and idempotency without touching the ratified
+envelope or creating a second record. It is additive under EJ-1's "additive
+within a version" rule, so every golden journal at 46e8217 keeps folding, and it
+lets Wave 2's per-type schemas enforce the field exactly where it is required.
+
+Trade-off accepted: consumers must consult the list in item 4. The list and the
+per-class schema are pinned by `test/contracts/command_contract_test.exs` and the fixture
+`test/fixtures/contracts/journals/valid_requested_by`, which omits the optional
+`run_lock_path` diagnostic. Live writer ownership is enforced by
+`Journal.Ownership` and `Journal.RunLock`; a serialized locator is not authority.
+
+## Consequences
+
+### Positive
+
+- Every command-originated fact names who asked and under which command.
+- Retries are safe by construction once `Run.Server` recognises `command_id`.
+- The console (NS-38) and agent tools (NS-12) reuse the same contract with a
+  different actor class; no second authority appears.
+
+### Negative
+
+- `run_created.data.operator` and `requested_by` coexist until a Wave 2 schema
+  version retires the bare string.
+- The current CLI populates acceptance stamps through `Commands.invoke/4` and
+  `Run.Executor`; direct lower-level host calls can still represent unstamped
+  history. A stamp proves attribution under the supplied actor, not external
+  authentication. Policy verbs beyond `start`, `resume` and `cancel` still need
+  their complete runtime producers and qualification.
+
+## Source and verification references
+
+- `lib/ai_orchestrator/commands.ex`: policy, argument validation and acceptance-stamp construction.
+- `lib/ai_orchestrator/commands/policy.ex`: closed actor shape and verb table.
+- `lib/ai_orchestrator/commands/arguments.ex`: ARGS-CANON-1 and exact argument fields.
+- `lib/ai_orchestrator/commands/idempotency.ex`: stamp comparison.
+- `lib/ai_orchestrator/run/executor.ex` and `run/server.ex`: supported verbs, owned execution and durable admission.
+- `lib/ai_orchestrator/journal/schemas/requested_by.ex`: the wire union.
+- `test/contracts/command_contract_test.exs` and `test/run/command_executor_red_test.exs`: contract and runtime controls.
+
+Historical wave numbers elsewhere in this ADR describe the design sequence,
+not present delivery status. The implementation boundaries above and
+`docs/contracts/event-vocabulary.org` distinguish produced events from reserved
+ones. Private review history is not required to interpret this contract.

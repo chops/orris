@@ -1,0 +1,16 @@
+{
+  "schema_version": "1.0",
+  "msg_id": "m_0000000004_aaaa0004",
+  "ts": "2026-01-01T00:00:00Z",
+  "from": {
+    "agent": "claude",
+    "pane_ref": "pane_a"
+  },
+  "to": {
+    "agent": "codex",
+    "pane_ref": "pane_b"
+  },
+  "kind": "status",
+  "subject": "example subject",
+  "body": "example body"
+}

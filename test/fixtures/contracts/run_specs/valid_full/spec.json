@@ -1,0 +1,17 @@
+{
+  "schema": "ai-orchestrator/run-spec",
+  "schema_version": 1,
+  "goal": "Full-featured example spec exercising every optional field",
+  "repo_root": "/tmp/example-repo",
+  "allowed_roots": ["lib", "test", "review"],
+  "agents": [
+    {"name": "writer_agent", "role": "writer", "agent_id": "writer_agent_1", "pane_hint": {"pane_ref": "pane_writer", "session_name": "example-session"}, "concurrency_cap": 1, "effort_hint": "high"},
+    {"name": "reviewer_agent", "role": "reviewer", "agent_id": "reviewer_agent_1", "pane_hint": {"pane_ref": "pane_reviewer"}, "concurrency_cap": 1, "effort_hint": "xhigh"}
+  ],
+  "gates": {"tests": ["mix", "test"], "format": ["mix", "format", "--check-formatted"]},
+  "budgets": {"max_wall_clock_s": 7200, "max_attempts_default": 3},
+  "stop_policy": {"max_no_progress_attempts": 2, "wedge_stale_ms": 180000},
+  "notification": ["notify-hook", "--channel", "example"],
+  "fingerprint_policy": "warn",
+  "stretch_worktrees": false
+}

@@ -1,0 +1,278 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  printf 'usage: bin/redaction-check [--allowlist FILE] [--locators] [--staged | --paths PATH...]\n' >&2
+  printf 'default scans all tracked worktree files (not untracked); --staged scans the pre-commit index\n' >&2
+  exit 2
+}
+
+die_input() {
+  printf 'redaction-check: %s\n' "$1" >&2
+  exit 2
+}
+
+mode=tracked
+allowlist=.redaction-allow
+allowlist_explicit=false
+locators=false
+paths=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --allowlist)
+      [[ $# -ge 2 ]] || usage
+      allowlist=$2
+      allowlist_explicit=true
+      shift 2
+      ;;
+    --staged)
+      [[ "$mode" == tracked ]] || usage
+      mode=staged
+      shift
+      ;;
+    --locators)
+      locators=true
+      shift
+      ;;
+    --paths)
+      [[ "$mode" == tracked && $# -ge 2 ]] || usage
+      mode=paths
+      shift
+      paths=("$@")
+      break
+      ;;
+    *) usage ;;
+  esac
+done
+
+if [[ "$mode" != paths && ${#paths[@]} -ne 0 ]]; then
+  usage
+fi
+
+repo_root=
+if [[ "$mode" != paths ]]; then
+  repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || die_input "$mode mode requires a Git worktree"
+  if [[ "$allowlist_explicit" == false ]]; then
+    allowlist="$repo_root/.redaction-allow"
+  fi
+fi
+
+if [[ -e "$allowlist" && ! -r "$allowlist" ]]; then
+  die_input "allowlist is unreadable: $allowlist"
+fi
+
+validate_allowlist() {
+  [[ -e "$allowlist" ]] || return 0
+
+  local line number=0 locator reason
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    number=$((number + 1))
+    [[ "$line" =~ ^[[:space:]]*$ || "$line" =~ ^[[:space:]]*# ]] && continue
+
+    if [[ "$line" != *" # "* ]]; then
+      die_input "allowlist line $number needs an exact locator followed by # and a reason"
+    fi
+
+    locator=${line%% \# *}
+    reason=${line#* \# }
+    [[ -n "$locator" && -n "$reason" ]] || die_input "allowlist line $number is incomplete"
+  done <"$allowlist"
+}
+
+validate_allowlist
+
+users_root="/""Users/"
+linux_home_root="/""home/"
+profiles_root="/etc/profiles/per-""user/"
+inbox_root="\\.""ai-agent-inbox/"
+private_key_prefix="-----""BEGIN "
+openai_prefix="s""k-"
+anthropic_prefix="s""k-ant-"
+github_prefix="g""h"
+github_pat_prefix="github_""pat_"
+aws_prefix="A""(KIA|SIA)"
+slack_prefix="x""ox"
+gitlab_prefix="g""lpat-"
+google_prefix="A""Iza"
+bearer_word="B""earer"
+basic_auth_prefix="http""s?://"
+jwt_prefix="e""yJ"
+
+pattern_names=(
+  macos_home
+  linux_home
+  user_profile
+  agent_inbox
+  tmux_pane_id
+  private_key
+  anthropic_token
+  provider_token
+  github_token
+  github_pat
+  aws_access_key
+  slack_token
+  gitlab_token
+  google_api_key
+  jwt_token
+  bearer_token
+  url_basic_auth
+)
+
+pattern_regexes=(
+  "${users_root}[^/[:space:]]+/"
+  "${linux_home_root}[^/[:space:]]+/"
+  "${profiles_root}[^/[:space:]]+/"
+  "${inbox_root}[A-Za-z0-9._-]+-[0-9a-fA-F]{8}([^0-9a-fA-F]|$)"
+  '(^|[^[:alnum:]_])%'"[0-9]+([^[:alnum:]_]|$)"
+  "${private_key_prefix}([A-Z0-9]+ )?PRIVATE KEY( BLOCK)?-----"
+  "${anthropic_prefix}[A-Za-z0-9_-]{20,}"
+  "${openai_prefix}[A-Za-z0-9_-]{20,}"
+  "${github_prefix}[pousr]_[A-Za-z0-9]{20,}"
+  "${github_pat_prefix}[A-Za-z0-9_]{20,}"
+  "${aws_prefix}[A-Z0-9]{16}"
+  "${slack_prefix}[baprs]-[A-Za-z0-9-]{20,}"
+  "${gitlab_prefix}[A-Za-z0-9_-]{20,}"
+  "${google_prefix}[A-Za-z0-9_-]{35}"
+  "${jwt_prefix}[A-Za-z0-9_-]{10,}[.]${jwt_prefix}[A-Za-z0-9_-]{10,}[.]"
+  "[Bb]${bearer_word:1}[[:space:]]+[A-Za-z0-9._~+/-]{20,}"
+  "${basic_auth_prefix}[^/@[:space:]]+:[^/@[:space:]]+@"
+)
+
+is_allowed() {
+  local locator=$1
+  [[ -e "$allowlist" ]] || return 1
+  awk -v locator="$locator" 'index($0, locator " # ") == 1 && length($0) > length(locator " # ") { found = 1 } END { exit !found }' "$allowlist"
+}
+
+findings=0
+
+report_finding() {
+  local pattern=$1 path=$2 line=$3 match=$4 digest locator
+  if [[ "$pattern" == provider_token && "$match" == "$anthropic_prefix"* ]]; then
+    return 0
+  fi
+
+  digest=$(hash_value "$match")
+  locator="${pattern}:${path}:${digest}"
+  [[ "$locators" == true ]] && printf '%s\n' "$locator"
+  is_allowed "$locator" && return 0
+  printf '%s:%s:%s\n' "$path" "$line" "$pattern" >&2
+  findings=$((findings + 1))
+}
+
+hash_value() {
+  local value=$1
+  if command -v sha256sum >/dev/null 2>&1; then
+    printf '%s' "$value" | sha256sum | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    printf '%s' "$value" | shasum -a 256 | awk '{print $1}'
+  else
+    die_input "sha256sum or shasum is required"
+  fi
+}
+
+scan_git() {
+  local pattern=$1 regex=$2 cached=$3 matches status path rest line match
+  local args=(-I -n -o -E --full-name)
+  [[ "$cached" == true ]] && args+=(--cached)
+
+  set +e
+  matches=$(git -C "$repo_root" grep "${args[@]}" -e "$regex" -- .)
+  status=$?
+  set -e
+
+  [[ $status -le 1 ]] || die_input "git grep failed for pattern $pattern"
+  [[ $status -eq 0 ]] || return 0
+
+  while IFS= read -r match; do
+    path=${match%%:*}
+    path=${path#./}
+    rest=${match#*:}
+    line=${rest%%:*}
+    match=${rest#*:}
+    report_finding "$pattern" "$path" "$line" "$match"
+  done <<<"$matches"
+}
+
+safe_external_label() {
+  local ordinal=$1 root=$2 file=$3 suffix
+  if [[ -d "$root" ]]; then
+    suffix=${file#"${root%/}"/}
+  else
+    suffix=$(basename "$file")
+  fi
+  printf '<external-%s>/%s' "$ordinal" "$suffix"
+}
+
+scan_external_file() {
+  local file=$1 label=$2 index pattern regex matches status rest line match
+  [[ -r "$file" ]] || die_input "input is unreadable: $label"
+
+  for index in "${!pattern_names[@]}"; do
+    pattern=${pattern_names[$index]}
+    regex=${pattern_regexes[$index]}
+
+    set +e
+    if command -v rg >/dev/null 2>&1; then
+      matches=$(rg -I -n -o --no-heading --no-filename --color never -e "$regex" -- "$file")
+      status=$?
+    else
+      matches=$(grep -I -n -o -E -e "$regex" -- "$file")
+      status=$?
+    fi
+    set -e
+
+    [[ $status -le 1 ]] || die_input "search failed for input: $label"
+    [[ $status -eq 0 ]] || continue
+
+    while IFS= read -r match; do
+      line=${match%%:*}
+      rest=${match#*:}
+      match=${rest#*:}
+      report_finding "$pattern" "$label" "$line" "$match"
+    done <<<"$matches"
+  done
+}
+
+scan_external_root() {
+  local root=$1 ordinal=$2 file label
+  [[ -e "$root" ]] || die_input "input does not exist: <external-$ordinal>"
+
+  if [[ -f "$root" ]]; then
+    label=$(safe_external_label "$ordinal" "$root" "$root")
+    scan_external_file "$root" "$label"
+    return
+  fi
+
+  [[ -d "$root" ]] || die_input "input is not a regular file or directory: <external-$ordinal>"
+  while IFS= read -r -d '' file; do
+    label=$(safe_external_label "$ordinal" "$root" "$file")
+    scan_external_file "$file" "$label"
+  done < <(find "$root" -type f -print0)
+}
+
+case "$mode" in
+  tracked)
+    for index in "${!pattern_names[@]}"; do
+      scan_git "${pattern_names[$index]}" "${pattern_regexes[$index]}" false
+    done
+    ;;
+  staged)
+    for index in "${!pattern_names[@]}"; do
+      scan_git "${pattern_names[$index]}" "${pattern_regexes[$index]}" true
+    done
+    ;;
+  paths)
+    for index in "${!paths[@]}"; do
+      scan_external_root "${paths[$index]}" "$((index + 1))"
+    done
+    ;;
+esac
+
+if [[ $findings -gt 0 ]]; then
+  printf 'redaction-check: %s finding(s)\n' "$findings" >&2
+  exit 1
+fi
+
+printf 'redaction-check: clean\n'

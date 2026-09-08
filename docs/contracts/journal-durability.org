@@ -1,0 +1,304 @@
+#+title: Journal durability contract
+#+startup: showall
+#+PROPERTY: status delivered contract
+
+* Implementation status
+
+Every mechanism in this document is delivered: =AiOrchestrator.Journal.Chain=,
+=Writer=, =Reader=, =RunLock=, =Ownership= and the =Fs= seam ship under
+=lib/ai_orchestrator/journal/=, and are exercised by =test/journal/chain_test.exs=,
+=writer_test.exs=, =reader_test.exs=, =run_lock_test.exs=,
+=run_lock_process_test.exs=, =ownership_test.exs= and =fs_test.exs=, by
+=test/lifecycle/run_fsm_sink_test.exs= (sink contract and repair record), and by
+the "journal durability" cases of =test/cli/cli_test.exs=. The macOS =fsync=
+limit named under Seams is a known limit of the delivered code, not a gap in the
+tests.
+
+Authority: this file describes the behaviour implemented by
+=AiOrchestrator.Journal.{Chain, Reader, Writer, Ownership, RunLock, Fs}= and
+exercised by =test/journal/*_test.exs= and the CLI durability tests. It delivers
+a hash chain with a head receipt, fsync per accepted event with directory fsync
+on creation and atomic rename, the =Fs= fault-injection seam, and the run lock
+taken before the first journaled event. If code and this file disagree, the
+tests decide and this file is wrong.
+
+* Files in a run directory
+
+| File                 | Purpose                                                      |
+|----------------------+--------------------------------------------------------------|
+| events.jsonl         | the journal: one JSON event per line, append-only            |
+| events.head          | head receipt: one JSON line naming the last committed line   |
+| events.head.tmp      | receipt being published; removed durably by the next writer open, else a named rejection |
+| events.jsonl.repair  | rewritten journal during tail truncation; renamed into place |
+| run.lock.<gen>       | lock generation: held lock or released tombstone; highest wins|
+| run.lock.<gen>.<token>.tmp | candidate being published; removed in the same attempt or reported |
+
+* Envelope versions
+
+- Version 1 :: legacy. No chain field. Files are never rewritten.
+- Version 2 :: carries =prev_line_sha256=. Required on version 2, forbidden
+  on version 1 (=Journal.Event=).
+- Upgrade :: a version 1 journal may upgrade once, one way, at a resume point:
+  the first version 2 line links to the exact bytes of the last version 1
+  line. A version 1 line after a version 2 line is =mixed_envelope_versions=.
+
+* Chain rule
+
+=prev_line_sha256= is =sha256:= followed by the lowercase hex SHA-256 of the
+exact bytes of the previous persisted line including its trailing newline.
+The first line links to the hash of the empty string. Hashing persisted bytes
+means read-time upcasting can never disturb the chain.
+
+* Head receipt
+
+=events.head= is one JSON line:
+={"schema":"ai-orchestrator/journal-head","seq":N,"line_sha256":"sha256:…","updated_at":ts}=.
+It is published after every accepted event by writing =events.head.tmp=,
+fsync, close, atomic rename to =events.head=, directory fsync. It commits the
+final line so a truncated journal is detectable.
+
+* Append protocol (Writer.append/2)
+
+1. Sequence check: the event's =seq= must be last_seq + 1 (=seq_mismatch=).
+2. Stamp =schema_version= 2 and =prev_line_sha256=.
+3. =Event.validate_append/1= before any byte is written: envelope, reserved
+   refusal (=reserved_event_type=), typed payload (=EventData.parse/2=).
+4. Write the line, fsync the file.
+5. Publish the receipt (tmp, fsync, rename, directory fsync).
+6. Return the persisted event; the run supervisor keeps it, so memory equals disk.
+
+A failure at step 4 or 5 returns =append_failed= with =stage= write, sync, or
+receipt and fails the writer closed (=writer_failed= afterwards). The on-disk
+state is always one =Writer.open/2= can reconcile.
+
+* Reachable states after a crash, and what open does
+
+The protocol leaves exactly these states; every other one fails closed.
+
+| Complete lines vs receipt      | Incomplete tail | Action on open        | Recorded as                 |
+|--------------------------------+-----------------+-----------------------+-----------------------------|
+| lines = receipt.seq            | none            | none                  |                             |
+| lines = receipt.seq            | one partial     | truncate the tail     | action truncate_tail        |
+| lines = receipt.seq + 1        | none            | advance the receipt   | action advance_receipt      |
+| lines = receipt.seq + 1        | one partial     | both                  | action advance_and_truncate |
+| no receipt, at most 1 chained  | any             | advance (or truncate) | as above                    |
+| legacy (version 1), no receipt | any             | none (or truncate)    | as above                    |
+
+Fail-closed clauses from =Chain=: =chain_mismatch= (at_seq), =undecodable_line=
+(at_seq), =invalid_envelope_version=, =mixed_envelope_versions=,
+=receipt_missing= (two or more chained lines and no receipt),
+=receipt_beyond_tail=, =receipt_stale= (more than one line behind),
+=receipt_hash_mismatch=, =receipt_on_legacy_journal=, =invalid_receipt=.
+
+The repair is journaled on the first event after the reopen, as
+=data.tail_repair= on =run_resumed= (resume) or =run_cancel_requested=
+(cancel):
+={"action": "truncate_tail" | "advance_receipt" | "advance_and_truncate", "truncated_bytes": n, "receipt_seq_before": b, "receipt_seq_after": a}=
+(all integers ≥ 0; a legacy repair has 0 on both receipt sides).
+
+* Scope of the lock identity
+
+The lock names an OS process (pid plus start time). Across processes that is
+a complete identity: a dead holder is a dead process, and =RunLock= alone
+decides. Inside one BEAM it is not, because every writer in that BEAM shares
+the one OS pid. A writer killed without releasing therefore strands a lock
+naming a process that is still alive, and =RunLock= — correctly, on the
+evidence it has — refuses every replacement forever. Closing that gap is the
+only thing =Ownership= exists for, and it closes it without weakening the
+cross-process rule: the lock file remains the sole cross-process authority.
+
+* Ownership arbiter (Ownership)
+
+The arbiter is a =GenServer= in the BEAM that hosts the writers, holding one
+registration per run directory: the writer pid, a monitor, the =held= record
+=RunLock= returned (generation, path, token, owner), and =:live= or =:down=.
+It is in-memory only; nothing about it is written to disk, and a restarted
+arbiter therefore knows nothing.
+
+Acquiring is one serialised transaction inside the arbiter — adjudicate,
+reclaim if warranted, then claim — because a writer that claimed first and
+registered second could die inside that window and strand a lock nothing
+could prove was its own. Registration precedes the reply for the same reason.
+Its verdicts on the existing registration are:
+
+- none: plain =RunLock= semantics, including failing closed on a stranded
+  lock this arbiter never recorded. A restarted arbiter is exactly this case:
+  it does not infer ownership from the shared OS pid, so a lock left by the
+  BEAM it replaced is an operator matter, not something it reclaims.
+- a live registration whose writer is still alive: =second_live_writer=,
+  carrying the generation, decided before anything on disk is touched. This
+  is strictly more precise than =run_locked= and is only ever reported for
+  contention inside one BEAM; cross-process contention remains =run_locked=,
+  from =RunLock=, unchanged.
+- a registration whose writer is dead (monitored down, or found dead in the
+  same instant): reclaim, then claim.
+
+Reclaim releases only the exact record: the generation this arbiter published
+AND holder metadata equal in full to the owner map written under it. Token
+and generation together are not the record — pid, =pid_start=,
+=supervisor_instance= or =acquired_at= can differ while a token is retained —
+and this is the only code authorised to remove a live-looking lock, so it
+compares the whole closed shape. Anything else means the registration is
+stale evidence rather than authority: it is dropped untouched and =RunLock=
+adjudicates the claim, failing closed on a live holder. A holder that cannot
+be read at all is likewise never released.
+
+The arbiter's own rejections are exactly three; everything else a caller sees
+came from =RunLock= on a fresh claim, under that module's contract above.
+
+- =second_live_writer= (generation): two live writers in one BEAM.
+- =reclaim_failed=: the exact-record release failed. Rebuilt, not forwarded,
+  because the =RunLock= release rejection it is built from carries the raw
+  token, the absolute path and the decoded owner. It names the generation,
+  the run-relative =lock_basename=, the =cause_clause= =RunLock= produced,
+  and the resulting =lock_state= classed structurally from that clause
+  (=:still_held=, =:released_residue=, =:released_unsynced=, =:not_ours=,
+  =:unknown=) — never inferred from wording.
+- =ownership_unavailable=: the arbiter did not answer — absent, hung, shutting
+  down, or killed with the call in flight. Every exit collapses to this one
+  outcome and none of the exit reason is carried out, because a
+  =GenServer.call= exit quotes the call arguments, which include the run
+  directory and the lock options with the token. =status/2= returns this and
+  never =:none=: =:none= is an authoritative "no registration exists", which
+  an arbiter that could not answer has not said.
+
+Nothing the arbiter names carries a token in any form, or an absolute path.
+
+Registrations are retired on exactly one condition, in both the graceful and
+the rollback path: the disk lock was really released. A release that failed
+keeps its registration, because that record is the only authority that can
+release the remaining file safely; the next acquisition for that directory
+reclaims it. A =DOWN= retires nothing — it only marks the registration
+=:down=, since the lock the dead writer held may still be on disk.
+
+The host root mounts the arbiter first under =rest_for_one=, so losing it
+terminates the run trees beneath it. That is deliberate: each writer's own
+=terminate/2= then releases its own token-verified lock on the way down, and
+the restarted arbiter's registry is rebuilt as those trees restart, rather
+than being left to guess about locks it has no record of.
+
+* Run lock (RunLock)
+
+The lock is a family of generation files =run.lock.<gen>= (gen ≥ 1); the
+holder is the highest generation present. Each file is one complete closed
+JSON object: schema =ai-orchestrator/run-lock=, =schema_version= 1, =state=
+(=held= or =released=), pid, =pid_start= (the =ps= start time, via
+=AiOrchestrator.ProcessIdentity=), =supervisor_instance=, a random token,
+=acquired_at=; any other shape is unreadable and fails closed untouched.
+
+Every state change publishes a NEW generation: a claim hard-links a
+complete candidate as =run.lock.<highest+1>=, a release publishes a
+=released= tombstone at the next generation and then removes the holder's
+own file. Publication is atomic and complete (private temp: exclusive
+create, write, fsync, close; hard link under the generation name, which
+never replaces; temp removed; directory fsync), so no partial file is ever
+visible and no generation number is ever reused at the top: a claimant that
+acts on a stale verdict always collides on the link and rescans. Nothing
+that might be live is ever unlinked; only the claimant's own token-verified
+file, or a strictly lower generation proved dead or released, is removed,
+and a removal failure is never silent. Each IO leg has its own truth:
+a lower generation that cannot be compacted blocks the acquisition (the
+claimant withdraws first) with =cleanup_required= naming that file and
+carrying its own metadata and token when it remains on disk, or
+=removed_unsynced= (path, that file's metadata) when it was removed but the
+directory fsync failed; a withdrawal that cannot remove the claimant's own
+file reports =cleanup_required= naming it instead of the outcome it was
+withdrawing for, and =removed_unsynced= when only its directory fsync
+failed; own bytes that turn foreign report =ownership_lost=. On release
+the tombstone is authoritative once published: =release_incomplete= means
+the old file remains (with its owner, path, token), =release_removed_unsynced=
+means the old path is absent but the removal's durability is unproven,
+=release_failed= means the tombstone could not be published and the lock
+is still held. A candidate temp that cannot be removed is never hidden:
+=cleanup_required= names the temp (and, if a final became visible in the
+same attempt, that final is retracted token-safely first; if the retraction
+also fails both are reported and the final is named). A candidate that this
+attempt did not create (its exclusive open finds it present) is never
+touched: =candidate_conflict= names it and fails closed; because nothing is
+decoded from that file, the rejection carries =claimant= (the metadata this
+attempt was about to publish) and never an observed =owner=. Cleanup
+classes (=cleanup= of =cleanup_required= or =candidate_conflict=) are
+passed structurally from the branch that produced them, never derived from
+the wording of =detail=. A path that is
+already absent when its removal is attempted is cleanup achieved: the
+absence is directory-synced and reported as success, or =removed_unsynced=
+if that sync fails, never as a file that remains. On release these truths
+carry through: =release_failed= with =cleanup= (the tombstone was retracted
+or never published; the lock is still held) or =release_incomplete= with
+=cleanup= (the tombstone stands but the old file and a temp remain), each
+naming the path, owner, and token of the file that needs attention. Names carrying the =run.lock.= prefix
+that are neither a bounded positive generation nor a private candidate temp
+(=run.lock.<gen>.<token>.tmp=) are malformed lock state and fail closed
+with =malformed_lock_family=.
+
+Claim: list the generations (a listing error fails closed); classify the
+highest: live → =run_locked= naming the owner; undeterminable liveness →
+=lock_unavailable=, never reclaimed; released or dead → publish the next
+generation; unreadable → =lock_unavailable= with =lock_unreadable=;
+vanished → rescan. After the link the claimant rescans before anything is
+held: a higher generation means it lost a race it could not see, so it
+withdraws its own file and resolves against the new highest (it becomes the
+holder only once that holder has released, and retries above a crashed one).
+A link loser rescans from the highest, never trusting its old target;
+attempts are bounded (=claim attempts exhausted=). A failed directory fsync
+after publication rolls the file back and reports the rollback's own
+outcome: =rollback= "removed", "removed_unsynced", or =cleanup_required=
+with the owner metadata and token when the file could not be removed.
+
+=Writer.close/1= reports each failed leg (=close_failed=) and the CLI
+surfaces that on an otherwise successful command (=journal_close_failed=,
+summary still on stdout). The lock is taken after pane claims and before
+the first journaled event; the file actually held is journaled as its
+run-relative basename (=run.lock.<gen>=) in =run_lock_path= on
+=run_started=, =run_resumed=, and the cancel events, never a family prefix
+or an absolute path; the field is omitted when no lock was held.
+
+Operator repair: a highest-generation file with unreadable bytes, a
+malformed =run.lock.*= name, or a file reported by =cleanup_required= is
+never auto-repaired. Confirm no holder process exists (=ps -p <pid>=
+against a readable file, or no orchestrator process at all), then delete
+exactly the reported file (a generation file, a candidate temp
+=run.lock.<gen>.<token>.tmp=, or =events.head.tmp=). Tombstones and dead
+lower generations are compacted by the next holder.
+
+* CLI surface
+
+=run=, =run --resume=, and =cancel= open the sole writer and close it on every
+exit; =status= and =list= read through =Journal.Reader=, which verifies the
+chain and reconciles the receipt but never writes. Journal rejections appear
+on stderr as ={"reason": "journal_<clause>", "file": "events.jsonl", …}= with
+the clause's fields, for example =journal_run_locked= with =owner=,
+=journal_chain_mismatch= with =at_seq=, =journal_undecodable_line= with
+=at_seq=, =journal_exists=, =journal_not_found=, =journal_empty=,
+=journal_cleanup_required= (path, owner, token of the file that needs
+operator attention), =journal_head_temp_cleanup_required= and
+=journal_head_temp_removed_unsynced= (a stale receipt temp). An open that
+fails after the lock was acquired and whose rollback release also fails
+returns =journal_writer_open_cleanup_failed= with =cause=, =release=, and
+=lock_path=, so a stranded lock is never hidden behind the earlier error.
+A sink failure during a run returns =journal_append_failed= with the stage.
+
+* Seams
+
+=Journal.Fs= ({module, state}; =SystemFs= in production, =Test.FaultFs= with
+trace and injected errors, torn writes, and halts), =Clock=, =Id=, and
+=ProcessIdentity= (=owner_status= override in tests). Directory fsync uses the
+=:directory= open mode; on macOS =fsync= does not force the drive cache
+(=F_FULLFSYNC= is not reachable from Erlang without a NIF) — recorded as a
+known limit, not hidden.
+
+* Validation before repair
+
+=Reader.load/2= validates every complete line through
+=Event.validate_line/1= (envelope, chain field, typed payload) before a
+repair is planned; a rejection fails closed with the Event clause and
+=at_seq=, and neither the journal nor the receipt is touched.
+
+* Evidence
+
+- test/journal/fs_test.exs, chain_test.exs, run_lock_test.exs,
+  run_lock_process_test.exs (two OS processes, kill -9 reclaim),
+  writer_test.exs (crash matrix at every append boundary), reader_test.exs,
+  ownership_test.exs (the in-BEAM arbiter)
+- test/lifecycle/run_fsm_sink_test.exs (sink contract, repair record)
+- test/cli/cli_test.exs "journal durability" (end to end through the CLI)

@@ -1,0 +1,467 @@
+#+title: Command executor migration (caller migration over the foreground foundation)
+#+PROPERTY: status delivered contract
+
+* Implementation status
+Delivered. =AiOrchestrator.Run.Executor= implements =AiOrchestrator.Commands.Executor= for =start= / =resume= /
+=cancel= (verb scope, stamp revalidation, context validation, input-hash binding, the =restart_empty= selector) and
+delegates to =AiOrchestrator.Run.Executor.Owner=, the owned foreground harness that starts =Run.Supervisor=, makes
+the single =:retry_only= second attempt on =journal_exists=, awaits the Server, closes the Writer on success and
+runs the teardown protocol (=lib/ai_orchestrator/run/executor.ex=, =run/executor/owner.ex=).
+=AiOrchestrator.Run.Server= admits the command under the Writer lock through the durable-prefix decision table
+(=acceptance_ambiguous=, =journal_exists= for =:retry_only= / =:restart_empty=, =command_run_mismatch=,
+=idempotency_conflict=, replay, =command_superseded=, =:continue=) with =Commands.Idempotency.compare/2= as the pure
+comparison. The bounded continuation ships as =Host.open(:continue, ...)= + =Reducer.continue/5=
+(=lib/ai_orchestrator/lifecycle/host.ex=, =lifecycle/core/reducer.ex=); lease-prefix recovery ships in the
+reducer's =ensure_lease_prerequisites= / =lease_ownership_coherent= with the closed =lease_ownership_ambiguous=
+rejection. The CLI enters every lifecycle verb through =Commands.invoke/4= with =Run.Executor=
+(=lib/ai_orchestrator/cli.ex=; =RunFSM= remains as an internal seam with no production caller). Rows E-*, C-*, L-*
+and D-* live in =test/run/command_executor_red_test.exs=; the operator-path and restart-empty CLI rows in
+=test/cli/cli_test.exs=. Not delivered: any other verb, a long-lived shared multi-run host, a run registry/monitor or daemon shape,
+automatic restart, responsive status/cancel/timers from the executor, new events or schema fields, and actor
+authentication (the CLI actor is the operator class with its existing id source). The existing application root
+(=Application.children/0=, which mounts the =Journal.Ownership= arbiter) and the CLI's explicit restart-empty
+selector (=lib/ai_orchestrator/cli.ex=) do ship and are what this executor runs under.
+
+* What this unit is, and is not
+ONE =Commands.Executor= implementation, =AiOrchestrator.Run.Executor=, that makes the caller-migration rule true for
+the CLI: every public lifecycle command enters through =Commands.invoke/4= and executes inside the sole
+Writer-owned run transaction, which is the integrated foreground subtree (=Run.Supervisor= -> Writer ->
+=Run.Server= -> Work.Supervisor). The executor is the foreground OWNER of that subtree for one command: it starts
+it, awaits the Server, tears it down (bounded), and returns the Host result shape. Verbs in scope: =start=,
+=resume=, =cancel= only. Valid-but-out-of-scope verbs are rejected before any Writer, file or effect activity;
+future verbs stay deferred.
+
+* Decisions
+- (a) The executor was specified as an interface first and implemented in reviewed units (below).
+- (b) The CLI keeps reading spec/plan (and hashing the exact consumed bytes) as before and passes them as INTERNAL
+  EXECUTOR CONTEXT, never as command arguments. =command.run_id= is bound to the executor identity: for =start= it
+  is the id the CLI allocated through the Id seam and the run is opened with exactly that id; for
+  =resume=/=cancel= it must equal the run id folded from the LOCKED accepted prefix (=Writer.opened/1= lines)
+  before any effect, else the closed rejection =command_run_mismatch=. =start='s argument hashes must equal the
+  consumed spec/plan hashes (existing sha256-of-bytes semantics; the values the reducer journals as =spec_hash= /
+  =plan_hash=), else =command_inputs_mismatch=. A pre-lock Reader load is preflight only.
+- (c) =run_server_down= surfaces to invoke callers as-is; Writer/Reader rejection clauses and the structured CLI
+  output are preserved; no redundant wrapper.
+- (d) =RunFSM= keeps its signatures as an internal compatibility/test seam, is documented as NOT a supported
+  public lifecycle surface, has no production caller after the migration, and no =prior_lines= arity is silently
+  rebound.
+- Admission lives in =Run.Server= under the owned Writer (lifetime, not CPU location, is what keeps it inside the
+  lock); Host/Effects keep receipt/commit/effect machinery; =Commands.Idempotency= is the pure comparison.
+- The consumed spec/plan are bound to the accepted =start= through its =args_hash= (rule 4 of =execute/2= makes the
+  retry's args equal the consumed hashes; the comparison then equates them with the accepted stamp) even when
+  =plan_recorded= does not exist yet; additionally =run_created.data.spec_hash= must equal the context
+  =spec_hash= on continuation.
+- No =replayed= field on results.
+- Delivery units: (A) the owned foreground executor + admission (verb scope, stamp revalidation, context, run-id
+  binding, second-attempt start admission, lifetime) with NO production CLI change; (B) stamping,
+  retry/continuation and the CLI caller migration as one fully gated unit; then (C) bounded continuation, (L)
+  lease-prefix recovery, (D) explicit restart-empty admission. Each row below is labelled with its unit.
+
+* Interface (exact; internal executor context, not a command surface)
+#+begin_src elixir
+@behaviour AiOrchestrator.Commands.Executor
+@spec AiOrchestrator.Run.Executor.execute(Contract.Command.t(), keyword()) :: {:ok, map()} | {:error, map()}
+#   executor_opts (context, never args):
+#     run_dir: Path.t()                         required
+#     spec: map() | nil, plan: map() | nil      start/resume: required; read by the caller (CLI) as today
+#     spec_hash: String.t(), plan_hash: ...     start: required; sha256 of the exact consumed bytes
+#     the Host option keyword (fs, clock, id, gate_*, dispatch*, prompt_root, review_reader, pane
+#       registry, operator, ...) minus every Server-owned binding (event_sink, run_dir binding,
+#       run_lock_path, tail_repair, requested_by, cancel_reason, recovery_reason are OWNED here)
+#     restart_empty: true                       start only (unit D); any other value or verb is refused
+#     trace: pid() | nil                        test only; the executor also reports
+#                                               {:run_executor_started, owner_pid, supervisor_pid} to it
+#     barrier: (atom(), map() -> :ok) | nil      test only (as the gate barrier is); the OWNER calls
+#                                               barrier.(:handoff_received, ...) and
+#                                               barrier.(:subtree_started, %{owner, supervisor, writer,
+#                                               server, work}) after the subtree started and BEFORE it
+#                                               awaits, so a test can capture the live sibling Writer's
+#                                               opening under a two-way handshake; production passes none
+#     await_timeout / any wait-timeout option   NOT supported: rejected as
+#                                               %{clause: "command_context_invalid", field: "await_timeout"}
+#                                               before any work; the executor awaits to completion
+#     acceptance / continuation / mode          refused before any I/O (command_context_invalid): the
+#                                               Server builds continuation provenance itself
+#   Order inside execute/2, each step before any Writer/file/effect activity of the next:
+#     1. verb in [start resume cancel]            else %{clause: "command_verb_unsupported"}
+#     2. stamp revalidation: the COMPLETE structured stamp through the existing closed schema
+#        (RequestedBy.parse + validate_append_bounds: no unknown field), CommandId grammar,
+#        Arguments.validate, args_hash == Arguments.hash(verb, args), Policy for class/id
+#                                                 else %{clause: "command_stamp_invalid"}
+#     3. context validation (no wait-timeout option; barrier nil or a 2-arity fun; run_dir;
+#        spec/plan/hashes per verb; restart_empty)  else %{clause: "command_context_invalid", field: f}
+#     4. start: args hashes == context hashes     else %{clause: "command_inputs_mismatch"}
+#     5. the owned foreground harness starts Run.Supervisor with config.command = the Command and
+#        config.open = :create (start) | :existing (resume/cancel); everything from here happens
+#        under the Writer lock inside the subtree.
+#     6. start only: if and only if the Writer rejects the :create attempt with EXACTLY
+#        %{clause: "journal_exists"} and a command is present and no explicit admission is set, ONE
+#        second attempt is made with open: :existing AND admission: :retry_only (explicit provenance,
+#        never File.exists); the SECOND lock's fresh verified prefix is the sole authority for retry
+#        admission (below). Any other rejection of the first attempt (missing/corrupt/read/repair,
+#        locked) is returned as the Writer's own rejection; nothing is ever created from it. Under
+#        admission: :retry_only, ZERO matching acceptance rows preserves the Writer's journal_exists -
+#        an existing EMPTY journal and a legacy journal WITHOUT a stamp both stay journal_exists;
+#        only a fresh :create with zero rows executes.
+#+end_src
+
+=Run.Supervisor= config gains =open: :create | :existing= (default from mode: :run -> :create, otherwise
+:existing); the Writer child receives =create: open == :create=. Baseline (pinned as a control): a =:run= on an
+existing journal is rejected by the Writer's exclusive create BEFORE any Server exists, so a same-id start retry
+can only be admitted through the second attempt above.
+
+=Run.Supervisor= config gains one optional key, =command: Contract.Command.t() | nil=, and an =admission= key
+(=:fresh | :retry_only | :restart_empty=, validated against =open=, the command and the mode). With a command
+present, =Run.Server= performs, in =:opening= after discovery and BEFORE =Host.open=, using only
+=Writer.opened/1= (the verified, repaired, locked view), the decision below.
+
+* Durable-prefix decision table
+Over the LOCKED verified prefix P (=Writer.opened/1= lines) and the command C, in this order; every arm that does
+not execute leaves the journal bytes unchanged and performs no effect:
+
+| # | condition | decision |
+|---+-----------+----------|
+| 0 | admission :restart_empty and P has any accepted line | the Writer's =journal_exists= (unit D; whatever the preflight saw) |
+| 1 | rows = acceptance events in P whose =data.requested_by.command_id= == C.command_id; more than one | ={:error, %{clause: "acceptance_ambiguous"}}= (never =Enum.find=) |
+| 2 | zero rows, admission :fresh (a :create that succeeded) or :restart_empty over a verified-EMPTY prefix | EXECUTE: open with =run_id = C.run_id= (start) - the stamp goes on the ONE acceptance event the ADR maps (start->run_created, resume->run_resumed, cancel->run_cancel_requested) IF the reducer emits it, reasons faithful to args, =command.now= not journaled |
+| 3 | zero rows, admission :retry_only (start's second attempt) | the Writer's =journal_exists= preserved (empty existing journal; legacy without a stamp; any other command's journal) |
+| 4 | zero rows, resume/cancel | run id of P must equal C.run_id else =command_run_mismatch=; then EXECUTE as row 2. TERMINAL NO-OP (existing reducer semantics preserved): on a terminal prefix the reducer halts without emitting =run_resumed= / =run_cancel_requested= (=resume_execution= / =cancel_execution= on =terminal?=), so the request returns the existing fold result with =appended_events: []=, journal bytes unchanged and NO stamp anywhere; such a request has no durable consequence and is re-evaluated on retry, never deduplicated |
+| 5 | one row A, run id of P != C.run_id | =command_run_mismatch= (EVERY verb, start retries included) |
+| 6 | one row A, =Idempotency.compare(A, C)= -> ={:conflict, field}= | ={:error, %{clause: "idempotency_conflict", field: field}}= |
+| 7 | match, A COMPLETE (below) | REPLAY: fold of P as the result, =appended_events: []=, zero effects |
+| 8 | match, A incomplete, a LATER acceptance exists after A in P | ={:error, %{clause: "command_superseded"}}= (the later command owns the continuation) |
+| 9 | match, A incomplete, A is the last acceptance, P has no terminal | CONTINUE (unit C): =Host.open(:continue, %{acceptance: %{seq: A.seq, verb}})= over P with the command's bindings minus its stamp - no second acceptance event, run id preserved, the EXISTING recovery policy applies exactly (open dispatch re-observed before any re-send; an interrupted gate follows the existing gate recovery: reconcile then the retry policy); the result is the run's |
+| 10 | match, A incomplete, P terminal (a cancel whose run ended otherwise) | =command_superseded= (fail closed; nothing invented) |
+
+COMPLETE(A) is a durable-prefix predicate over A's OWN INTERVAL: the events of P strictly after A and strictly
+before the next LIFECYCLE ACCEPTANCE EVENT after A, if any. A lifecycle acceptance event is identified by its EVENT
+TYPE - =run_created=, =run_resumed=, =run_cancel_requested= (the actor-aware command ADR's mapping) - independently
+of whether its attribution is a structured stamp, absent, or the read-side legacy literal: the accepted journal
+contract keeps =requested_by= optional and the unchanged Host emits unstamped =run_resumed= /
+=run_cancel_requested=. An UNSTAMPED acceptance is therefore a boundary but never a matchable identity: retry
+matching still requires the unique valid structured stamp (row 1 counts stamped rows only; no identity is inferred
+for an unstamped acceptance), and an older incomplete stamped command cannot consume a later unstamped command's
+terminal as its own - =command_superseded= stays the fail-closed result. No new stamp is required on historical
+records. Evidence outside that interval is never A's: a terminal or blocking boundary reached by a LATER command
+does not retroactively complete an earlier incomplete command, and a terminal already present before A is not A's
+consequence. Never "run_started exists" (the reducer emits =run_started= BEFORE the work it starts; an interrupted
+dispatch prefix already contains it).
+- start / resume: A's interval contains a terminal - =run_completed=, =run_failed=, =run_cancelled= or
+  =run_budget_exhausted= (the Fold's full terminal vocabulary, =terminal?=) - or ends in a blocking attention
+  (fold status "blocked" at the interval's end); then A is complete and REPLAY returns the CURRENT verified fold
+  (which a later command may have moved on), =appended_events: []=.
+- cancel: =run_cancelled= inside A's interval.
+- A complete before a later acceptance stays complete (row 7); an incomplete A followed by a later acceptance
+  stays superseded (row 8) even if that later command terminates the run.
+Pinned sub-cases (each its own row): cut after =run_started= before any dispatch -> continue (one =run_started=);
+cut after =assignment_dispatch_sent= -> continue with re-observation (one dispatch, one adapter delivery); cut
+after =gate_started= -> continue through the existing gate recovery (a =ReconcileGate= effect precedes any new gate
+attempt); a later acceptance (a resume accepted after an interrupted start) -> the start retry is
+=command_superseded= while the resume retry continues; a run blocked on attention -> the start retry REPLAYS the
+blocked result; =run_cancel_requested= without =run_cancelled= -> continue with exactly one =run_cancelled=;
+completion BEFORE a later acceptance (a start blocked on attention, then a cancel accepted and completed) -> the
+start retry replays (current fold: cancelled) and the cancel retry replays; a later acceptance BEFORE completion
+(a start interrupted after =run_started=, then a cancel accepted) -> the start retry is =command_superseded=;
+=run_budget_exhausted= is a terminal (fresh resume/cancel on it are no-ops). No boundary the journal cannot prove
+is called complete; no new completion event exists.
+
+* Lifetime and teardown
+The subtree's lifetime is the executor's: an OWNED foreground harness process (trapping exits; the supervisor's
+linked parent; monitoring the caller; itself MONITORED, never linked, by the caller) starts the subtree, awaits the
+Server to completion (no timeout) through an asynchronous request so that its caller-death monitor stays responsive
+while work is held, then runs the TEARDOWN PROTOCOL over every owned identity (supervisor, Writer, Server, Work): a
+bounded orderly =Supervisor.stop=, then a direct kill of each still-live owned process joined under a bound; a
+survivor is reported as =run_executor_teardown_incomplete=, never as success, and root death is never taken as
+subtree closure. Every trappable failure of the owner's own work (barrier raise/throw/exit or an invalid barrier
+result included) runs under one closed boundary: teardown first with the latest known identities, then the caller
+receives =%{clause: "run_executor_down", kind, class, digest}= (the contract's closed result class and digest; no
+reason or stack bytes, in the reply, the DOWN reason or the logs), and the owner exits =:normal=. The owner replies
+through a fresh reference only after the protocol completed, and the caller waits for the owner's own completion
+before returning. The caller's =trap_exit= flag is never changed; no message of the caller's is consumed; the
+caller receives no EXIT signal from the executor. Caller death -> the owner stops the subtree (Port close ->
+guardian EOF) and exits; no terminal is fabricated. There is NO wait-timeout: the foundation's =Run.Server.await=
+timeout semantics are unchanged and a responsive timed-return invocation is a later explicit API/lifetime design,
+not silently named abandonment. A second invoke on a locked run directory receives the Writer's own rejection
+(=second_live_writer= from the in-BEAM Ownership arbiter; =run_locked= across OS processes).
+
+Writer close visibility: the CLI contract surfaces a failed close after a successful run (=journal_close_failed=,
+status 70, summary still on stdout). The owner therefore closes the Writer explicitly after a finished command,
+before the orderly stop, and reports a failed close as =close: {:error, rejection}= on the result; an error result
+keeps its primary error and goes straight to the orderly stop + reap.
+
+Worker handoff (from the effect-owner unit): the owner acknowledges the Server's ={:run_worker_registered, ref,
+worker, server}= BEFORE its =:subtree_started= barrier and extends its facts with =worker=; the barrier contract is
+TOTAL: a barrier is called with exactly the two names =:handoff_received= and =:subtree_started= and must answer
+=:ok= to both; every fault, a missing clause included, is an owner failure under the closed boundary.
+
+* Test harness rules the rows depend on
+Every test tracks owner, supervisor, children and callers it learns of and reaps them itself in cleanup with fresh
+monitors (bounded kill + DOWN), because the defect under test is exactly a leaked owner or subtree; no test relies
+on the executor's own cleanup to clean up after a failed assertion, and none drains the mailbox arbitrarily.
+Registration precedes assertion: the executor's =trace= is a test-owned COLLECTOR process that registers every pid
+it sees under the test's key before forwarding the message, so a partial start or a missing final notification
+still leaves the already-started pids reaped. The collector is an extra asynchronous hop, so no assertion assumes
+delivery at zero timeout across it; a test either awaits the named trace set with a bounded receive or first asks
+the collector to FLUSH (a marker the collector answers only after every message queued before it has been
+registered and forwarded). Teardown is a protocol, not a snapshot: reap the owned producers/callers known so far,
+flush the collector so every identity they published before dying is registered, reap the newly registered pids,
+repeat until the set is closed, then stop the collector, and only then remove the temporary directories. The
+executor emits ={:run_executor_started, owner, sup}= before it calls the test barrier, so the barrier ack is the
+acknowledged registration point where a test needs one. Crash positions are invocation-relative: a FaultFs receipt
+ordinal counts that adapter's own receipt publications, and every crash fixture asserts the durable signal, prefix
+length, last type and command id before any retry is classified. Activity witnesses use =FaultFs.trace/1= and are
+proven by positive and negative baseline controls that never touch the executor.
+
+* Rows (units A/B; all pass on the shipped source; controls marked)
+| id  | unit | pin | measure |
+|-----+------+-----+---------|
+| C-* (controls) | - | facts the rows rely on | Idempotency.compare on the fixture stamp (match / id / class / args_hash conflicts); ARGS-CANON-1 recomputation; Policy/Arguments closed sets; Writer create-on-existing = journal_exists AND the ordering (no Server start trace); RequestedBy stamp parses; Host oracle with executor bindings keeps the harness receipt sink |
+| E-1 | A | interface + verb scope | Run.Executor implements the behaviour; start/resume/cancel accepted; pause/repair/resolve_attention/ratify_plan -> command_verb_unsupported with an EMPTY Fs trace, no subtree, no effect |
+| E-2 | A | context-not-args + revalidation | tampered args_hash or verb, an unknown stamp field, a malformed stamp (non-map, missing/invalid fields, oversize) -> command_stamp_invalid; an invalid barrier value -> command_context_invalid field barrier; start with args hashes != context hashes -> command_inputs_mismatch; missing run_dir -> command_context_invalid; a supplied await_timeout -> command_context_invalid field await_timeout; all with an empty Fs trace and no subtree |
+| E-3 | B | acceptance stamp + parity | ALL H.cases through Commands.invoke (start/resume/cancel): the sibling Writer's opening captured under the two-way :subtree_started barrier; events == the independent oracle with the expected stamp ADDED to the oracle's acceptance event ONLY when the unchanged oracle emits one - the two terminal cases append nothing, keep bytes and carry no stamp; ts kept; chain fields asserted independently as Writer envelope facts; a baseline delayed-observer control proves liveness is the owner's teardown, not scheduling |
+| E-4 | A | run id binding | start journals run_id == command.run_id; resume/cancel/RETRIED START with a foreign command.run_id -> command_run_mismatch before any effect, bytes unchanged |
+| E-5 | B | idempotency under ownership (decision table) | completed retry for start, resume AND cancel: replay, appended [], bytes unchanged, zero effects; blocked-attention run: start retry replays the blocked result; conflict per field (id, class, verb, args_hash); different-id start, EMPTY existing journal and legacy-without-stamp -> journal_exists through the second attempt (zero-match rule); acceptance durable before reply for start/resume/cancel (killed after the first receipt of that invocation) -> run_server_down, then continue with ONE acceptance; cut after run_started (before dispatch) -> continue; cut after dispatch -> re-observe (one dispatch_sent, one adapter delivery); cut after gate_started -> continue through existing gate recovery (ReconcileGate observed); later acceptance before completion -> start retry command_superseded, resume retry continues; cancel_requested without run_cancelled -> one run_cancelled; duplicate rows -> acceptance_ambiguous; UNSTAMPED later acceptances (a real Host cancel or resume appended after a stamped start) are interval boundaries: the stamped start's retry is command_superseded, while a stamped start blocked BEFORE an unstamped cancel replays; a stamped start whose own interval ends in run_budget_exhausted replays |
+| E-6 | A | lifetime | after return: the named traces consumed exactly and CORRELATED after a collector flush (bounded, never a zero-timeout assumption across the hop) (the child starts name the same supervisor as the executor trace; the driving server is the :server child; the worker birth and the run's correlated protocol traces: requested == applied, no drop) and NOTHING else in the caller mailbox; owner and supervisor DOWN; ownership released; caller's trap_exit unchanged; a trapping caller's pre-existing EXIT message survives and no EXIT arrives; caller death while a gate is held -> owner, supervisor and children DOWN, no terminal; concurrent invoke -> the Writer's own rejection for the second while the first completes (inside one BEAM the Ownership arbiter's second_live_writer; run_locked is the cross-process lock-file clause); every test reaps owner/supervisor/children/callers itself (tracked harness, fresh monitors, bounded) and a baseline control proves that reaper against an owner that refuses cooperative cleanup |
+| E-7 | A | closed failures | Server crash -> run_server_down as-is, payload-free, abandon once; owner-local failure (barrier raise/throw/exit/invalid result) -> closed run_executor_down after full teardown, no canary in reply/DOWN/logs; forced root stop with a still-live descendant -> descendant reaped, ownership released, no live owned pid; legacy-literal / absent attribution on the prefix -> non-matching, the terminal no-op stands; locked dir -> Writer's exact run_locked; the receipt/chain corpus built from GENUINELY re-chained v2 fixtures and pinned in baseline controls (legacy accepted without receipt; legacy + receipt -> receipt_on_legacy_journal; valid v2 accepted; v2 wrong receipt -> receipt_hash_mismatch; v2 no receipt -> receipt_missing; one corrupted link -> chain_mismatch) -> through invoke the Writer's exact rejections, bytes unchanged, no effects; torn tail (run id taken from the accepted prefix BEFORE tearing) -> repaired view, run_resumed.tail_repair from the Writer |
+| E-8 | B | sole entry | cli.ex has no RunFSM./Writer.open/with_writer/run_then_close/event_sink; RunFSM uncalled + documented unsupported; Run.Executor source has no Host logic and no trap_exit |
+| E-9 | B | operator path (test/cli) | CLI run, resume AND cancel: outputs unchanged; on NONTERMINAL fixtures the acceptance events carry class operator with the CLI's operator id and a grammar-valid command id; on a completed run resume and cancel are terminal no-ops (status 0, bytes unchanged, no stamp); the start stamp's args_hash equals ARGS-CANON-1 over sha256 of the REAL consumed spec.json/plan.json bytes |
+
+* Findings surfaced during unit B (measured, not accommodated; each resolved by a later unit)
+- CONTINUE arm (decision-table row 9): the reducer's only continuation path was =resume_execution=, which ALWAYS
+  emits =run_resumed= (a lifecycle acceptance event) before continuing, and its cancel path (=cancel_execution=)
+  always emits =run_cancel_requested= before the releases; the Fold tracks no pending-cancel state. So "continue
+  with no second acceptance event" could not be produced by the existing machinery: a continued start would
+  journal an unstamped =run_resumed= that, by the event-type rule, ends the start's own interval and supersedes it
+  on the next retry; a continued cancel would journal a second =run_cancel_requested=. Unit B therefore failed the
+  continue arm CLOSED with =%{clause: "command_continuation_unsupported"}= (bytes unchanged, no effect) until unit
+  C (below) gave the reducer a stamp-less continuation mode that emits no acceptance event. The alternatives
+  rejected: an unstamped =run_resumed= that is NOT an interval boundary (contradicts the event-type rule); a
+  continuation =run_resumed= carrying the SAME stamp (contradicts "one acceptance event per command"); a new
+  event type (schema change).
+- Empty-journal restart (CLI): =run --resume= on a journal killed before its first event (an existing EMPTY
+  events.jsonl) used to restart the run by opening the existing file and appending a fresh run. Under the table a
+  start is =:create= (the Writer's exclusive create refuses an existing file) and the only second attempt is
+  =retry_only=, whose zero-match rule keeps =journal_exists=. Resolved by unit D: a distinct admission the CLI may
+  REQUEST when it observes an empty journal in preflight (the lock, not the preflight, is the authority); preflight
+  deletion and dropping the behaviour were rejected.
+- CLI test corrections (disclosed): "unexpected runtime exception still releases roster claims" expected the
+  adapter's RuntimeError to propagate through the CLI process; under the executor the exception is closed inside
+  the owned subtree (=run_server_down=, status 70, no adapter bytes) and the claims are still released - the test
+  asserts that. The E-5 "cancelled meanwhile" fixture interrupted right after =run_created=; a cancel there is a
+  =preamble_violation= (the journal requires the preamble first), so the interruption is placed after
+  =run_started=.
+
+* Unit C - bounded internal CONTINUATION
+Purpose: the decision table's CONTINUE arm (row 9) for an accepted-but-incomplete command that is the LAST
+acceptance of a nonterminal prefix, without a second acceptance event. Selected ONLY by =Run.Server= admission
+from the current Writer-verified accepted/repaired prefix after the unique stamp + arguments comparison and the
+last-incomplete/nonterminal classification. No public verb, no new event or schema field, no weakened
+acceptance-type boundary, one acceptance row per command.
+
+Host/Core boundary (pinned):
+#+begin_src elixir
+@spec Host.open(:continue, %{spec: map() | nil, plan: map() | nil, prior_lines: [String.t()],
+                              acceptance: %{seq: pos_integer(), verb: String.t()}}, keyword())
+#   -> {:ok, Host.Loop.t()} | {:error, map()}
+#   provenance input: `acceptance` names the admitted acceptance ROW (its seq and the verb it stamps);
+#   the Server builds it from the locked prefix; an executor context cannot supply it (the executor
+#   drops/refuses :acceptance and :continuation keys before any I/O -> command_context_invalid).
+@spec Reducer.continue(map() | nil, map() | nil, [map()], %{seq:, verb:}, keyword()) :: outcome()
+#   start:  emits ONLY the genuinely missing preamble suffix after run_created in order
+#           (run_spec_loaded, plan_recorded, run_started - whichever are absent), then the existing
+#           recovery (stale-lease repair, execution normalization: open dispatches re-observed before
+#           any new delivery, an interrupted gate reconciled first) WITHOUT emitting run_resumed.
+#   resume: the existing recovery from the accepted run_resumed's position, WITHOUT a new run_resumed.
+#   cancel: the pending cancel is DERIVED from the admitted run_cancel_requested (last acceptance, no
+#           run_cancelled after it): the remaining active leases are released (releases already
+#           journaled after the acceptance are not repeated), then run_cancelled - no second
+#           run_cancel_requested. No general Fold state field.
+#+end_src
+Pins: one original acceptance across all retries (a continued command's stamp appears once, ever); the accepted
+prefix is byte-exact preserved (the journal before the retry is a byte prefix of the journal after); Writer
+receipts, suffix order and Effects cleanup unchanged; no fabricated acknowledgement, terminal or prior effect;
+terminal/replay/superseded/blocked rules as above.
+
+Measured cancel shape: =Host.cancel= on the kill9 awaiting_artifact seed appends =run_cancel_requested=, then
+request/release PAIRS (=workspace_lease_release_requested= / =workspace_lease_released= keyed by
+=workspace_lease_id=, then =pane_lease_release_requested= / =pane_lease_released= keyed by =pane_ref=, each pair
+sharing one =release_request_id=), then =run_cancelled=. Invocation receipt 2 is therefore a PENDING request,
+receipt 3 the completed workspace release, receipt 4 the pending pane request. Continuation pins: a request left
+pending by the cut is completed by a release that REUSES its request id (never re-requested); a completed release
+is never repeated; every identity comes from the seed's own Fold (no guessed keys).
+
+Rows (C-1..C-6): C-1 start interrupted after EACH preamble row (run_created, run_spec_loaded, plan_recorded,
+run_started) -> the retry journals exactly one of each preamble event, no run_resumed, completed; C-2 repeated
+crashes during continuation (interrupted again inside the continuation) -> the next retry continues once more, one
+acceptance ever; C-3 baseline (measured pairs) plus three cuts: pending workspace request (receipt 2), completed
+workspace release (receipt 3, control: workspace lease gone, pane lease remains in Fold), pending pane request
+(receipt 4) -> the retry completes every pair exactly once, reusing a pending request id, one run_cancelled, one
+acceptance; C-4 byte-exact prefix on every continuation; C-5 a caller-supplied :acceptance / :continuation
+context key is refused before any I/O; C-6 the 7 E-5 continuation rows (durable-before-reply for
+start/resume/cancel, cut after run_started, dispatch re-observation, gate reconciliation first, later-acceptance
+resume retry) pass through this arm.
+
+Delivered: =Run.Server='s classification yields the acceptance row; the loop is opened in the Host's internal
+=:continue= mode with the command's bindings minus its stamp (run id, reason bindings) and the acceptance as Host
+INPUT; =Host.open(:continue, ...)= resolves resume identity and calls =Reducer.continue/5=, which validates the
+named row against the prefix (type matches the verb, no later lifecycle acceptance, nonterminal), then: start
+emits only the missing preamble suffix and joins the existing recovery (=repair_stale_leases= ->
+=normalize_execution= -> =continue_resumed=) with the run metadata's resume flag false; resume joins the same
+recovery without a new =run_resumed=; cancel releases the leases still held and journals =run_cancelled=. Pane
+releases became pending-aware exactly like workspace releases (=finish_pane_release/3=): a request left pending
+is completed under its own id. The executor refuses =:acceptance=, =:continuation= and =:mode= context keys
+before any I/O. =command_continuation_unsupported= is no longer produced (its CLI clause name stays listed,
+harmless).
+
+Measured facts that corrected two rows (disclosed): the E-5 "cut after gate_started" row: the EXISTING recovery
+(plain =Host.resume= on the same prefix) releases stale leases, runs exactly ONE =ReconcileGate=, and then - on
+the reconcile verdict's clock read, which under the harness FixedClock is earlier than the journaled gate start
+(=gate_reconciled= -> clock -> =gate_recovery=) - blocks with =human_attention_required= reason
+=gate_recovery_clock_skew=; no fresh Prepare/Release/AwaitGate runs. The continuation produces the identical
+sequence minus =run_resumed=. The row pins PARITY with plain resume (same appended types and status, minus the
+acceptance), one =run_created=, no =run_resumed=, and the STRICT witness =gate_effects == [ReconcileGate]=. C-2's
+second cut moved from continuation receipt 2 (=pane_lease_requested=) to the continuation's
+=assignment_dispatch_sent= receipt: a prefix cut between =pane_lease_requested= and =pane_lease_acquired= was
+rejected by the EXISTING recovery with =dispatch_without_pane_lease= (plain resume measured identical); that gap
+became unit L.
+
+* Unit L - lease-prefix recovery
+Purpose: a durable prefix cut INSIDE an assignment's lease preamble (after =assignment_requested=,
+=pane_lease_requested=, =pane_lease_acquired=, =workspace_lease_requested= or =workspace_lease_acquired=) must be
+recovered lawfully by BOTH the existing recovery (plain =Host.resume=) and the internal continuation. Measured
+before the fix (imported as L-0): a =pane_lease_requested= cut let the recovery DELIVER once and persist
+=assignment_dispatch_sent= with no =pane_lease_acquired=; the durable journal then failed =Fold= with
+=dispatch_without_pane_lease= and every further retry failed closed. That was a semantically invalid durable
+prefix written after an adapter delivery, not merely a failure to complete.
+
+Interface (no schema, no new public verb, no daemon scope): in =continue_resumed= / =resume_open_assignment=, the
+lease prerequisites of an open assignment are DERIVED from the verified prefix (the Fold assignment's
+pane/workspace lease flags and the pending =pane_lease_requests= / =workspace_lease_requests= rows) and only the
+MISSING lawful prerequisites are appended, in order, BEFORE any prompt projection or dispatch: a pending pane
+request is completed by =pane_lease_acquired= under its own =lease_request_id= (a request+acquire pair only when
+no request exists), the workspace lease likewise under its =workspace_lease_id=. Existing identities (assignment
+id, request ids, workspace lease id) are reused; one command acceptance; the interrupted delivery is re-observed,
+never re-sent. If the verified prefix cannot determine lawful ownership (no pane_ref / claim for a pending
+request), the recovery refuses or raises attention BEFORE any dispatch: no ownership fact is invented.
+Cancellation releases only what was acquired and never invents an acquisition to release it. Invariant: EVERY
+durable prefix of the recovered journal folds valid.
+
+Pins:
+- Delivery-entry durability (L-3): the prerequisites must be DURABLE WHEN the adapter is entered, not merely
+  ordered in the final result. Test double =PrefixCheckingDispatch= folds the durable prefix at deliver entry (the
+  journal file on the executor path; a recording receipt sink on the plain path) and records whether the
+  assignment's pane lease and role-required workspace lease were held; a guard control (L-G) shows it flags an
+  early delivery. L-3 also counts adapter entries (an adapter call without a row cannot pass).
+- Interrupted repair table (L-5): on the pre_dispatch resume seed the measured stale-repair suffix is 1
+  run_resumed, 2 workspace release requested, 3 workspace released, 4 workspace reacquired, 5 pane release
+  requested, 6 pane released, 7 pane reacquired, 8 projection, 9 dispatch; each of 2..7 is a cut with its identity
+  asserted; the same command's retry completes with no extra acceptance, one delivery, pending release ids
+  completed once under their own id, every release request completed exactly once (a lease the crashed instance
+  had reacquired is stale again for the retry's instance - measured - so at most two stale-repair requests per
+  lease across the two attempts), prefixes valid. L-6: a crash DURING the missing-prerequisite repair - the
+  continuation's FIRST receipt must be the acquisition (never a projection/dispatch), the durable cut folds valid,
+  the next retry completes once. L-4 covers a pending pane request AND a pending workspace request.
+- Ambiguous ownership (L-7): two pending pane requests for one assignment naming different panes are ADMISSIBLE
+  (Reader, Writer and Fold accept; fact imported from a review probe). Closed outcome pinned: the recovery REFUSES
+  before any append or dispatch with the Host rejection =%{"reason" => "lease_ownership_ambiguous",
+  "assignment_id" => id}= - no arbitrary candidate, no invented acquisition, no delivery. This is a pre-effect
+  rejection on plain resume, executor resume and continuation: nothing is appended on any of those paths,
+  including no new acceptance. The Host does not commit a reducer suffix discarded by a bare error; there is no
+  special acceptance flush for this rejection. A single unambiguous pending request stays the positive (L-1/L-2).
+- Identity reuse observable (L-8): Fold/Writer-accepted prefixes with NON-default ids (=plr_custom_7=,
+  =wsl_custom_9=) require acquisitions under exactly those ids with the request's pane_ref / mode binding; EVERY
+  acquisition in the journal must name a journaled request (no pre-filtering); held-lease checks correlate
+  releases to the specific pane_ref / workspace_lease_id.
+- Actual recovery context (L-9): the prerequisites are those of the assignment's ACTUAL recovery context - a
+  reviewer's request row names its review, so its work item is the review item (kind review) and no workspace
+  policy applies; the reviewer positive (interrupted at its dispatch, resumed plain and by continuation) appends
+  no workspace request and completes.
+- Durable identity only (L-10): identity is read from the DURABLE prefix only (this step's own emits never prove
+  ownership): the uniquely proven held pair is the last durable acquisition whose request id is one of the
+  assignment's requests AND whose pane is that request's pane, not undone by a release of that pane;
+  =lease_ownership_coherent= runs BEFORE any repair or emit on both recovery entries and refuses (closed ambiguity
+  rejection, nothing appended) when a held lease has no proven pair; the stale repair reacquires exactly the
+  proven pair; the completion release names the held workspace lease, else the single journaled one. L-10: a held
+  pane plus a conflicting pending request, plain + executor resume: the reacquisition reuses the proven pair, one
+  delivery; shared invariant: every acquisition binds its own request's pane.
+- Multiple held workspace leases (L-11): an open assignment with MORE THAN ONE held workspace lease (Fold accepts
+  disjoint leases for one assignment) is ambiguous ownership - refused closed before any repair, append or
+  dispatch; no last-id selector, no canonical fallback; the completion release names the single held lease.
+- Chronological pane pair (L-12): the pane pair is resolved chronologically: an acquisition naming one of the
+  assignment's requests with a DIFFERENT pane is contradictory evidence that poisons the assignment, never skipped
+  to expose an older pair; the proven pair must also agree with the folded pane. Both refusals hold on plain
+  resume, executor resume (zero appended bytes) and the continuation (prefix bytes exact); the held-plus-PENDING
+  and single non-default-id positives are kept (L-10, L-8).
+
+Rows: L-0 (the pre-fix fact, inverted into a regression that recovers with one delivery and replays on repeat);
+L-G guard controls; L-1 plain resume and L-2 continuation at each of the five cuts; L-3; L-4 x2; L-5 x6; L-6; L-7
+fact + three negatives; L-8 x4; L-9; L-10; L-11; L-12.
+
+Delivered (reducer only, inside the existing recovery): =resume_open_assignment= runs =ensure_lease_prerequisites=
+BEFORE any projection or dispatch of a resumed open assignment. Pane: the assignment's distinct journaled pane
+requests are read from the prefix; held (last acquisition under one of them not undone by a release of that pane)
+-> nothing; none -> the ordinary request+acquire pair; exactly one -> =pane_lease_acquired= under that request's
+id and pane_ref; more than one -> the closed pre-effect rejection. Workspace (role-required kinds
+implement/integration only; other roles keep their existing policy): the same rule under the journaled
+=workspace_lease_id= and mode. The work item's completion release names the assignment's JOURNALED workspace lease
+id (generator spelling only when none was journaled), so non-default ids round-trip. Writer/Reader untouched.
+
+* Unit D - explicit restart-empty admission
+Purpose: preserve CLI =run --resume= on a journal killed before its first event (an existing EMPTY events.jsonl)
+through a DISTINCT admission, not a relaxation of :fresh or :retry_only. The CLI preflight only REQUESTS it; the
+locked Writer-verified accepted/repaired prefix is the authority.
+
+Names (pinned): executor context =restart_empty: true= (start only; any other value or any other verb ->
+command_context_invalid field restart_empty before any I/O); Run.Supervisor config =open: :existing, admission:
+:restart_empty= with the command present (validated like :retry_only). Admission: the locked prefix must be
+verified EMPTY (no accepted line, no receipt) -> execute the start with its stamp (one run_created), binding
+run_lock_path/repair as usual; a NONEMPTY prefix at lock acquisition -> the Writer's =journal_exists= without
+append or effect, even if the preflight saw it empty; a missing journal is not authority to recreate (the Writer's
+own rejection, =journal_missing=); corrupt or locked prefixes keep their Writer rejections. No preflight deletion
+or truncation; no retry from the explicit mode; ordinary start (:create -> journal_exists -> :retry_only) stays
+byte-for-byte in policy (zero matches, the empty journal included, remain journal_exists).
+
+Repaired authority (measured): a torn first unaccepted line (no receipt file) verifies to an EMPTY prefix with a
+=truncate_tail= repair - the explicit admission FOLLOWS the verified prefix and admits the start (D-R1); receipt
+absence is VERSION-SPECIFIC (measured both ways): a complete LEGACY v1 first line with no receipt file verifies
+NONEMPTY with no repair planned and no receipt created (Chain.reconcile's envelope_version 1 + nil receipt arm),
+journal_exists, the line exact (D-R2 legacy); a complete v2 first line with no receipt file verifies NONEMPTY with
+=advance_receipt= 0 -> 1 planned by the Reader and performed by the Writer (events.head written with seq 1 and the
+hash of line + newline), journal_exists against that repaired prefix, the line exact (D-R2 v2; the control
+directory proves the repair, the feature directory is left for the executor's own Writer to repair); a corrupt
+receipt keeps the Writer's own rejection (D-R3). No Reader/Writer contract change. Ordinary Writer-authorized
+tail/receipt repair may change unaccepted tail/receipt bytes; "bytes unchanged on refusal" is a statement about
+accepted lines and about no command event being appended, not a ban on that repair.
+
+The preflight-empty -> locked-nonempty RACE is witnessed at the CLI entry (test/cli): the preflight reads the plain
+filesystem and sees empty; a FaultFs hook on the Writer's lock tempfile open (its first write-side operation,
+before acquisition) plants a Writer-valid nonempty prefix; the locked verification refuses with journal_exists,
+appends nothing, runs no effect, and the planted lines are exact. The executor-level D-3a nonempty control is an
+admission control, not the race.
+
+Rows (D-1..D-6): D-1 ordinary empty start refusal (the E-5 zero-match row, unchanged); D-2 explicit restart-empty
+success: one stamped run_created, completed, run_lock_path bound; D-3a nonempty prefix under the selector
+(admission control) + the CLI race witness above; D-R1..D-R3 repaired authority (D-R2 as legacy v1 and v2 rows);
+D-4a missing (never recreated) and D-4b locked -> the Writer's exact rejections, each its own row; D-5 one row per
+malformed value ("yes", explicit false, explicit nil) and one for non-start verbs -> command_context_invalid field
+restart_empty with an empty Fs trace (absence alone means the ordinary path); D-6 the CLI test "run --resume
+restarts a journal killed before its first event" passes through this admission (the CLI requests restart_empty
+only when its preflight read an empty journal).
+
+Delivered: =Run.Executor= validates the selector before any I/O (=restart_empty= present -> must be exactly =true=
+and the verb start, else =command_context_invalid= field restart_empty; the key is a context key, never a Host
+option) and, when set, configures =open: :existing, admission: :restart_empty= (the journal is never created);
+=Run.Supervisor= validates that admission (existing open, a command, mode run); =Run.Executor.Owner= makes no
+=:retry_only= second attempt when an explicit admission is already set; =Run.Server= admits ONLY a
+verified-EMPTY prefix (the Writer's post-repair view under the lock) - any accepted line is =journal_exists=
+whatever the preflight saw - then executes the start with its stamp through the ordinary zero-rows path; the
+CLI's =run --resume= puts =restart_empty: true= into the executor context exactly when its preflight read an
+empty journal. No Reader/Writer change: a missing journal is the Writer's =journal_missing=, a torn first line is
+truncated to empty and admitted, a v2 line without a receipt is repaired to nonempty and refused, corrupt/locked
+prefixes keep their Writer rejections.
+
+* History
+This contract went through an interface revision with four decisions, four interface reviews, unit-by-unit
+implementation reviews for A, B, C, L (three rounds) and D, and two measured findings that each became their own
+unit rather than a bent fixture. Every correction is folded into the text above; the revision ledger is not
+reproduced here.

@@ -1,0 +1,1 @@
+{"schema":"ai-orchestrator/journal-event","schema_version":3,"event_version":1,"seq":1,"event_id":"ev_unsupported_schema_0001","type":"run_created","ts":"2026-09-03T00:00:00Z","run_id":"run_fixture_unsupported_schema","actor":"run_supervisor","data":{}}

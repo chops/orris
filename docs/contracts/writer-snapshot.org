@@ -1,0 +1,102 @@
+#+title: Live verified Writer snapshot and the Writer-owned append fence
+#+PROPERTY: status delivered contract
+#+options: toc:nil
+
+* Implementation status
+Delivered: =AiOrchestrator.Journal.Writer.verified/1= and the fenced =append(pid, event, fence: token)= with the
+closed option domain, whole-token authentication and head check (=lib/ai_orchestrator/journal/writer.ex=;
+refusals =fence_invalid=, =snapshot_foreign=, =snapshot_stale= and the snapshot error domain below). Rows C-1..C-4
+and S-1..S-10 are =test/journal/writer_snapshot_red_test.exs=; the review-imported controls and successor
+witnesses are =test/journal/writer_snapshot_review_controls_test.exs=,
+=test/journal/writer_snapshot_rev2_review_controls_test.exs=, =test/journal/writer_snapshot_green_review_test.exs=
+and =test/journal/writer_snapshot_green_successor_test.exs=. The consumers this snapshot was built for (the
+reservation producer and recovery acquisition) are separate contracts (=recovery-acquisition.org=,
+=recovery-reservation.org=).
+
+* Scope (review corrections S-M1..S-M5 applied)
+Only two things: =Writer.verified/1= and the smallest Writer-owned conditional-append fence. No reservation or
+terminal producer, restart loop, timeout actuator, budget schema/version change, daemon mounting or topology
+change. =Writer.opened/1= keeps its cached startup-view semantics; no consumer changes. Boundary stated
+explicitly: the UNFENCED append's threat model is unchanged - arbitrary external filesystem writers are outside it;
+the snapshot's job is to detect what the disk says at snapshot time, not to police concurrent external writers.
+
+* Frozen shapes (smallest)
+#+begin_src elixir
+# Writer.verified(pid) :: {:ok, snapshot()} | {:error, refusal()}
+snapshot :: %{
+  lines: [binary()],                 # the ACCEPTED verified lines, as Reader/opened already return (S-M1): the
+                                     # fresh prefix a recovery decision folds, from THIS same operation
+  seq: non_neg_integer(),            # == length(lines)
+  last_line_sha256: String.t(),      # hash OF the last accepted line (Chain anchor when empty)
+  envelope_version: 0 | 1 | 2,
+  version_2_from: pos_integer() | nil,
+  receipt: %{seq, line_sha256} | nil,# the actual receipt; absence may be legitimate or require reported repair
+  repair: Chain.plan() | nil,        # a PENDING plan the read-only snapshot reports and never executes
+  generation: pos_integer(),         # the lock generation this Writer holds
+  token: token() | nil              # no append capability while repair is pending
+}
+token :: %{seq, last_line_sha256, generation, ref :: reference()}   # authenticated as a WHOLE
+# Writer.append(pid, event, fence: token) :: {:ok, stamped} | {:error, refusal()}
+#+end_src
+Token lifecycle (S-M8; exactly ONE retained entry, the most recently MINTED complete token):
+| Situation | =verified/1= | fenced append with the retained token | any other token |
+|-----------+--------------+---------------------------------------+-----------------|
+| healthy head, no append since minting | returns the SAME token (idempotent) | admitted (then the head advances; the token stays retained) | =snapshot_foreign= |
+| an append advanced the head; no new snapshot yet | mints a NEW token and replaces the entry | the retained one authenticates and fails =snapshot_stale= | =snapshot_foreign= |
+| after the replacement | - | the OLD token is unrecognized: =snapshot_foreign= | - |
+| a retained token with any field mutated | - | =snapshot_foreign= (whole-token equality) | - |
+| after a failed or pending-repair verification | the entry is CLEARED (=token: nil= when pending) | =snapshot_foreign= | =snapshot_foreign= |
+No historical registry, no growth. Authentication compares the COMPLETE token (ref AND seq/hash/generation)
+against the single retained entry, never a caller-supplied head alone.
+
+Pending repair is EVIDENCE, not append authority (S-M7): when the re-read reports a pending plan (receipt trailing
+by one, or a torn tail) =verified/1= still succeeds read-only with the accepted lines, the ACTUAL receipt (or
+absent) and the pending plan, but =token: nil= and the retained entry is cleared; a fenced append then has no
+capability until the existing reopen authority repairs the journal and a new healthy snapshot is minted. The
+Reader's absence rules apply: a FIRST v2 line without a receipt is repairable (fewer than two chained lines):
+absent receipt + pending plan + no token; two or more chained v2 lines without a receipt are refused
+(=snapshot_corrupt= reason =receipt_missing=); empty / legacy absence stays legitimate (token minted).
+
+* Verification (S-M5)
+=verified/1= RE-READS =events.jsonl= and =events.head= through the Writer's Fs seam (both reads are traceable),
+runs =Chain.verify= + =Chain.reconcile= (the Reader's rules), validates every complete line, and then REQUIRES
+the accepted result to equal the in-memory head. It executes no repair (a pending plan is reported as =repair=).
+Supported legacy/envelope prefixes that =Writer.open= accepts are accepted here too (envelope 1: receipt nil).
+Read faults are independent per source: a journal-read fault stops the verification at the journal (the receipt
+is never read, as the Reader does today); a receipt-read fault is reachable only when the journal read succeeds
+(S-M6). The event corpus of the rows is the existing valid fixture grammar, with a baseline acceptance control.
+
+* Error domain (closed; strict fields; no journal/prompt/adapter bytes)
+| clause | when | fields |
+|--------+------+--------|
+| =writer_failed= | the Writer is warm-failed (an earlier stage failure) | =cause= = EXACTLY =%{clause: "append_failed", stage: stage}= - the seam =detail= bytes of the legacy append error are NOT carried (S-M10) |
+| =snapshot_unreadable= | the journal or the receipt cannot be read | =source= ("journal" / "receipt"), =stage= ("read") - the seam reason is NOT echoed |
+| =snapshot_corrupt= | Chain/Reader refuse the disk state (chain break, torn beyond repair, receipt decode / missing on a v2 tail / beyond tail / hash mismatch, line validation) | =reason= = Chain/Reader clause only (e.g. =receipt_missing=, =receipt_hash_mismatch=, =chain_break=) |
+| =snapshot_divergent= | disk verifies but its head differs from the in-memory head | =disk_seq=, =memory_seq= |
+| =fence_invalid= | the option list is not exactly =[fence: token]= (=field= "options": unknown or duplicated key, bare element, non-atom key, improper list - refused by structure, the Writer never inspects the elements) or =fence:= absent / nil / not a well-formed token (=field= "fence", "keys", "seq", "last_line_sha256", "generation", "ref") | =field= |
+| =append_failed= (fenced) | a persist stage (write / sync / receipt) fails on the FIRST fenced append; the Writer is warm-failed | =stage= only - the seam reason is NOT echoed (unlike the legacy =append/2= reply, which keeps its =detail= unchanged); later calls answer =writer_failed= (SG-M2) |
+| =snapshot_foreign= | a well-formed token this Writer did not mint (other Writer, forged ref, other generation, mutated field) | none |
+| =snapshot_stale= | a minted token whose head was superseded | =expected_seq=, =current_seq= |
+Append precedence (S-M4): option validation (=fence_invalid=) -> token authentication (=snapshot_foreign=) -> head
+check (=snapshot_stale=) -> event validation (existing clauses) -> persist. A refused fenced append leaves the
+journal bytes, the head receipt bytes AND the mutating Fs trace unchanged; an unfenced valid append still works
+after it. =fence: nil= is =fence_invalid=, never a silent unfenced append.
+
+* Rows (test/journal/writer_snapshot_red_test.exs) - controls run on the unchanged Writer/Reader without the guard
+| Row | Kind | Witness |
+|-----+------+---------|
+| C-1 | control | opened/1 stays the cached startup view after appends |
+| C-2 | control | fault-ordinal proof (a control imported from review): the next sync after a completed append is the JOURNAL sync; the receipt sync is reached only after =open events.head.tmp= (trace) |
+| C-3 | control matrix | each receipt-stage fault on the unchanged Writer: journal sync, receipt sync (matcher-targeted, trace-proven), receipt rename, post-rename dir_sync -> append_failed stage, close_failed, reopen repair verdict |
+| C-4 | control | after-success dir_sync witness on the unchanged Writer: the publication's final fsync completed before the reply; the lost-reply crash reopens with repair nil |
+| S-1 | RED | empty journal: lines [], seq 0, anchor, receipt nil (legitimately absent), repair nil, token |
+| S-2 | RED | append: both disk reads traced; lines == the persisted line; hash/receipt |
+| S-3 | RED | in-flight serialization: BEFORE-hook hold, the snapshot request is proven enqueued at the held Writer, answered after |
+| S-3b | RED | AFTER-success witness: durable receipt publication completed, no reply yet, snapshot linearized behind; normal release AND lost-reply crash (reopen repair nil) |
+| S-4 | RED | write-stage failure: warm failed -> writer_failed; reopen (repair authority) snapshot reports truncate_tail |
+| S-5 | RED matrix | journal sync / receipt sync / rename / post-rename dir_sync: failed Writer refuses; reopen snapshot reports the repair verdict |
+| S-6 | RED matrix | corrupt middle line; independently valid but divergent disk head; corrupt receipt; missing receipt on a v2 tail; mismatched receipt; unreadable journal / receipt with a canary seam reason; pending repair reported and NOT executed; tokens invalidated after a failed verification |
+| S-7 | RED matrix | fence: stale (bytes + receipt + mutating trace unchanged, then unfenced works), fresh admitted, idempotent token at unchanged head, retained-ref mutations of seq/hash/generation, malformed/missing/extra token fields, fence: nil, malformed options, a second live Writer's token at the same head, all with VALID events; precedence over event validation |
+| S-8 | RED | cross-generation token refused |
+| S-9 | RED | two-writer contention unaffected; canary absent from errors/logs/status/token, present only in the returned lines |
+| S-10 | RED | legacy envelope-1 journal snapshots (receipt nil, lines = fixture), not rejected |

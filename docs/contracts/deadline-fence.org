@@ -1,0 +1,142 @@
+#+TITLE: Deadline fence (pure monotonic due + operation correlation)
+#+PROPERTY: status delivered contract
+
+* Implementation status
+Delivered: =AiOrchestrator.Run.DeadlineFence= (=lib/ai_orchestrator/run/deadline_fence.ex=) with the public
+surface =arm/5=, =next/2=, =outstanding/1=, =observe/2= exactly as the interface table below, exported by the
+=Run= boundary; rows F-1..F-12 and controls C-1..C-4 are =test/run/deadline_fence_red_test.exs=. Both consumers
+named under "Consumers" ship: =Run.Server= arms the fence for =AwaitGate= and =Run.Worker= arms it for Observe,
+Dispatch and ReconcileSend. Everything under "Out of scope" (cold restart, recovery input, delivery-unknown
+event data, new terminals, native backstop policy) is still outside this module.
+
+* Scope
+This contract covers one small pure module, =AiOrchestrator.Run.DeadlineFence=, and its test
+=test/run/deadline_fence_red_test.exs=. The module has no timers, processes, clock reads, native APIs or Server
+wiring: it computes a monotonic due instant once, chunks bounded waits, and decides the winner between a fence
+wake and a result at ONE consumer. A pure verdict enforces nothing; enforcement belongs to the consumers that arm
+it (see "Consumers"). Review corrections DF-M1..DF-M4 are folded into the text.
+
+* What actuates deadlines around the fence (source attribution)
+- Gate, owner side: =Gate.Execution.await_until_deadline/3= (called by the consumer =await/2=): =remaining_ms = (deadline_unix - now_unix) * 1000=; =<= 0= -> =terminate_and_memo= (TERM through
+  the guardian port); else =next_record(port, min(remaining_ms, @receive_cap_ms 4_000_000_000))=, =:timeout= ->
+  =terminate_and_memo=. The timeout observation is built by =Effects.gate_timeout_observation/5=
+  as =GateFailed= / =GateUnsettled= from the termination truth. =Execution.expire/1= has no caller in lib.
+- Gate, kernel side: =backstop/2= refuses =deadline_expired= at =remaining <= 0= and
+  =deadline_unsupported= when =remaining + @backstop_grace_ms 2_000 > @backstop_max_ms 86_400_000=, else hands
+  =max(remaining + grace, 100)= to the native guardian at spawn. This is a DIFFERENT contract from arming: it
+  refuses where the fence clamps to due, it adds grace, and it caps the horizon where the fence chunks.
+- Assignment: =Effects.observe_opts/2= caps the adapter's =observe_timeout_ms= to the remaining window;
+  =Effect.Timer= admits only =Observation.Deadline=; =Observation.TimedOut= -> =observation_timeout= is the
+  ASSIGNMENT path (the reducer's =observation_timeout= rejection), never the gate's.
+- When this contract was written nothing fenced a Worker blocked in a synchronous =Effects.execute=, and the
+  Server's only timers were =@admit_budget= and =@settle_budget=; sending =:settle= / retire messages to a
+  blocked Worker cannot interrupt it (its =handle_info= runs only between effects). The shipped consumers below
+  close that gap for Observe / Dispatch / ReconcileSend (fenced task) and AwaitGate (owner-resident wait with a
+  Server-armed fence); the admission and settle budgets are still the Server's own timers.
+
+* Rules (DF-S1, DF-S2)
+- R1 ARM ONCE, MONOTONIC DUE: =due_ms = monotonic_now_ms + max(deadline_unix - unix_now, 0) * 1000=, computed
+  once from the journaled wall deadline, =unix_now= at arm and the supplied =monotonic_now_ms= (which may be
+  negative). No later wall-clock input exists on the fence.
+- R2 BOUNDED CHUNKS NEVER SHORTEN: at each supplied monotonic instant the fence derives
+  =remaining = max(due_ms - now_ms, 0)= and answers ={:wait, min(remaining, wait_cap_ms)}= while =remaining > 0=
+  and =:due= at =remaining == 0=. Reaching a chunk's end before due yields ANOTHER bounded wait, never due,
+  never termination. Exact integer arithmetic, no floats. Long horizons are chunked, not refused.
+- R3 IDENTITY: an operation is ={cap, gen, ref}= with =cap= and =ref= references and =gen= a positive integer.
+  A fence carries the identity it was armed for.
+- R4 DEQUEUE ORDER AT ONE CONSUMER decides, through =observe/2= (see the state machine table): a completion
+  dequeued first moves =:running= to =:completed= and a later fence is ={:stale, :completed, unchanged}=; a
+  matching due fence dequeued first moves =:running= to =:timeout_selected= with the DECISION
+  =:request_expiration= (never proof that work stopped); a matching EARLY wake is ={:early, {:wait, ms}, unchanged}=;
+  after selection a second fence is ={:stale, :duplicate_timeout, unchanged}= and cannot issue another expiration,
+  and a late result moves to =:completed_after_timeout= with =:retain_late_result= (the timeout stays the winner);
+  a second completion is ={:stale, :duplicate_completion, unchanged}=; foreign =cap= / =gen= / =ref= leave the
+  current operation intact; a =nil= outstanding is the input refusal =outstanding_invalid= (the later consumer
+  handles its own no-outstanding wake without effect).
+- R5 the helper returns classified stale reasons; COUNTING is a runtime side effect delivered later.
+
+* Interface (four functions)
+| function | contract |
+|----------+----------|
+| =arm(identity, deadline_unix, unix_now, monotonic_now_ms, wait_cap_ms)= | ={:ok, fence}= with =fence = %{due_ms, identity, wait_cap_ms}= (exactly those keys) per R1. The helper accepts SUPPLIED time and fence facts, never authenticated timer messages: the later runtime reads its own clock, retains its canonical armed fence, correlates its own dequeue and threads the returned state before acting |
+| =next(fence, monotonic_now_ms)= | ={:wait, ms}= (=1 <= ms <= wait_cap_ms=) or =:due= per R2 |
+| =outstanding(identity)= | ={:ok, %{identity, state: :running}}= |
+| =observe(outstanding, event)= | ONE pure transition over a fact DEQUEUED by the consuming process: =event= is ={:fence, fence, monotonic_now_ms}= or ={:result, identity}=; returns ={:ok, outstanding', decision}=, ={:early, {:wait, ms}, outstanding}= (unchanged), ={:stale, reason, outstanding}= (unchanged), or a clause-only ={:error, %{clause}}= |
+
+** State machine (DF-M1: the WINNER is preserved in the state and the decision)
+| state | ={:fence, due}= | ={:fence, early}= | ={:result, same identity}= |
+|-------+-----------------+-------------------+----------------------------|
+| =:running= | -> =:timeout_selected=, decision =:request_expiration= | ={:early, {:wait, ms}, unchanged}= | -> =:completed=, decision =:retain_result= |
+| =:timeout_selected= | ={:stale, :duplicate_timeout, unchanged}= | ={:early, ...}= is impossible after selection: a fence for the same identity is =:duplicate_timeout= whether early or due | -> =:completed_after_timeout=, decision =:retain_late_result= (the timeout stays the winner; the late result is NOT settlement proof) |
+| =:completed= | ={:stale, :completed, unchanged}= | ={:stale, :completed, unchanged}= | ={:stale, :duplicate_completion, unchanged}= |
+| =:completed_after_timeout= | ={:stale, :duplicate_timeout, unchanged}= | ={:stale, :duplicate_timeout, unchanged}= | ={:stale, :duplicate_completion, unchanged}= |
+A foreign identity (fence's or result's) in ANY state -> ={:stale, :foreign_cap | :foreign_generation | :foreign_ref, unchanged}=,
+checked =cap= then =gen= then =ref=. The decision is advice to the consumer (request an expiration, retain a
+result); nothing here proves work stopped, a delivery happened, or a record was written. The consumer threads
+=outstanding'= itself; the transition has no side effect.
+
+** Closed input domains and precedence (DF-M3)
+- =arm/5=: identity per R3 (a map with EXACTLY =cap/gen/ref=; =cap=/=ref= references; =gen= positive integer) else
+  =fence_identity_invalid=; =deadline_unix=, =unix_now=, =monotonic_now_ms= integers (booleans, floats incl.
+  integral, nil, binaries, atoms, lists, maps refused) else =deadline_invalid=; =wait_cap_ms= integer in
+  =1..4_294_967_295= (the helper's DECLARED supported cap, not a measured universal OTP maximum) else =wait_cap_invalid=. Precedence: identity, then the three instants in argument order,
+  then the cap.
+- =next/2=: fence must be a plain map with EXACTLY =due_ms/identity/wait_cap_ms=, =due_ms= integer, identity per
+  R3, cap in range (extra keys, structs, missing keys, wrong types refused) else =fence_invalid=; instant integer
+  else =instant_invalid=. Precedence: fence, then instant.
+- =outstanding/1=: identity per R3 else =fence_identity_invalid=.
+- =observe/2=: outstanding must be a plain map with EXACTLY =identity/state=, identity per R3, state one of the
+  four names (unknown or missing state, extra keys, structs refused) else =outstanding_invalid=; event shape
+  ={:fence, fence, instant}= (fence validated as in =next/2= -> =fence_invalid=, instant -> =instant_invalid=) or
+  ={:result, identity}= (identity per R3 -> =fence_identity_invalid=), anything else =event_invalid=.
+  Precedence: outstanding, then event shape, then the event's fence, then its instant (or its identity), then
+  foreign identity (cap, gen, ref), then the state table, then early/due.
+Refusal maps carry =clause= only; nothing from a malformed input is copied into any return; no exception escapes
+for any malformed input.
+
+* Out of scope (DF-S3)
+Cold restart / wall-clock skew (a fence lives in one monotonic clock domain and is not a durable or cross-restart
+capability; no "expire + attention" rule is encoded), recovery input, delivery-unknown EventData, new terminals,
+native backstop policy or grace, assignment interruption topology, timers, processes, counting, Server wiring.
+
+* Controls (baseline facts the test reproduces)
+| id | control |
+|----+---------|
+| C-1 | a REAL Worker blocked inside =Effects.execute= (held gate, acknowledged by =gate_entered=) does not read a fence-shaped message: it stays in the Worker's mailbox while blocked (observed while the Worker is alive); after release the run completes with the MEASURED baseline status =completed= and teardown is observed through monitors on the worker and the root (DOWNs received), never assumed. The post-release mailbox check maps a dead pid to =[]=, so together with the DOWNs it proves the successful baseline and teardown, not independently that the catch-all consumed this particular message while alive |
+| C-2 | SHAPE EVIDENCE ONLY (no gate-timeout conversion is executed): =Effect.admissible_observations(%Effect.Timer{...})= is exactly =[Observation.Deadline]=; =Observation.TimedOut= carries =deadline_unix=; =GateFailed= / =GateUnsettled= carry =result= and no =deadline_unix= |
+| C-3 | EXECUTABLE backstop refusals through the public =Execution.prepare/3= with a valid executable helper path, a validated request and a fixed clock: (a) =deadline_unix <= now= -> ={:error, %{clause: "deadline_expired"}}= and the run dir stays EMPTY (nothing spawned or claimed); (b) =deadline_unix - now= beyond =86_400_000 - 2_000= ms -> ={:error, %{clause: "deadline_unsupported", max_ms: 86_400_000}}=, run dir empty; (c) positive seam witness at the supported boundary: a =:before_spawn= barrier that records its acknowledgement and returns a FALSY value halts =prepare= BEFORE the guardian is spawned (the seam contract is =fun.(name, info) && :ok=, so only a falsy return halts and =prepare= returns it; an error tuple is truthy and does not halt; measured); no =gates/= entries, the recorded marker present, proving =backstop/2= accepted the value; the grace/cap arithmetic pinned here: accepted iff =0 < remaining_ms= and =remaining_ms + 2_000 <= 86_400_000= |
+| C-4 | walk oracle bound (DF-M4): the bounded walk helper used by the RED rows fails PROMPTLY (within its step budget, no hang) against a local mutant oracle answering ={:wait, 0}= and against one answering =:due= before the due instant; a compliant local oracle passes it |
+The former C-4 (=Run.Server= exported names) is withdrawn as runtime evidence; the Server's admission/settle-only
+timers remain a structural source note, not a test claim.
+
+* Rows (=test/run/deadline_fence_red_test.exs=; the module is addressed by =Module.concat= so the rows also
+  document the failure mode of an absent module)
+| id | row |
+|----+-----|
+| F-1 | exact seconds -> ms: deadline 5 s ahead, cap 1000: waits 1000 x5 then =:due= at +5000; at +4999 ={:wait, 1}= |
+| F-2 | zero and past deadlines: =due_ms == monotonic_now_ms=; =next= at arm -> =:due=; never a negative wait |
+| F-3 | negative monotonic epoch arms and chunks correctly; =due_ms= negative allowed |
+| F-4 | cap boundary (remaining == cap, cap + 1) and the BOUNDED walk: every wait in =1..cap=, strict advance, no overshoot, chunk count =ceil(remaining / cap)=, waits sum to =remaining=, no intermediate =:due=; small corpus only |
+| F-5 | large integers exact (=2^62=, cap =2^32 - 1=) WITHOUT iterative walks; malformed =arm= domains refuse with the pinned clauses in the pinned precedence |
+| F-6 | no later wall-clock dependency: fence keys exact; equal offsets arm identically |
+| F-7 | winner preserved through the full state machine for the SAME identity: result-first -> =:completed= then fence =:completed=, second result =:duplicate_completion=; fence-first -> =:timeout_selected= with =:request_expiration=, second fence =:duplicate_timeout=, late result -> =:completed_after_timeout= with =:retain_late_result=, then fence =:duplicate_timeout= and result =:duplicate_completion= |
+| F-8 | foreign identities in EVERY state (cap, gen, ref, for both fence and result events) return the outstanding UNCHANGED; early fence in =:running= -> ={:early, {:wait, ms}}= with the same =ms= as =next= |
+| F-9 | precedence: outstanding malformed > event shape > event fence > event instant > foreign > state > early/due, including simultaneous malformed fence + instant + outstanding; cap > gen > ref |
+| F-10 | no payload echo at all four functions: clause-only refusals, canary never returned, no exception |
+| F-11 | one-field malformed matrices: identity (each field wrong, missing, extra key, struct); fence (each key wrong/missing, extra key, struct, nested identity invalid, cap out of range); outstanding (unknown/missing state, extra key, struct, nested identity invalid); result identity malformed; =next= / =observe= instant malformed |
+| F-12 | public surface exactly =[arm: 5, next: 2, observe: 2, outstanding: 1]= |
+
+* Consumers (delivered)
+- =AiOrchestrator.Run.Server= (=arm_gate/3=, =gate_chunk/2=, =release_gate/2=): on dispatching an =AwaitGate= the
+  Server, which mints =cap/gen/ref=, arms the fence from the effect's =deadline_unix= with its injected clock and
+  a chunk cap (=:gate_deadline_cap_ms=, at most 60 000 ms), keeps the =outstanding= state, re-arms one generic
+  timeout keyed by =ref= on every early chunk, sends ={:gate_deadline, cap, gen, ref}= to the Worker exactly once
+  on =:request_expiration=, threads ={:result, identity}= on the effect's answer, and counts a duplicate timeout
+  or duplicate completion as a drop (=gate_duplicate_timeout= / =gate_duplicate_completion=). Contract:
+  =gate-async-await-proposal.org=.
+- =AiOrchestrator.Run.Worker= (=execute_fenced/4=): Observe, Dispatch and ReconcileSend are armed ONCE at
+  dequeue from one wall and one monotonic read, run in a task under the Worker's linked =Task.Supervisor=, waited
+  in bounded chunks, and brutally killed when the fence is due; the adapter never sees the fence. Contracts:
+  =observe-deadline.org=, =delivery-deadline.org=. Stale fences are counted there as the runtime side effect R5
+  defers.
+- Nothing here changes the gate's guardian backstop, its grace, or =backstop/2='s refusals.

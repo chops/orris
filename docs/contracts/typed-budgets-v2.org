@@ -1,0 +1,85 @@
+#+title: Typed budgets under an explicit new spec version
+#+options: toc:nil
+#+PROPERTY: status delivered contract
+
+* Implementation status
+Delivered. =AiOrchestrator.Spec.Budgets= (=lib/ai_orchestrator/spec/budgets.ex=, =validate/1=) is the
+standalone strict schema, and =AiOrchestrator.Spec.RunSpec= (=lib/ai_orchestrator/spec/run_spec.ex=) accepts
+=schema_version= 2 and answers =budgets/1= as specified below. The rows are
+=test/spec/typed_budgets_red_test.exs= (B-0..B-3, V-1a..V-1d, V-2..V-9); the 25 =test/fixtures/**/spec.json=
+files of control V-1d are all version 1 or negatives, none is version 2. No runtime consumer of a typed
+budget ships with this contract: the typed map is read by =Run.Recovery.Exhaustion= only as a pure
+calculation input, and no restart loop, migration command, or deadline actuator that consumes these typed budgets exists (the
+delivered Worker and Server deadline fences act on effect and gate deadlines, not on typed budget values).
+
+* Scope
+Schema + accessor only: no event, Fold, reservation or exhaustion producer, runtime default, stop-policy
+change, restart loop, deadline actuator, command re-acceptance, daemon topology, or migration COMMAND (its
+absence is explicit, below). The immutability of run-spec v1 is the controlling fact.
+
+* The controlling fact: run-spec v1 is immutable (controls V-1)
+=AiOrchestrator.Spec.RunSpec.validate/1= keeps its version 1 branch unchanged (version 2 is validated separately and
+strictly, as specified below); in v1 =budgets= is REQUIRED (absent ->
+=invalid_run_spec_shape=) and is an UNTYPED map: arbitrary keys and values are accepted. Every ACCEPTED historical fixture
+spec is v1 with =budgets {max_wall_clock_s, max_attempts_default}= (the corpus also holds negatives: an array-shaped
+journal fixture and a version-99 fixture). Replacing that map with a strict schema would
+change v1 admission and therefore the hash-bound meaning of every journaled =run_spec_loaded=; it is NOT a doc-only
+versioning statement. v1 validation, input bytes, hashes and legacy behaviour stay byte-for-byte unchanged.
+
+* The chosen bounded API
+- =AiOrchestrator.Spec.Budgets= (Spec boundary) - a STANDALONE strict schema:
+  =validate(term) :: {:ok, typed} | {:error, %{clause: "budget_invalid", field, reason}}=
+  Fields (all OPTIONAL, integers): =max_attempts_default >= 1=, =restart_attempts >= 0= (0 VALID: one generation),
+  =max_wall_clock_s >= 1= (the fixture spelling), =gate_attempts >= 1=. Omission of a field = NOT CONFIGURED:
+  the typed map carries only the fields the input names; NO default is ever injected. Closed =reason= values:
+  "unknown_key" (any other key; =field "budgets"=), "null" (a known field's explicit JSON null), "not_integer"
+  (float, string, boolean, list, map), "below_minimum" (an integer under the bound). A section that is not a map,
+  including JSON null, yields =reason "not_map"=, =field "budgets"=. Unknown keys precede known-field violations;
+  known fields are checked in the order
+  max_attempts_default, restart_attempts, max_wall_clock_s, gate_attempts; the FIRST violation is reported.
+  UNKNOWN KEYS: an unknown key is arbitrary user content, never a diagnostic vocabulary - the refusal
+  is EXACTLY =%{clause: "budget_invalid", field: "budgets", reason: "unknown_key"}=, never the key, its value or
+  an inspect of either; keys of any type (binary, atom, integer, tuple) are judged without coercion and no atom is
+  ever created from input; =field= names only the four literal field strings or "budgets". Integral floats (1.0)
+  and map values are =not_integer=.
+- =RunSpec.validate/1= gains =schema_version 2= as a separately supported version: the v1 shape with exactly two
+  differences - =budgets= is OPTIONAL, and when present it must satisfy =Spec.Budgets= (a violation is the
+  =budget_invalid= refusal above, NOT =invalid_run_spec_shape=). Everything else (gates, agents, allowed_roots,
+  stop_policy, unrecognized keys) is validated exactly as v1. Unsupported versions (3, "1", "2", 1.0, nil, absent)
+  are refused exactly as before (=unsupported_schema_version= for 3 / "1" / "2" / 1.0 / 2.0 / nil,
+  =invalid_run_spec_shape= when missing; measured controls that EXCLUDE 2). THE TRANSITION, stated: version 2 was
+  refused at the baseline and is ADMITTED by the delivered code; row V-2 is that transition's witness and no
+  control asserts 2 refused. A v2 spec whose =budgets= is PRESENT but null / not a map reaches the standalone refusal through
+  RunSpec (=field "budgets"=, reason "not_map" in every case), identically through the accessor. The ="null"=
+  reason applies only to a known field inside a budget map, never the section itself.
+  Precedence in v2: schema_version -> gates -> agents -> allowed_roots -> budgets -> shape (the existing v1 order
+  with budgets inserted before the Zoi shape parse).
+- =RunSpec.budgets/1= (accessor; precondition: a map returned by =validate/1= - it authenticates nothing about a
+  run directory): ={:typed, typed}= for a v2 spec (={:typed, %{}}= when the
+  section is absent), ={:legacy, map}= for a v1 spec - a v1 map is NEVER called typed, even when its contents would
+  satisfy =Spec.Budgets= (no silent upcast). The fallback promise is LIMITED to unsupported or missing versions and
+  non-map input -> ={:error, %{clause: "unsupported_schema_version"}}=. An UNVALIDATED map carrying version 2 has
+  its =budgets= section judged by =Spec.Budgets= (a malformed section is =budget_invalid=, never typed); an
+  unvalidated map carrying version 1 whose =budgets= is not a map is =invalid_run_spec_shape=, never legacy.
+- No migration: a v1 run directory is never rewritten, upcast or reinterpreted; adopting typed
+  budgets means authoring a v2 spec for a NEW run. There is no migration command in this unit, deliberately.
+
+* Rows
+| Row | Kind | Witness |
+|-----+------+---------|
+| V-1a | control (measured) | a v1 spec with =budgets= deleted -> =invalid_run_spec_shape= |
+| V-1b | control (measured) | a v1 spec whose =budgets= is =%{"private_unknown" => "invalid"}= -> ACCEPTED, the map returned verbatim |
+| V-1c | control (measured) | =schema_version= 3 / "1" / "2" / 1.0 / 2.0 / nil -> =unsupported_schema_version=; absent -> =invalid_run_spec_shape=; version 2 deliberately excluded (see the transition) |
+| V-1d | control (measured) | the 25 =test/fixtures/**/spec.json= files each keep their MEASURED outcome (18 accept; the run_specs negatives reject with their named clauses; the journal negative is a JSON ARRAY refused by shape; one fixture carries schema_version 99); no fixture is v2. No hash list is asserted here; historical fixture bytes are unchanged |
+| B-0 | RED | =Spec.Budgets.validate/1= and =RunSpec.budgets/1= exist |
+| B-1 | RED | =Spec.Budgets=: the empty map and each single valid field accepted verbatim; =restart_attempts 0= accepted; nothing injected |
+| B-2 | RED matrix | per field: below minimum (0 for >=1 fields, -1 for restart_attempts), float, integral float, string, boolean, list, map, null -> =budget_invalid= with =field= and the closed =reason=; unknown key of any type -> =field "budgets"= with no echo and no atom created; not a map (nil, list, binary, integer, float, boolean) |
+| B-3 | RED | precedence: unknown key beats a bound violation; fields in declared order |
+| V-2 | RED | a v2 spec with typed budgets is accepted; =budgets/1= = ={:typed, map}= |
+| V-3 | RED | a v2 spec with =budgets= ABSENT is accepted; =budgets/1= = ={:typed, %{}}= |
+| V-4 | RED | a v2 spec with a =budget_invalid= section is refused with that clause (not =invalid_run_spec_shape=); with an unknown TOP-LEVEL key still =invalid_run_spec_shape= (v2 keeps v1 strictness) |
+| V-5 | RED | a v1 spec whose budgets happen to be strict-valid: =budgets/1= = ={:legacy, map}= (never typed); a v1 spec with arbitrary budgets: ={:legacy, map}= unchanged |
+| V-6 | RED | unsupported versions are refused unchanged in the presence of v2 (3, "1", "2", 1.0, 2.0, nil); V-6b the accessor's limited promise and the unvalidated v1/v2 cases |
+| V-7 | RED | precedence in v2: bad gates AND bad budgets -> the gates clause; bad allowed_roots AND bad budgets -> the roots clause |
+| V-8 | RED (preservation) | every ACCEPTED v1 fixture: the validated map equals the input map, its bytes on disk are byte-identical before and after (sha256), the accessor answers legacy; no =migrate/1= exists. Limit stated: purity is a source-review fact (no Fs seam, no I/O path in these modules), not a universal runtime guard |
+| V-9 | RED (paired) | representative v1/v2 non-budget rejections are identical: agent grammar, reserved agent, empty gates, gate argv, roots escape, top-level and nested unknown keys - so sharing schemas neither tightens v1 nor weakens v2 |

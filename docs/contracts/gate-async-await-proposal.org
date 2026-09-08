@@ -1,0 +1,306 @@
+#+TITLE: Owner-resident asynchronous AwaitGate with Server-owned deadline authority
+#+PROPERTY: status delivered contract
+
+* Implementation status
+Delivered. =AiOrchestrator.Gate.Execution.settle_await/1= (the owner-only wake primitive, D-1) ships beside
+=begin_await/2= and =resume_await/2= in =lib/ai_orchestrator/gate/execution.ex=. =AiOrchestrator.Effects= exposes
+=begin/3=, =resume/4=, =settle_await/3= and the opaque =pending/1= accessor; an =AwaitGate= enters the pending path
+only when its Runtime retains a running handle AND the selected executor exports the complete protocol
+(=begin_await/2=, =resume_await/2=, =settle_await/1=, =expire/1=), otherwise =begin/3= is ={:done, execute(...)}=.
+=AiOrchestrator.Run.Worker= keeps one =pending = %{ref, key, port}= record, routes the pending Port's records to
+=Effects.resume/4=, actuates on a correlated ={:gate_deadline, cap, gen, ref}= through =Effects.settle_await/3=,
+drops any execute while pending (D-9) and revalidates the accessor from the latest runtime before every completion.
+=AiOrchestrator.Run.Server= arms one =Run.DeadlineFence= per =AwaitGate= request from the resolved loop clock, drives
+it with a gen_statem generic timeout in bounded chunks (default cap 60_000 ms; D-8 validated in the Server BEFORE the
+fence, clause =gate_deadline_cap_invalid=; a fence refusal is =gate_deadline_fence_refused= with the fence's clause),
+sends the actuation once, and cancels/clears the gate on every exit from the outstanding operation. Rows live in
+=test/run/gate_async_await_red_test.exs= (Execution SA rows, Worker AW/LR rows, harness HC/HF controls),
+=test/run/gate_async_pending_control_test.exs= (pending-path controls) and the =:aw_server= rows of
+=test/run/run_server_foundation_red_test.exs= (Server actuation, arm failures, cancellation, callback controls).
+The former responsiveness gap is inverted in =test/run/gate_ownership_baseline_test.exs= (GB-4n: the owner answers
+a correlated settle probe while the real await is pending). The synchronous =await/2= path and =Effects.execute/3=
+are unchanged for the Host and for any executor that does not export the complete protocol.
+
+* Direction
+ONE inseparable wiring unit: an owner-resident asynchronous =AwaitGate= in the Worker plus REAL Server-owned deadline
+authority; no half-wired state in which the in-await enforcement is off the path while nothing else enforces. Every
+existing primitive (=begin_await/2=, =resume_await/2=, =expire/1=, memos, Port and Runtime ownership, retention
+staging) is reused unchanged; one new owner-only primitive is added (D-1).
+
+* Server: deadline authority
+
+** Arm once at dispatch, chunked waits, actuation once when due
+- Clock: the RESOLVED =loop.opts= clock, the same keyword the Server hands the Worker at admission; no new clock or
+  config seam.
+- At =request/3= for =op == :execute= with =kind == Effect.AwaitGate=: =identity = %{cap, gen, ref}=;
+  =fence = DeadlineFence.arm(identity, intent.deadline_unix, clock.unix_now(), clock.monotonic_ms(), cap_ms)= (the
+  due instant is fixed ONCE from the journaled wall deadline and the monotonic clock; wall time is never read
+  again); =outstanding = DeadlineFence.outstanding(identity)=; both stored in =data.gate = %{identity, kind:
+  Effect.AwaitGate, fence, outstanding}=. First chunk: =DeadlineFence.next(fence, monotonic_now)= answers
+  ={:wait, ms}= = =min(remaining, cap)= or =:due=, computed from the SAME wall + monotonic samples taken for =arm=
+  (no extra read); the Server arms the gen_statem generic timeout ={{:timeout, {:gate_deadline, ref}}, ms,
+  {:gate_chunk, identity}}= (=:due= -> 0). =arm/5= answers ={:ok, fence}= | refusal; =outstanding/1= answers
+  ={:ok, outstanding}= | refusal.
+- Every DEQUEUED matching timeout reads =clock.monotonic_ms()= and hands the canonical fence to the EXISTING pure
+  transition =DeadlineFence.observe(outstanding, {:fence, fence, now})=: ={:early, {:wait, ms}, outstanding}= means
+  an early chunk end: re-arm the same generic timeout with =ms= (monotonic only; the wall deadline is never re-read
+  FOR THIS FENCE and due is never inferred from timer delivery; other effect/journal clock reads are untouched);
+  ={:ok, outstanding', :request_expiration}= exactly once (=:running= -> =:timeout_selected=): the Server sends the
+  Worker ={:gate_deadline, cap, gen, ref}= and stores =outstanding'=; a later chunk in =:timeout_selected= is
+  ={:stale, :duplicate_timeout, _}= (counted, no second send); a refusal is a closed failure. The result path is
+  the same table: on =:effect_result= / =:effect_failed= for the ref the Server observes ={:result, identity}= ->
+  =:retain_result= (=:completed=) or =:retain_late_result= (=:completed_after_timeout=), then removes =data.gate=
+  and cancels the timer; a chunk in either completed state is =:stale=. Actual timer scheduling (rows T-1..T-6 on
+  the real Server) is kept distinct from pure/injected event controls (the DeadlineFence unit owns those).
+- Arm / clock errors (a controlled Server exit, not continued success): every clock read and every =DeadlineFence=
+  call in this path runs under the existing =closed/2=: an escape settles the Worker's latest runtime through
+  =settle_before_exit/1= (bounded, protocol-driven, the reply's cleanup is the only count authority) and exits
+  ={:run_step_failed, diagnostic + cleanup}=; =request/3= never raises unguarded. A =DeadlineFence= refusal
+  (={:error, %{clause: _}}=) is a closed failure of the same shape (=gate_deadline_fence_refused= carrying the
+  fence clause), not a crash.
+- D-8: default chunk cap 60_000 ms; a test-only =:gate_deadline_cap_ms= in the resolved =loop.opts= may LOWER it
+  (integer 1..60_000), validated under the Server closed boundary on =AwaitGate= use only and BEFORE the fence is
+  called (clause =gate_deadline_cap_invalid=: 0 and 120_000 are both refused here, never by the fence); the
+  Worker's =fence_cap_ms= / bootstrap and the durable deadline are untouched.
+- Tests: T-1 multi-chunk (AW-S2): integer-second wall deadline 600 s away with a small test-only cap
+  (=gate_deadline_cap_ms: 50=) -> repeated ={:early, wait}= chunk facts, no actuation, =:cancelled= on the result;
+  T-2 already due at dispatch (AW-S1): zero-wait timer -> one =:request_expiration= send on the first dequeue,
+  owner enters =settle_await=, owner TERM (no =:backstop=); T-3 the wall clock moved after arm (AW-S4): the due
+  instant is unchanged -> the command completes, no expiry (the old in-await loop would have expired); T-4/T-5
+  failing initial / later clock -> closed =run_step_failed= with real owner cleanup (T-4 is a CONTROL: a clock
+  fault after release already ends the Server closed; T-4s pins the exact one-sample arm reads; T-5 the later
+  mono fault); T-6 duplicate wake -> =:duplicate_timeout=, one send (direct gen_statem callback controls TC-1..TC-4
+  pin duplicate due, stale identity/op/kind/state, owner-DOWN priority and queued-after-cancel on the exported
+  callback; real scheduling in the AW-S rows).
+
+** Generic-timeout lifecycle and correlation
+- =handle_event({:timeout, {:gate_deadline, ref}}, {:gate_chunk, identity}, :driving, data)= is CORRELATED iff
+  =data.gate.identity == identity= AND =data.outstanding == %{op: :execute, ref: ref}= AND =data.gate.kind ==
+  Effect.AwaitGate=; before acting it checks owner liveness FIRST (as the reply clauses do): an observed owner DOWN
+  wins (=:failed= via the owner-loss path, timer cancelled, no send). A matching =ref= alone never authorizes: cap,
+  gen, ref, kind and the outstanding op must all match; no forged cap/gen and no non-gate execute is actuated.
+- STALE clauses (all counted through the drop accounting with a closed reason, never a send): the same event in
+  =:opening=, =:finished= or =:failed=; any identity/op/kind mismatch in =:driving=; a chunk for a =data.gate= that
+  is =nil=.
+- Cancel ={{:timeout, {:gate_deadline, ref}}, :cancel}= and clear =data.gate= on EVERY exit from the outstanding
+  gate: =:effect_result= and =:effect_failed= for that ref, owner DOWN, the =:settle= transition, and process exit
+  (statem termination discards timers). gen_statem guarantees a cancelled generic timeout is not delivered; the
+  stale clauses above remain as defence (cancellation is not a proof that arbitrary already-injected events cannot
+  appear), so an already-queued chunk or an injected wake after cancel is at worst a counted drop. The ordinary
+  =:settle= request is treated as a gate exit (defensive cancel + clear) even though a compliant result path has
+  already cleared the gate before the next step.
+
+* Effects and Worker: exact grammar
+
+** Effects entry points
+- =execute/3= byte-identical (={observation, runtime}=; raises =Interrupted= with the latest runtime). =begin/3 ::
+  {:done, {observation, runtime}} | {:pending, runtime}=: for every effect except =AwaitGate= it is ={:done,
+  execute(...)}=; for =AwaitGate= with a fully capable executor (below) it calls =begin_await/2= and maps ={:done,
+  answer}= through the EXISTING builders (=gate_exit_observation= / =gate_timeout_observation= / =GateError=), or
+  records ={:pending, runtime'}= with the entry =%{phase: :awaiting, handle, waiting, effect}=.
+- =resume(runtime, key, message, inputs) :: {:done, {observation, runtime'}}= with =key= the pending Runtime key,
+  =message= one REAL ={port, payload}= the owner dequeued, =inputs= as for =execute/3=: =resume_await/2= then the
+  same builders; never =:pending=.
+- =settle_await(runtime, key, inputs) :: {:done, {observation, runtime'}}=: the wake path (D-1 primitive below),
+  same =inputs=.
+- Runtime transition on every =:done=: the entry returns to the RETAINED =:running= handle (its =waiting= and
+  =effect= removed, phase =:running=) WITHOUT any wait or effect; =pending/1= then answers =:none=; only a
+  committed =release_terminal/2= drops a normal terminal handle, and a failure settlement (=settle/1=) empties it
+  once. Extraction and mapping are guarded with the LATEST runtime: a throw after the runtime transition carries
+  =runtime'= in =Interrupted=, never silently restores the runtime given.
+- =pending(runtime) :: {:ok, %{key: key, port: port}} | :none | {:error, %{clause: _}}=: the OPAQUE pending identity
+  accessor; the Worker never reads descriptor or Runtime internals. Malformed or multiple =:awaiting= entries are a
+  closed refusal (=:none= is never answered for a corrupt runtime; a non-Runtime answers =runtime_malformed=);
+  stale Worker metadata can neither resurrect an old operation nor route a new Port record to it (the accessor is
+  re-read from the latest runtime on every completion path).
+- =settle/1= walks every entry regardless of phase; the =:awaiting= entry is abandoned through the existing
+  =abandon_one/2= (=executor.abandon= -> =terminate= -> =next_record= staged-first, see
+  =gate-record-retention-proposal.org=).
+- Executor capability: opt-in is judged INSIDE the boundary at =AwaitGate= dispatch only, loadability- and
+  type-safe (=is_atom= + =Code.ensure_loaded?= + =function_exported?=) for the COMPLETE protocol: =begin_await/2=,
+  =resume_await/2=, =settle_await/1= and =expire/1=. Any missing function -> =begin/3= answers ={:done,
+  execute(...)}= (the actual synchronous behaviour, current enforcement). An =AwaitGate= whose Runtime has NO
+  retained entry still reaches the executor exactly as before (control AW-9e). Partially capable doubles (control
+  AW-9p) and blocking custom executors are EXCLUDED responsiveness cases.
+
+** Worker boundary and state
+- The synchronous =boundary/2= destructures ={observation, runtime}= and cannot receive =begin/3='s grammar. A
+  separate =pending_boundary/2= handles ={:done, {obs, rt}}= and ={:pending, rt}= with the SAME catch clauses
+  (Interrupted with latest runtime; raw escapes closed; =:error/:throw/:exit= all covered) and one more closed
+  case: an invalid return shape from =begin/resume/settle_await= is =closed(:error, {:invalid_effect_return,
+  kind}, [], runtime_given)= (no payload).
+- State: =pending = %{ref, key, port}= from =Effects.pending/1=. Order on every completion path (record resume,
+  deadline settle, failure): store the returned runtime and CLEAR =pending= FIRST, then answer exactly once; a
+  failure after the state update is answered once through the closed path and never abandons twice. D-9: a second
+  ={:execute, ...}= while pending (same ref, a different ref, or foreign cap/gen) is DROPPED without execution,
+  observation, abandonment or reply (replying on the same ref would end the Server and violate exactly-once); at
+  most a closed diagnostic-only =:pending_execute= fact to the test-only observer; the original pending operation
+  and its sole eventual result are preserved. The pending guard sits BEFORE the specialised Observe / Dispatch /
+  ReconcileSend clauses and the generic execute clause; each class is tested. Ordinary effect errors keep the
+  unchanged closed diagnostic with real cleanup.
+- Port clause: =pending.port == port= -> =resume/4= -> answer once; every other owned Port stays on the retention
+  staging path. ={:gate_deadline, cap, gen, ref}= with =cap/gen= matching and =pending.ref == ref= ->
+  =settle_await/3= -> answer once; otherwise a fact for the test-only gate observer (D-6: its own closed seam,
+  =gate_deadline_observer=, not =observe_fence_kinds=). ={:settle, ...}= while pending -> =Effects.settle/1=
+  abandons the entry, pending cleared, =:settled= once.
+- Accessor revalidation: before resuming or settling, =Effects.pending/1= is re-read from the latest runtime and
+  compared with the cached identity; =:none=, a mismatch or a refusal is ONE closed failure (=pending_stale= /
+  =pending_invalid=), never a routed record or a resurrected operation.
+
+** =Execution.settle_await/1= truth table (the one new owner-only primitive, D-1)
+Validates the ACTIVE descriptor (=active!/2=) AND owner evidence (=owner!/1=) first; then:
+| Evidence, in this order                               | Answer                                                   |
+|-------------------------------------------------------+----------------------------------------------------------|
+| termination memo present                              | ={:done, {:timeout, termination}}=                        |
+| =next_record(port, 0)= FIRST record (staged, then queued) is EXIT | =exit_outcome= -> ={:done, {:exit, outcome}}= |
+| FIRST record is DEAD                                  | =memo_dead= -> ={:done, {:timeout, termination}}=          |
+| FIRST record is malformed / overlong / exit_status / READY / RELEASED / overflow sentinel | ={:done, {:error, %{clause: "await_failed", record: r}}}= with =r= exactly =describe_record/1='s closed strings: ="malformed"= (unknown head), ="malformed <HEAD>"= (known head, bad fields; the overflow sentinel renders ="malformed"=), ="exited <status>"=, ="READY"= / ="RELEASED"= (a valid non-terminal head); existing failure order, no terminal search past it |
+| scan empty (=:timeout=)                               | =expire/1=: ={:timeout, t}= (memo written by expire) -> ={:done, {:timeout, t}}=; ={:error, rejection}= -> ={:done, {:error, rejection}}= (GateError; NO memo invented) |
+Descriptor finalized in every branch that ANSWERS (success or closed error); a raising mapper or evidence failure
+(=exit_outcome='s output evidence, a barrier) propagates as the existing exception BEFORE finalization, so the
+descriptor stays active and native evidence (memos, staged records) is preserved for the boundary's closed
+settlement; finalize-after-success is not equated with finalize-before-a-raising-callback. A second call on the
+finalized descriptor raises (existing =active!= rule, caught by the boundary); a recreated descriptor requires
+=begin_await/2= to create a FRESH activation (a new =ref=); the UNCHANGED old descriptor and an unknown activation
+ref are refused; a value equal to the current active descriptor IS that descriptor. Closed Port without retained
+evidence -> =owner!= raises (closed failure); closed Port with evidence follows the table. Precedence statement
+(exact): the zero-timeout scan MAY consume a Port record that was physically queued behind the wake message before
+the wake is handled; rows assert only what they witnessed (a record staged or queued BEFORE the test sent the wake
+wins), never a global cross-sender arrival order. An output-evidence failure on the exit path may RETURN a closed
+error (SA-14 pins the same clause =await/2= returns); a raising mapper is the separate boundary case.
+
+* Responsiveness evidence
+- =Run.Server.status= already answered while the Worker blocked: AW-1 is a BASELINE CONTROL, not an inversion. The
+  real inversions are GB-6 (a correlated SETTLE probe answered by the Worker while a gate is pending) and native
+  GB-4n (the real-wait witness), both in =test/run/gate_ownership_baseline_test.exs=.
+- Witnesses required and delivered: owner-loop responsiveness while pending (bounded =:sys.get_state/2= plus the
+  correlated settle probe); real native process ownership (Port connected to the Worker, OS oracle on the group);
+  REAL Server timer actuation (trace the Server's send of ={:gate_deadline, ...}= after a genuine chunk sequence
+  with the resolved clock, never an injected wake); queued-record truth (a staged/queued terminal before the wake
+  answers the exit); exact retirement/settle result; the guardian backstop distinguished from the Server trigger:
+  =Execution.termination/1= keeps =:backstop= ONLY when the guardian's reason is =deadline=, so the native
+  Server-actuation row (AW-S1) proves the actual Server send (observer =:server= fact), the owner's entry into
+  =settle_await= / =expire= (observer =:worker= fact) and a real native timeout termination WITHOUT =:backstop=; a
+  guardian-only backstop control is separate. Trace sends alone prove nothing; every helper, Port and owner is
+  registered/joined before fallible actions with bounded acknowledged ordering, no sleeps.
+- Disclosed bounds: =expire/1= (TERM then the DEAD wait up to =wait_ms=), =exit_outcome/3= (barrier, drain up to
+  1000 ms, output hashing) and =abandon/1= still block the owner for their existing bounded work; no universal
+  non-blocking claim and no "no live process" claim is made.
+
+* Observer, redaction and scope
+- Redaction: =Server.format_status= and =Worker.format_status= render data/state as =:redacted= and the
+  timeout/queue events by type only; =data.gate= and Worker =pending= are covered by that ALL-redacted rendering
+  and add no detailed status renderer (DeadlineFence plain maps have no safe renderer of their own); protocol
+  messages carry only =cap/gen/ref=.
+- Observer (D-10, test-only, =gate_deadline_observer= in the resolved opts): the fact is ={:gate_deadline, role,
+  identity_or_nil, event}= with =role= =:server= | =:worker=, =identity= = =%{cap, gen, ref}= only, and a CLOSED
+  event grammar: ={:armed, wait}= (Server, at dispatch), ={:early, wait_ms}=, =:request_expiration=,
+  =:cancelled=, =:pending= (Worker, once the pending wait is entered), =:settle_await=, =:resume=,
+  =:pending_execute=, ={:stale, reason}=; no payload, descriptor or key bytes; observer escapes contained, return
+  ignored, never an alternate timer authority; production formatting unchanged; no user-visible command or schema.
+  Assertions cover the actual OTP status/report paths (=:sys.get_status=, including timeouts), not only =Inspect=.
+- Raw process-dictionary exposure: the pending descriptor is resident in the production Worker's dictionary. Rows
+  AW-R1 (Worker format_status fields with a live handle), AW-R2 (Server format_status with an ARMED gate timer and
+  pending op), AW-R3 (monitor-correlated abnormal Worker termination with a RESIDENT pending descriptor: the
+  rendered crash report carries no run_dir bytes; the raw pre-filter event is witnessed DISTINCTLY and recorded as
+  a known limitation - the primitive pre-exists, this unit newly makes its full descriptor resident) and AW-R4 (the
+  measured raw dictionary fact) pin this. No claim that =format_status= governs the raw pre-filter event; a
+  token-only redesign is not part of this contract.
+- Outside this unit: fixtures, schema, vocabulary, the adapter fences (unchanged; see =observe-deadline.org= and
+  =delivery-deadline.org=).
+
+* Refusal domains
+- D-8 is the CONTRACT bound: an integer Server chunk cap in 1..60_000 in the resolved =loop.opts= (default 60_000),
+  judged by the Server before any fence call.
+- The pure =DeadlineFence.arm/5= validates the identity (a plain three-key map: reference cap and ref,
+  positive-integer gen; =fence_identity_invalid=), then ALL THREE supplied instants (journaled deadline, wall
+  sample, monotonic sample; =deadline_invalid=), then the cap (integer 1..4_294_967_295; =wait_cap_invalid=).
+  Because the Server prevalidates D-8 first, a live cap of 0 or 120_000 is refused as =gate_deadline_cap_invalid=
+  and never reaches the fence (AF-3a, AF-3b); AF-3c pins the primitive's own typed refusals. =deadline_invalid=
+  covers malformed clock samples as well as malformed reducer deadline data; =fence_identity_invalid= has only a
+  primitive witness, because cap/gen/ref are Server-created internals with no live injection path.
+- The closed-failure requirement for every clock/fence refusal is preserved.
+
+* Row map
+| Row    | Where | Pins                                                                                   |
+|--------+-------+----------------------------------------------------------------------------------------|
+| SA-1   | Execution | memo first: expired handle settles from the termination memo                        |
+| SA-2   | Execution | FIRST record: a real queued EXIT settles as the exit, no expire                     |
+| SA-3   | Execution | malformed ahead of a real EXIT: await_failed "malformed", no terminal search        |
+| SA-4   | Execution | exit_status ahead: await_failed "exited 7"                                          |
+| SA-5   | Execution | empty scan: expire through the owner channel, memo present, NOT backstop            |
+| SA-6   | Execution | expire error (guardian killed, Port closed, empty scan): closed error, NO memo       |
+| SA-7   | Execution | second call on the finalized descriptor raises; a fresh begin is a new activation   |
+| SA-8   | Execution | not the owner: refused                                                              |
+| SA-9..SA-14 | Execution | further descriptor / evidence / output-evidence cases; SA-14 pins the closed clause of an output-evidence failure |
+| AW-2   | Worker | pending then real EXIT resumes: one answer, pending :none                              |
+| AW-11  | Worker | GB-6 INVERTED on the native complete-capability path: settle probe answered while pending |
+| AW-3w  | Worker | injected {:gate_deadline, cap, gen, ref} actuation: one timeout answer (Server rows prove the send) |
+| AW-4/5 | Worker | real EXIT before a late wake wins; late and stale wakes are facts only                 |
+| AW-D9  | Worker | second execute while pending dropped (same ref / other ref / foreign cap-gen); original completes once |
+| AW-M3  | Worker | begin invalid / raise / throw: one closed effect_failed, pending :none, loop serves      |
+| LR-1 / LR-2 | Worker | a failure after the runtime transition (resume with a real EXIT record / settle on a wake) settles the RETURNED =:running= runtime on the retained port, never the old =:awaiting= one; the pre-state is pinned first through the pending op and the =:awaiting= entry |
+| AW-9p  | Worker control | partially capable executor keeps the synchronous path                           |
+| AW-9e  | Worker control | AwaitGate with no retained entry still reaches the executor (GB-6 shape)        |
+| AW-R1..R4 | Worker | redaction and residency (see above); AW-R1c/AW-R3c/AW-R3n/AW-R4 are the calibrating controls |
+| AW-S1  | Server | already-due: the Server actuates (observer), owner enters settle_await, owner TERM not backstop |
+| AW-S2  | Server | multi-chunk with a 50 ms cap: early chunk facts, no expiry, cancelled on the result     |
+| AW-S3  | Server | owner DOWN while awaiting: failed via the owner-loss path, timer cancelled, no send     |
+| AW-S4  | Server | wall clock moved after dispatch does not shift the due instant                          |
+| AF-1 / AF-2 | Server | a pid-scoped clock fault at the arm (wall / monotonic sample in the Server pid): the Server settles the owner itself under =closed/2= (cleanup exactly =%{attempts: 1, settled: 1, unproven: 0}= for one retained held gate), closed exit, no =:armed= fact; AF-N1 keys the same fault to the Worker (effect fails in the Worker, no AwaitGate request); AF-N2 an unrelated pid never fires |
+| AF-3a / AF-3b / AF-3c | Server / DeadlineFence | live cap 0 and 120_000 refused closed by the Server precondition; the primitive's typed refusals |
+| SC-1 / EF-1 | Server | closed-path disposal at =settle_before_exit= after a proven scheduled timer (the statem's own =Time-outs= count from =:sys.get_status= plus a genuine early chunk); a correlated =effect_failed= after a proven timer ends the Server closed with the Worker's diagnostic (STRICT term identity on both sides, closed validity judged independently), no Server settle |
+| TC-1..TC-4, TC-6, TC-6d | Server callback | duplicate due, stale identity/op/kind/state, owner-DOWN priority, queued-after-cancel; TC-6 stale =effect_failed= correlation control; TC-6d =effect_failed= with the owner's DOWN already observable -> =:failed= with the cancel action and the gate cleared |
+| T-4 (control), T-4s, T-5, T-6, TP-1, RC-1, NC-1/NC-1n/NC-2, FC-1, FD-C1, PC-1..PC-3, HC-1/HC-2, HF-1..HF-5 | Server / harness | timing, arm-sample, retry, trace-registration, fixture, drain-verdict, custodian and reaper controls |
+
+* Row inventory
+=test/run/gate_async_await_red_test.exs= holds harness controls HC-1, HC-2, HF-1, HF-1n, HF-2, HF-3, HF-3h, HF-4,
+HF-5; SA rows SA-1..SA-14 with SA-6c as a control; Worker rows AW-2, AW-11, AW-3w, AW-4f, AW-5, AW-D9, AW-M3
+(parameterised), AW-P, AW-R1, AW-R3, LR-1, LR-2 with AW-9p, AW-9e, AW-R1c, AW-R3c, AW-R3n, AW-R4, LR-C1, LR-C2 as
+controls. =test/run/run_server_foundation_red_test.exs= (tag =:aw_server=) holds AW-S1, AW-S2a, AW-S2b, AW-S4b,
+AW-S3, T-4s, T-5, TC-1..TC-4, AW-R2, AF-1, AF-2, AF-3a, AF-3b, TC-6d, SC-1, EF-1 and the controls AW-S4, T-4, T-6,
+AW-R2c, AW-R2n, PC-1, PC-2, PC-3, FC-1, NC-1, NC-1n, NC-2, RC-1, AF-3c, AF-N1, AF-N2, AF-C1, AF-C2, TC-6, TP-1,
+SC-C1, SC-C1n, EF-C1, EF-C2, FD-C1. =test/run/gate_async_pending_control_test.exs= holds the pending-path
+accessor-revalidation controls.
+
+* Harness notes that the rows depend on
+- Before-arm hold: AW-S1 and T-4s install their witnesses while the existing test-only gate barrier
+  (=opts[:barrier]=, Execution) blocks the executing Worker at =:after_go= inside the ReleaseGate effect; while it
+  holds, the Server cannot have committed or armed the AwaitGate, so a trace installed there provably precedes the
+  measured action. The hold is scoped to ONE measured attempt by explicit correlation on ={gate_run_id, attempt}=
+  from the =gate_started= data; a later =:after_go= with a different identity (the rework is a NEW gate run) is the
+  plain =:after_go_later= notification.
+- Arm snapshot: T-4s consumes the ORDERED trace stream of the exact Server (=:erlang.trace= =:call= + =:send= on the
+  resolved clock's =unix_now/0= and =monotonic_ms/0=) and counts the clock calls strictly BEFORE the Server's own
+  ={:gate_deadline, :server, id, {:armed, wait}}= send; a later chunk read follows the marker and cannot change the
+  count.
+- Callback controls (TC-1..TC-4) step the exported =handle_event/4= in the test process over a GENUINE held Server
+  snapshot copied with =:sys.get_state/1= (real config and siblings, the =Loop= whose resolved opts carry the
+  admission clock, the =:effect= Stage holding the =AwaitGate= intent, =outstanding %{op: :execute, ref}=), never a
+  hand-built map; the copy's =gate= is normalised to the fixture's map armed by =DeadlineFence.arm/5= from the
+  copy's own clock, deadline and cap (FC-1 is the control). Probes are spawned without a link under a test-local
+  custodian process that traps exits and ends every child through links when killed (PC-1..PC-3).
+- Redaction surfaces (AW-R3): RAW (the event as logged, seen by a test primary filter at the head of the chain),
+  DOWNSTREAM (what a handler receives) and RENDERED (the default handler's output) are measured separately under a
+  pinned Logger configuration; the crash event is correlated by pid and exit reason, never positional; the
+  SASL-domain crash report is stopped by the translator, so downstream and rendered only ever carry the redacted
+  terminate report.
+- Reaper: =reap/2= answers ={:gone, :natural}=, ={:gone, :forced, %{live_at_branch, kill}}= or =:unproven=;
+  =reap_all!/3= removes the directory ONLY when every settlement is proven and otherwise RETAINS it and raises
+  (HF-1..HF-5).
+- Parity verdicts (EF rows) require the diagnostic the executing Worker actually SENT to EQUAL (=`===`=) the
+  Server's DOWN reason, closed-shaped on both sides (exactly five keys, closed kind, class in
+  =Diagnostic.result_classes()=, sha256 digest, INTEGER frames and counts), with refusals naming the side.
+
+* Decisions
+D-1 (the owner-only =settle_await/1= primitive), D-6 (a dedicated =gate_deadline_observer= seam), D-8 (chunk cap
+bound, Server-validated), D-9 (a second execute while pending is dropped without reply), D-10 (observer fact shape
+and closed event grammar) are applied above. The =:armed= and =:pending= observer events exist so rows can witness
+the armed/pending state before forcing DOWN.
+
+* History
+This document began as a proposal answering a consultation on the gate deadline gap and went through several
+reviewed revisions (interface corrections, timing-witness corrections, initial-arm-failure and cancellation rows,
+latest-runtime distinction, redaction and lifetime controls, a settle/refusal coverage ruling, a callback-control
+harness rework) before implementation. Every correction is folded into the text above; the revision-by-revision
+ledger is not reproduced here.
