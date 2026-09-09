@@ -1,0 +1,76 @@
+#+title: Public console seam contract (Prepare, Query, top-level exports)
+#+date: 2026-09-09
+#+status: RED written at 2c33d78 (TEST/DOC only); map: logs/liveview-console-map/claude/B3-PUBLIC-CONSOLE-API-MAP.org rev3 (A1-A4 folded)
+
+* Obligation
+An external application (the console) reaches the core ONLY through modules the top boundary exports:
+=AiOrchestrator.Commands=, =AiOrchestrator.Prepare= and =AiOrchestrator.Query=. Reads are projection-derived; the
+verified journal prefix is used and =pending_repair= is exposed as data, never executed; nothing is written by a read.
+Mutations run through =Prepare= (the CLI's own admission rules, shared) and =Commands.invoke=; the public entry uses the
+core's built-in foreground executor (=Run.Executor=) chosen inside core (A1). Browser input never selects identity, roots,
+paths, executor, adapter, clock or id seams: the public request is exactly a verb and a run handle (=run_ref=).
+The CLI keeps its directory-based path, its error maps, exit codes, projection files and its pane-claim lifetime
+(the outcome callback runs inside the claimed operation before release, A2) byte for byte.
+
+* Public API (exact shapes; A3)
+- =Prepare.validate(run_ref, server_opts)= :: ={:ok, %{spec_hash, plan_hash}} | {:error, rejection}=
+- =Prepare.start/2=, =Prepare.resume/2=, =Prepare.cancel/2= :: ={:ok, %Prepare.Prepared{}} | {:error, rejection}= (opaque struct)
+- =Prepare.invoke(actor, prepared, server_opts)= :: ={:ok, %{events: [map()], close: :ok | {:error, map()}}} | {:error, rejection}=
+- =Prepare.supported_verbs()= == =["start", "resume", "cancel"]=; =Prepare.verb(term)= :: ={:ok, verb} | {:error, %{clause: "command_verb_unsupported"}}=
+- =Query.list_runs(server_opts)= :: ={:ok, %{runs: [%{run_ref, run_id, status, last_seq, error}], skipped_outside_root: n}} | {:error, rejection}=
+- =Query.run_summary(run_ref, server_opts)= :: ={:ok, %{run_ref, run_id, status, last_seq, summary, rendered, pending_repair}} | {:error, rejection}=
+- =Query.run_context(run_ref, server_opts)= :: ={:ok, %{run_ref, rendered, pending_repair}} | {:error, rejection}=
+- =Query.host_view(run_ref, server_opts)= :: ={:ok, host_view} | {:error, rejection}= where host_view =
+  =%{run_ref, run_id, registered, live, generation, other_registered_directories, mounted_phase, errors}= (A4: the count is
+  root-filtered =Host.lookup_run_id= entries excluding this directory; unavailable lookup -> =:unknown=; no pids/paths/handles)
+- =Query.resolve(run_ref, server_opts)= :: ={:ok, run_dir} | {:error, %{clause: run_ref_invalid | run_ref_outside_root | runs_root_missing | run_directory_missing | run_directory_invalid}}=
+- rejection :: =%{clause: String.t(), detail: map() | nil}=; closed clause set: the resolver clauses above, run_inputs_missing,
+  run_inputs_invalid, journal_missing, journal_empty, journal_invalid, pane_claim_refused, pane_release_failed, and every
+  existing command/journal clause passed through; =detail= carries the trusted tier's original reason map unchanged.
+- server_opts (server-only, never from a request): =root=, =budget_ms= (default 1_000; bounds the host observation legs
+  after resolution and the verified read, A4), plus the CLI's seam keys (fs, id, clock, dispatch, gate, pane registry, operator).
+- Private tier =Prepare.Trusted= (not exported by the top): directory-based =validate/1=, =start/2=, =resume/2=, =cancel/2=,
+  =invoke(actor, prepared, executor, outcome, fsm_opts)= where =outcome= runs while the claim is held (A2).
+
+* Rows
+Controls (hold at 2c33d78 and must keep holding), =test/contracts/public_console_seam_controls_test.exs=:
+- C-0 harness validity: a disposable consumer (test support, labelled, path dep on this repository, Boundary compiler,
+  =deps: [AiOrchestrator]=) referencing only =AiOrchestrator.version/0= compiles with =--warnings-as-errors= exit 0.
+- C-1/C-2/C-3: the consumer referencing =Journal.Writer.start_link/1=, =Run.Executor.prepare/2=, =Host.stop/2= -> WAE exit 1
+  with the specific "forbidden reference to AiOrchestrator.<...>" diagnostic (retained).
+- C-4 Policy: the =console= actor class is admitted for start/resume/cancel; an =agent= actor is refused.
+- C-5 Reader: a torn-tail journal loads with =pending_repair= set and unchanged bytes; a hard-invalid journal fails closed.
+- C-6 CLI preservation: validate/status/list/cancel with absolute and relative run directories give the exact outputs.
+- C-7 claim lifetime: the outcome (projection files) exists BEFORE release runs; a release failure after a successful
+  outcome yields the legacy exit 70 with the projections already written; release runs exactly once on the failure path.
+Feature rows (RED at 2c33d78), =test/contracts/public_console_seam_red_test.exs=:
+- F-1 exports + modules: consumer calling the public seam -> WAE exit 0. RED at 2c33d78: exit 1 because
+  =AiOrchestrator.Prepare= / =AiOrchestrator.Query= are undefined under =--warnings-as-errors= (measured); Boundary's
+  "forbidden reference to AiOrchestrator.Commands" is not reached until those modules exist, so it becomes the next RED
+  stage during the GREEN (the top export is still absent then). C-0..C-3 prove the harness itself is valid.
+- F-1b public execution: the consumer performs =Prepare.cancel= + =Prepare.invoke= with public exports only against a
+  fixture copy under a configured root and observes events + =events.head=.
+- F-2 cancel parity: =Prepare.cancel= + =invoke= on a kill9_resume copy yields the same event kinds and =Fold.summary= as the
+  CLI =cancel=, and =events.head= exists.
+- F-3 start/resume parity and input failures: identical hashes and first events; REAL missing =spec.json= and unreadable
+  =plan.json= give =run_inputs_missing= / =run_inputs_invalid= with the CLI reason map in =detail=, before any Writer decision.
+- F-5 resolver: separator, "..", ".", empty, absolute, >255 bytes, non-binary -> =run_ref_invalid=; missing root ->
+  =runs_root_missing=; absent target -> =run_directory_missing=; file target -> =run_directory_invalid=; symlink escaping the
+  root -> =run_ref_outside_root=; symlinked root accepted; nothing on disk touched.
+- F-6 discovery scope: =list_runs= returns runs under the root, counts escaping symlinks in =skipped_outside_root=, skips files.
+- F-7 unknown states: no Monitor entry -> registered false; unavailable monitor -> =:unknown= fields and =errors= entries.
+- F-8 counting and leakage: =other_registered_directories= excludes this directory (own entry present -> 0; absent -> the
+  others' count, nothing subtracted); cross-root entries not counted; the view contains no pid/reference/path.
+- F-9 pending_repair exposure: torn tail -> verified-prefix summary with =pending_repair=, bytes unchanged; hard-invalid -> =journal_invalid=.
+- F-10 projection rebuild/loss: deleting =run-summary.org=/=run-context.org= changes no Query result; Query writes nothing.
+- F-11 unsupported verbs: =Prepare.verb= for the Policy-only verbs -> =command_verb_unsupported=; =supported_verbs/0= exact.
+- F-12 public request boundary: non-binary =run_ref= -> =run_ref_invalid=; the public functions take exactly (run_ref, server_opts).
+Preservation (unchanged): the CLI test set and the verifier's escript probe; host mount and review controls; production
+escript 8/8 with the same 18 applications (no dependency added); Boundary spec in dev and test; Policy table; =Run.Executor=
+verbs; contracts suite; Reader tests.
+
+* Bounded amendments beyond extraction (explicit)
+Top export list; boundaries =Prepare= (deps + Run for the built-in executor) and =Query= (leaf); =Scope.resolve= and its five
+clauses; =supported_verbs/0= / =verb/1=; the CLI rewired onto =Prepare.Trusted= with the outcome callback inside the claim.
+Not in this slice: Fs injection for input reads; a mounted Commands adapter; live mounted cancel; any listener, session
+binding, CSRF/Origin controls, assets, Ash.
