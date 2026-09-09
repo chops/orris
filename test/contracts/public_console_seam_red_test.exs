@@ -8,7 +8,6 @@ defmodule AiOrchestrator.Contracts.PublicConsoleSeamRedTest do
   use ExUnit.Case, async: false
 
   alias AiOrchestrator.CLI
-  alias AiOrchestrator.Host.Monitor
   alias AiOrchestrator.Journal.Fold
   alias AiOrchestrator.Journal.Reader
   alias AiOrchestrator.Projection.RunContext
