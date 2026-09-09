@@ -13,7 +13,9 @@ defmodule AiOrchestrator.Host.RegistryRedTest do
 
   Test seams (in-VM only, pinned by the contract): the executor context key `:host_monitor`
   (a monitor pid or name, stripped before delegation) and the status/lookup options
-  `monitor:` and `timeout:` (default 1_000 ms). Nothing here changes admission: the monitor is a
+  `monitor:`, `ownership:` (the `Journal.Ownership` server consulted, default the Application
+  arbiter, which is never suspended here) and `timeout:` (the TOTAL budget for the monitor
+  lookup plus the ownership lookup, default 1_000 ms). Nothing here changes admission: the monitor is a
   hint, and the clauses the rows compare are the existing authorities.
   """
 
@@ -31,6 +33,8 @@ defmodule AiOrchestrator.Host.RegistryRedTest do
   @now %Moment{wall_ts: "2026-09-09T06:00:00Z", unix: 1_788_933_600}
   @owned [:event_sink, :run_dir, :run_lock_path, :tail_repair, :requested_by, :cancel_reason, :recovery_reason]
   @deadline 15_000
+  # scheduler slack allowed on top of a requested status budget
+  @slack 500
 
   # ---- late-bound receivers: the interface is absent on the unchanged source ----
   defp host, do: Module.concat(["AiOrchestrator", "Host"])
@@ -42,10 +46,33 @@ defmodule AiOrchestrator.Host.RegistryRedTest do
       assert Code.ensure_loaded?(mod), "#{inspect(mod)} does not exist"
     end
 
-    assert function_exported?(host(), :status, 2), "AiOrchestrator.Host.status/2 does not exist"
-    assert function_exported?(host(), :lookup_run_id, 2), "AiOrchestrator.Host.lookup_run_id/2 does not exist"
-    assert function_exported?(host_executor(), :execute, 2), "AiOrchestrator.Host.Executor.execute/2 does not exist"
-    assert function_exported?(monitor_mod(), :start_link, 1), "AiOrchestrator.Host.Monitor.start_link/1 does not exist"
+    for {mod, fun, arity} <- [
+          {host(), :status, 2},
+          {host(), :lookup_run_id, 2},
+          {host(), :collision, 2},
+          {host_executor(), :execute, 2},
+          {monitor_mod(), :start_link, 1},
+          {monitor_mod(), :register, 2},
+          {monitor_mod(), :unregister, 2}
+        ] do
+      assert function_exported?(mod, fun, arity), "#{inspect(mod)}.#{fun}/#{arity} does not exist"
+    end
+  end
+
+  # a caller-owned holder process that ExUnit stops whether or not the row's assertions succeed
+  # (temporary, so an intentional kill is not restarted under a fresh pid)
+  defp holder! do
+    start_supervised!(%{
+      id: make_ref(),
+      restart: :temporary,
+      start: {Task, :start_link, [fn -> Process.sleep(:infinity) end]}
+    })
+  end
+
+  defp kill_join!(pid) do
+    ref = Process.monitor(pid)
+    Process.exit(pid, :kill)
+    assert_receive {:DOWN, ^ref, :process, ^pid, _}, @deadline
   end
 
   # a test-owned monitor instance (never the Application child), named so a pid or name can be injected
@@ -196,18 +223,15 @@ defmodule AiOrchestrator.Host.RegistryRedTest do
     test "H-1d a stale DOWN or unregister from an older owner never erases the replacement for the same directory",
          %{dir: dir} do
       {monitor, _} = start_monitor!()
-      old = spawn(fn -> receive do: (:stop -> :ok) end)
-      new = spawn(fn -> receive do: (:stop -> :ok) end)
+      old = holder!()
+      new = holder!()
       :ok = monitor_mod().register(monitor, full_record(dir, old, 1))
       :ok = monitor_mod().register(monitor, full_record(dir, new, 2))
       :ok = monitor_mod().unregister(monitor, full_record(dir, old, 1))
-      send(old, :stop)
-      ref = Process.monitor(old)
-      assert_receive {:DOWN, ^ref, :process, ^old, _}, @deadline
+      kill_join!(old)
       # the entry is the replacement's; whether status reports it live depends on Ownership (no writer here)
       assert {:ok, entries} = host().lookup_run_id("run_host_0001", monitor: monitor)
       assert [%{owner: ^new, generation: 2}] = Enum.filter(entries, &(&1.run_dir == Path.expand(dir)))
-      send(new, :stop)
     end
   end
 
@@ -279,13 +303,12 @@ defmodule AiOrchestrator.Host.RegistryRedTest do
       {monitor, _} = start_monitor!()
       seed_journal!(dir)
       {:ok, writer, _} = open(dir)
-      holder = spawn(fn -> receive do: (:stop -> :ok) end)
+      holder = holder!()
       :ok = monitor_mod().register(monitor, full_record(dir, holder, 1, writer))
       assert {:ok, %{registered: true, live: true, generation: 1}} = host().status(dir, monitor: monitor)
       :ok = monitor_mod().register(monitor, full_record(dir, holder, 99, writer))
       assert {:ok, %{clause: "host_registry_inconsistent", generation: 99} = diag} = host().status(dir, monitor: monitor)
       refute Enum.any?(Map.values(diag), &(is_binary(&1) and String.contains?(&1, dir))), "no path bytes in diagnostics"
-      send(holder, :stop)
       :ok = Writer.close(writer)
     end
   end
@@ -297,42 +320,83 @@ defmodule AiOrchestrator.Host.RegistryRedTest do
       assert {:error, %{clause: "host_monitor_unavailable"}} = host().status(dir, monitor: :host_monitor_never_started)
     end
 
-    test "H-6d stalled monitor: the command is not blocked and status is bounded by the outer deadline", %{dir: dir} do
+    test "H-6d stalled monitor: the command is not blocked and status is bounded by the requested budget", %{dir: dir} do
       require_host!()
-      stalled = start_supervised!(%{id: :stalled, start: {Task, :start_link, [fn -> Process.sleep(:infinity) end]}})
+      stalled = holder!()
       started = System.monotonic_time(:millisecond)
       compare_routes!(dir, "stalled", host_monitor: stalled)
-      task = Task.async(fn -> host().status(dir, monitor: stalled, timeout: 200) end)
-      assert {:error, %{clause: "host_monitor_unavailable"}} = Task.await(task, 2_000)
-      assert System.monotonic_time(:millisecond) - started < @deadline
+      assert System.monotonic_time(:millisecond) - started < @deadline, "the held command was blocked by the monitor"
+
+      assert {{:error, %{clause: "host_monitor_unavailable"}}, elapsed} =
+               timed(fn -> host().status(dir, monitor: stalled, timeout: 300) end)
+
+      assert elapsed < 300 + @slack, "status exceeded its total budget: #{elapsed} ms"
+      # the pinned default budget: no timeout option means 1_000 ms, neither shorter nor unbounded
+      assert {{:error, %{clause: "host_monitor_unavailable"}}, elapsed} =
+               timed(fn -> host().status(dir, monitor: stalled) end)
+
+      assert elapsed >= 1_000 and elapsed < 1_000 + @slack, "default budget is 1_000 ms, measured #{elapsed} ms"
+      # timeout validity is closed, never a crash or an unbounded wait
+      for bad <- [0, -1, :infinity, "300", 1.5] do
+        assert {:error, %{clause: "host_status_timeout_invalid"}} = host().status(dir, monitor: stalled, timeout: bad)
+      end
     end
 
-    test "H-6b/H-6c the user barrier keeps its return and escape semantics on both routes", %{dir: dir} do
+    test "H-6e stalled ownership lookup behind a valid registered record: one total budget, closed unavailable",
+         %{dir: dir} do
+      {monitor, _} = start_monitor!()
+      seed_journal!(dir)
+      {:ok, writer, _} = open(dir)
+      holder = holder!()
+      :ok = monitor_mod().register(monitor, full_record(dir, holder, 1, writer))
+      # responsive control: the Application arbiter answers and the record is confirmed live
+      assert {{:ok, %{registered: true, live: true, generation: 1}}, elapsed} =
+               timed(fn -> host().status(dir, monitor: monitor, ownership: Ownership, timeout: 300) end)
+
+      assert elapsed < 300 + @slack
+      # the ownership leg stalls (a private process that never answers; the global arbiter is untouched)
+      stalled = holder!()
+
+      assert {{:error, %{clause: "host_ownership_unavailable"}}, elapsed} =
+               timed(fn -> host().status(dir, monitor: monitor, ownership: stalled, timeout: 300) end)
+
+      assert elapsed < 300 + @slack, "monitor plus ownership exceeded the single budget: #{elapsed} ms"
+      assert {:ok, %{state: :live, generation: 1}} = Ownership.status(dir), "the global arbiter kept answering"
+      :ok = Writer.close(writer)
+    end
+
+    test "H-6b/H-6c the user barrier keeps its return and escape semantics on both routes: result, journal, invocations",
+         %{dir: dir} do
       {monitor, _} = start_monitor!()
 
-      for {tag, barrier} <- [
-            {"non_ok", fn _, _ -> :not_ok end},
-            {"raise", fn _, _ -> raise "boom" end},
-            {"throw", fn _, _ -> throw(:boom) end},
-            {"exit", fn _, _ -> exit(:boom) end}
-          ] do
-        d1 = dir <> "_r_" <> tag
-        d2 = dir <> "_h_" <> tag
-        File.mkdir_p!(d1)
-        File.mkdir_p!(d2)
+      for {tag, outcome} <- [{"non_ok", :not_ok}, {"raise", :raise}, {"throw", :throw}, {"exit", :exit}] do
+        d = dir <> "_" <> tag
+        on_exit(fn -> File.rm_rf!(d) end)
+        test_pid = self()
 
-        on_exit(fn ->
-          File.rm_rf!(d1)
-          File.rm_rf!(d2)
-        end)
+        escape = fn route ->
+          fn label, _owned ->
+            send(test_pid, {:inv, route, label})
 
-        H.reset_seams()
-        via_run = invoke("start", d1, RunExecutor, barrier, [])
-        H.reset_seams()
-        via_host = invoke("start", d2, host_executor(), barrier, host_monitor: monitor)
+            case outcome do
+              :not_ok -> :not_ok
+              :raise -> raise "boom"
+              :throw -> throw(:boom)
+              :exit -> exit(:boom)
+            end
+          end
+        end
+
+        {via_run, journal_run} = escape_route(d, RunExecutor, escape.(:run), [])
+        {via_host, journal_host} = escape_route(d, host_executor(), escape.(:host), host_monitor: monitor)
         assert {:error, %{clause: "run_executor_down"}} = via_run
         assert via_run == via_host, "#{tag}: escape/return semantics diverged"
-        assert {:ok, %{registered: false}} = host().status(d2, monitor: monitor)
+        assert journal_run == journal_host, "#{tag}: journal bytes diverged"
+        {inv_run, inv_host} = {invocations(:run), invocations(:host)}
+        assert inv_run == inv_host, "#{tag}: invocation sequence diverged"
+        assert [:handoff_received] == inv_run, "#{tag}: the user barrier is invoked once and the escape ends the run"
+
+        assert {:ok, %{registered: false}} = host().status(d, monitor: monitor)
       end
     end
   end
@@ -371,50 +435,124 @@ defmodule AiOrchestrator.Host.RegistryRedTest do
   end
 
   # every variant runs the same start through both routes at the SAME directory path (the journal embeds
-  # the run directory, so a different path would change every chained line hash): the first route's
-  # result and journal bytes are captured, the directory is recreated empty, then the second route runs
-  # with the seams reset; result term, journal bytes, barrier payloads and observed cleanup must match
+  # the run directory, so a different path would change every chained line hash): each route runs in a
+  # task, the barrier callback ships its FULL payload plus in-callback evidence (self(), the supervisor's
+  # descendants) and waits for the test's ack, the test validates every identity against the owner's
+  # own trace message and the supervision tree, monitors every owned process, and after the command
+  # returns joins the DOWN of each of them; the two routes must then agree on the result term, the
+  # journal bytes and the normalized per-label payload sequence (pids differ between runs by nature)
   defp compare_routes!(base_dir, variant, extra_for_host) do
     dir = base_dir <> "_" <> variant
     on_exit(fn -> File.rm_rf!(dir) end)
-    test_pid = self()
-
-    capture = fn tag ->
-      fn label, owned ->
-        send(test_pid, {:cap, tag, label, Map.keys(owned)})
-        :ok
-      end
-    end
-
-    File.rm_rf!(dir)
-    File.mkdir_p!(dir)
-    H.reset_seams()
-    via_run = invoke("start", dir, RunExecutor, capture.(:run), [])
-    journal_run = journal(dir)
-    assert :none = Ownership.status(dir)
-
-    File.rm_rf!(dir)
-    File.mkdir_p!(dir)
-    H.reset_seams()
-    via_host = invoke("start", dir, host_executor(), capture.(:host), extra_for_host)
-    journal_host = journal(dir)
-    assert :none = Ownership.status(dir)
-
-    assert via_run == via_host, "#{variant}: result differs"
-    assert journal_run == journal_host, "#{variant}: journal bytes differ"
-    assert captured(:run) == captured(:host), "#{variant}: barrier labels/payload differ"
-    refute_receive {:cap, _, _, _}, 100
+    run = route!(dir, :run, RunExecutor, [])
+    host = route!(dir, :host, host_executor(), extra_for_host)
+    assert run.result == host.result, "#{variant}: result differs"
+    assert run.journal == host.journal, "#{variant}: journal bytes differ"
+    assert run.payloads == host.payloads, "#{variant}: normalized barrier label/payload sequence differs"
   end
 
-  # the two barrier invocations of one route, in order: {label, payload keys}
-  defp captured(tag) do
-    for _ <- 1..2 do
+  @labels [:handoff_received, :subtree_started]
+
+  defp route!(dir, tag, executor, extra) do
+    File.rm_rf!(dir)
+    File.mkdir_p!(dir)
+    H.reset_seams()
+    test_pid = self()
+
+    capture = fn label, owned ->
+      ref = make_ref()
+      descendants = descendants(owned[:supervisor])
+      send(test_pid, {:cap, tag, label, owned, %{caller: self(), descendants: descendants, ref: ref}})
+
       receive do
-        {:cap, ^tag, label, keys} -> {label, keys}
+        {:cap_ack, ^ref} -> :ok
       after
-        @deadline -> :timeout
+        @deadline -> exit({:capture_never_acknowledged, tag, label})
       end
     end
+
+    task = start_async("start", dir, executor, capture, extra)
+    assert_receive {:run_executor_started, owner, supervisor}, @deadline
+
+    {payloads, monitored} =
+      Enum.map_reduce(@labels, %{}, fn label, acc -> capture!(tag, label, owner, supervisor, acc) end)
+
+    result = finish!(task)
+    for {pid, ref} <- monitored, do: assert_receive({:DOWN, ^ref, :process, ^pid, _}, @deadline)
+    refute_receive {:cap, ^tag, _, _, _}, 100
+    assert :none = Ownership.status(dir)
+    %{result: result, journal: journal(dir), payloads: payloads}
+  end
+
+  # one expected label, in order: the payload is validated value by value against independent evidence
+  # (the owner's trace, the calling process, the supervision tree) and normalized to roles for the
+  # cross-route comparison; every owned pid is monitored so its DOWN can be joined after the command
+  defp capture!(tag, label, owner, supervisor, monitored) do
+    assert_receive {:cap, ^tag, ^label, owned, evidence}, @deadline
+    assert evidence.caller == owner, "#{label}: the barrier must run in the owner"
+    assert owned[:owner] == owner, "#{label}: owner identity corrupted"
+    assert owned[:supervisor] == supervisor, "#{label}: supervisor identity corrupted"
+
+    for role <- [:server, :writer, :worker] do
+      pid = owned[role]
+
+      assert is_pid(pid) and pid in evidence.descendants,
+             "#{label}: #{role} is not a live descendant of the run supervisor"
+    end
+
+    dead = for {role, value} <- owned, not (is_pid(value) and Process.alive?(value)), do: {role, value}
+    assert dead == [], "#{label}: payload values are not live pids: #{inspect(dead)}"
+
+    send(evidence.caller, {:cap_ack, evidence.ref})
+
+    monitored =
+      Enum.reduce(Map.values(owned), monitored, fn pid, acc ->
+        Map.put_new_lazy(acc, pid, fn -> Process.monitor(pid) end)
+      end)
+
+    {{label, owned |> Map.keys() |> Enum.sort() |> Map.new(&{&1, :verified_pid})}, monitored}
+  end
+
+  # pids of every process under the run supervisor (the Run.Supervisor children and, one level down, the
+  # Work.Supervisor's worker), read at the callback boundary; only supervisor-typed children are walked,
+  # because an unexpected which_children call would crash a worker gen_statem and with it the tree
+  defp descendants(sup) when is_pid(sup) do
+    children = Supervisor.which_children(sup)
+    direct = for {_, pid, _, _} <- children, is_pid(pid), do: pid
+
+    nested =
+      for {_, pid, :supervisor, _} <- children,
+          is_pid(pid),
+          {_, child, _, _} <- Supervisor.which_children(pid),
+          is_pid(child),
+          do: child
+
+    direct ++ nested
+  end
+
+  defp descendants(_), do: []
+
+  # an escape row runs one route at the path (recreated empty) and returns the result with the journal bytes
+  defp escape_route(dir, executor, barrier, extra) do
+    File.rm_rf!(dir)
+    File.mkdir_p!(dir)
+    H.reset_seams()
+    result = invoke("start", dir, executor, barrier, extra)
+    {result, journal(dir)}
+  end
+
+  defp invocations(route) do
+    receive do
+      {:inv, ^route, label} -> [label | invocations(route)]
+    after
+      100 -> []
+    end
+  end
+
+  defp timed(fun) do
+    started = System.monotonic_time(:millisecond)
+    result = fun.()
+    {result, System.monotonic_time(:millisecond) - started}
   end
 
   # a complete, otherwise valid identity record (all identities present) for direct monitor rows

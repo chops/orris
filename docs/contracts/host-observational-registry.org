@@ -39,14 +39,19 @@ the CLI depend on =Host=; =Run= never depends on =Host=. Nothing under =lib/ai_o
   same inputs. In-VM seam: the executor context key =:host_monitor= (pid or registered name, default the
   Application instance) selects the monitor and is stripped before delegation; it is not a command argument.
 - =AiOrchestrator.Host.status/2= :: =status(run_dir, opts)= consults the monitor with a bounded call
-  (=monitor:= pid or name, default the Application instance; =timeout:= ms, default 1_000) and then
-  =Journal.Ownership.status/2= under the same bound. Answers: ={:ok, %{registered: true, live: true,
+  (=monitor:= pid or name, default the Application instance; =ownership:= the =Journal.Ownership= server
+  consulted, default the Application arbiter; =timeout:= a positive integer of ms, default 1_000, the
+  TOTAL budget for the monitor lookup plus the ownership lookup; any other =timeout= value answers
+  ={:error, %{clause: "host_status_timeout_invalid"}}=) and then =Journal.Ownership.status/2= with the
+  remainder of that same budget. Answers: ={:ok, %{registered: true, live: true,
   generation, owner, supervisor, server, writer, worker}}= when an entry exists and =Ownership= confirms the
   same generation and =:live=; ={:ok, %{registered: false}}= when no entry exists — an UNKNOWN, carrying no
   =live= key, never a claim that no run is live (R7); ={:ok, %{clause: "host_registry_inconsistent",
   generation}}= when the entry's generation disagrees with =Ownership= (the entry is then ignored for
   everything else); ={:error, %{clause: "host_monitor_unavailable"}}= when the monitor is absent, crashed,
-  renamed or does not answer within the bound, or when =Ownership= cannot answer. =lookup_run_id/2= returns
+  renamed or does not answer within the budget; ={:error, %{clause: "host_ownership_unavailable"}}= when the
+  monitor answered but the ownership lookup does not answer within what remains of the budget. The whole
+  operation returns within =timeout= plus scheduler slack; it never blocks the caller beyond it. =lookup_run_id/2= returns
   every entry for a run id (a diagnostic list, never an admission input); =collision/2= reports
   ={:ok, %{clause: "host_registry_collision", count}}= when more than one directory carries the id.
 - Diagnostics are closed maps naming only clause and generation: no run directory bytes, tokens, lock paths,
@@ -81,9 +86,14 @@ older owner never erases the replacement; H-2 duplicate start/resume/cancel agai
 =Host.Executor= produce exactly the =Run.Executor= results, journal bytes and generation unchanged; H-2b
 absence proves nothing; H-5 two HELD concurrent runs under one monitor: two entries, exact identities,
 collision diagnosed; H-7 complete record with a disagreeing generation -> inconsistent, matching generation ->
-live; H-6a/H-6d absent and stalled monitors: result, journal, barrier labels/payload and cleanup identical to
-=Run.Executor=, status bounded; H-6b/H-6c non-=:ok= return, raise, throw and exit of the user barrier behave
-identically on both routes; H-9a the monitor proven registered then killed (DOWN joined) mid-run: the run
+live; H-6a/H-6d absent and stalled monitors: result term, journal bytes and the per-label FULL barrier payload
+(every identity validated at the callback boundary against the owner's trace and the supervision tree, then
+normalized to roles) identical to =Run.Executor=, every owned process's DOWN joined after the command, status
+bounded by the requested budget with the 1_000 ms default and timeout validity pinned; H-6e a valid
+registered record with a stalled ownership lookup: closed =host_ownership_unavailable= within the single
+budget, responsive control live, the global arbiter untouched; H-6b/H-6c non-=:ok= return, raise, throw and
+exit of the user barrier: identical result, identical journal bytes and identical invocation sequence
+(exactly one =:handoff_received= call, the escape ends the run) on both routes; H-9a the monitor proven registered then killed (DOWN joined) mid-run: the run
 completes; H-9c the Server killed mid-run: closed =run_server_down= unchanged and the entry removed on the
 owner's DOWN.
 
