@@ -1,0 +1,146 @@
+#+TITLE: Host-mounted runs (slice 1b): one responsive owner per mounted run tree
+#+PROPERTY: status interface contract (RED; no implementation yet); supersedes every contradicting statement of the private MOUNT-MAP revisions
+#+PROPERTY: base f86f1f4ffab54827f4284d241dc308e370ce3f80
+
+* Implementation status
+Not implemented. This document, =test/host/host_mount_baseline_test.exs= (facts that hold on the current source) and
+=test/host/host_mount_red_test.exs= (acceptance rows that fail on the missing interface or on the missing arbiter
+passthrough, each attributed) define the slice. Nothing under =lib/= changes in this unit. The four Run paths named
+in section 6 are within standing authority (ratified NS-04/NS-05) once this contract and its RED are reviewed.
+
+* Scope
+One BEAM. A mounted run is a run subtree that is an Application-root descendant, owned by ONE responsive process,
+started and stopped through the host, whose result is read by any caller. Foreground runs (=Run.Executor.execute/2=,
+=Host.Executor.execute/2=, the CLI) are unchanged: same spawn-unlinked owner, caller monitor, =:caller_gone=,
+owner-resident barrier and admission/cleanup contracts. Cross-process views, endpoints, daemon mode, restart policy,
+live cancellation of a mounted run, projection index and packaging stay outside.
+
+* Supervision layout
+=AiOrchestrator.Application.children/0= = =[Journal.Ownership, Host.Supervisor, Host.Monitor]=, =rest_for_one=.
+- =Host.Supervisor= :: a DynamicSupervisor (=start_link(name: name | nil)=); children =Host.RunOwner=, =restart: :temporary=,
+  =shutdown: child_shutdown_ms= (default 60_000; a seam). It terminates children concurrently (one timer per shutdown value).
+- =Host.Monitor= is LAST: its restart restarts no run tree; it reconciles from the tree (section 5).
+- Ownership loss cascades every mounted tree through the owners' =terminate/3=.
+
+* The owner: =AiOrchestrator.Host.RunOwner= (a =:gen_statem=)
+- It is the linked parent of =Run.Supervisor= (it calls =Run.Supervisor.start_link= from its =:starting= state). =init/1=
+  returns BEFORE that call: the supervisor's start acknowledgment never waits for the run.
+- Identities are held in the owner's own data only: the supervisor/server/work/writer from =which_children= after start,
+  the worker from the =run_worker_registered= handoff EVENT. There are no progress messages and no second holder.
+- The user barrier of a MOUNTED run executes in a linked+monitored helper process; its result is an event. Inside the
+  barrier =self()= is the helper and =payload.owner= is the owner. This is a mounted-route semantic, stated here;
+  the foreground barrier stays owner-resident (H-6a).
+- The PARENT's EXIT reaches =terminate/3= (OTP intercepts it; it is never an event) in every state; =terminate/3= runs the
+  teardown protocol of section 4 and answers waiters recorded before it began. A =:kill= collapses the subtree by links.
+- States: =:starting= (the only synchronous phase: while =Run.Supervisor.start_link= is blocked the owner is NOT responsive;
+  the gap ends when the Writer's acquire returns or fails, bounded by the Writer's acquire budget) -> =:handoff= (state
+  timeout = handoff budget) -> =:barrier_handoff= -> =:barrier_subtree= -> =:awaiting= -> =:terminal=; teardown is entered
+  from any state by =terminate/3=, an owner failure, or the subtree's EXIT (=run_server_down=).
+- Privacy: =format_status= hides config, owned map and result; helper crashes are reported without run directory,
+  tokens or config bytes (canary rows).
+
+* Host API (in-VM; =host:= seams =%{supervisor, monitor, ownership}= default the Application instances)
+- =Host.mount(command, context, opts) :: {:ok, handle} | {:error, closed}= — validation = =Run.Executor.prepare/2=
+  (the existing order, without starting); then =DynamicSupervisor.start_child=. Returns as soon as the child is started
+  (state =:starting=). =handle = %{run_dir, run_id, owner, ref}=.
+- =Host.ready(handle, timeout) :: {:ok, %{generation, supervisor, server, writer, worker}} | {:error, closed}= — WAIT-ONLY:
+  answers when the =:subtree_started= barrier RESULT is =:ok= (the owner entered =:awaiting=), or an earlier closed
+  refusal/owner failure; ={:error, %{clause: "ready_timeout"}}= leaves the tree untouched. Ready proves the barrier
+  returned; it does NOT prove registry visibility (registration is an asynchronous, fail-soft cast).
+- =Host.await(handle, timeout)= — the =Run.Executor= result shape, cached in =:terminal=. Waiters: each recorded with a
+  monitor on the caller AND a deadline = the caller's timeout; expiry is TIMER-DRIVEN (a =state_timeout=/timer of the
+  owner), independent of any later event: a live caller whose call timed out is removed within its deadline; a dead
+  caller is removed on DOWN; a valid waiter stays until the result. ={:error, %{clause: "await_timeout"}}= never cancels.
+  An await that reaches an owner already in =terminate/3= or gone answers ={:error, %{clause: "run_host_owner_down"}}=.
+- =Host.stop(handle, timeout \\ child_shutdown_ms)= — SYNCHRONOUS, never an unconditional =:ok=. Active owner: records
+  the stopper as a waiter (bounded registration: a =:stop= call is answered by the owner from any responsive state; a
+  non-responsive owner in =:starting= is stopped through =terminate_child=, so the stopper never blocks on an await),
+  then =DynamicSupervisor.terminate_child=; answers ={:ok, :stopped}= when teardown completed with every owned DOWN
+  observed, ={:error, %{clause: "run_executor_teardown_incomplete", survivors: n}}= when a join was not observed,
+  ={:error, %{clause: "run_host_stop_unproven"}}= when the child shutdown expired (the supervisor killed the owner; no
+  descendant/disk evidence is claimed: the caller observes =RunLock.owner= and =Ownership.status= itself). After an
+  active stop the owner is GONE: a second active-stop call answers =run_host_owner_down=. Stop on a retained
+  =:terminal= owner is idempotent =:ok= and preserves the cached result. Stop journals nothing.
+- =Host.mounted(host, timeout)= — ALL blocking work (the =which_children= discovery and every per-owner status) runs inside
+  one monotonic overall deadline in a task the caller monitors; owners that do not answer are listed with
+  =phase: :unknown=; a supervisor that does not answer yields ={:error, %{clause: "host_supervisor_unavailable"}}=.
+- =Host.census(opts) :: {:ok, %{census: :pending | :complete, skipped: n}}= — a NEW function; every slice-1 status,
+  lookup and collision shape is unchanged (parity preserved, no additive field on them).
+
+* 4. Result lifetime, teardown, budgets
+- Active tree ends at the result (Server reply -> observed close for ={:ok, map}= only -> teardown) or at =terminate/3=.
+  At that instant the owner unregisters its Monitor record explicitly (DOWN cleanup remains a backstop), stores the
+  result, enters =:terminal=.
+- Retention: =retention_ms= (default 60_000; seam): every await answers the same value; then the owner exits =:normal=
+  and later calls answer =run_host_owner_down=. A parent shutdown ends retention at once. No second result store.
+- Teardown protocol (one implementation, shared with the foreground owner after the Run refactor): kill+join the
+  helper (its join has its own budget; an unobserved helper join is a survivor, never silently =:ok=); orderly
+  =Supervisor.stop= (stop budget); kill every still-live owned pid; join each (join budget); then the late-identity
+  sweep: because the Server (the only producer of =run_worker_registered=) is dead after the orderly stop/kill, one
+  mailbox sweep after the joins is complete and finite; a swept identity is killed and joined the same way.
+  Survivors -> =run_executor_teardown_incomplete=; an unanswered Writer close for an ok result -> =close_unproven=.
+- Budgets (seams with production defaults): close 15_000, stop 15_000, join 5_000 per pid, handoff 5_000, helper join
+  1_000; post-phase teardown worst case = 15 + 15 + 5 x 5 + 1 = 56 s; =child_shutdown_ms= 60_000. Whole-stop deadline =
+  =child_shutdown_ms=; a never-released startup (the Writer never returns from acquire) is stopped by the supervisor's
+  kill at that deadline and reported =run_host_stop_unproven=. Whole-start bound: none is promised beyond the Writer's
+  acquire budget; =ready= is wait-only.
+
+* 5. Monitor census and discovery
+- On init the Monitor spawns a monitored census Task and returns; the Task performs the =which_children= discovery and
+  sends asynchronous census requests in batches of 64; the whole census (discovery included) is bounded by
+  =census_timeout= (1_000 ms) measured from init; at the deadline the Task is killed and =census= is =:complete= with
+  =skipped= = owners not answered. Partial knowledge stays partial: absence remains unknown (R7).
+- Census replies are applied as registrations under the registration rules AND a terminal rule: a reply naming a run
+  directory whose owner reports =:terminal= (the tree already torn down) is dropped, so a retained terminal owner never
+  resurrects an unregistered entry; a live different owner or a higher generation is never displaced.
+- Owners never wait on the Monitor (registration is a cast).
+
+* 6. Injected arbiter (the passthrough that does not exist yet; contract + RED now, code after review)
+Today =Run.Supervisor= gives the Writer only =fs=/=clock= and =Run.Server= discovers through the global
+=Journal.Ownership=, so an injected arbiter cannot reach a run subtree. The contract requires: =config.opts[:ownership]=
+(=[server: name | pid, acquire_timeout: ms]=) reaches the Writer (=writer_opts=) and the Server's discovery, and the
+same arbiter is used by =Host.Executor='s registration generation lookup and by =Host.status= when the caller passes
+=ownership:=. Bounded Run paths: =run/executor.ex= (=prepare/2=), =run/executor/owner.ex= (shared exported helpers),
+=run/supervisor.ex= and =run/server.ex= (passthrough). RED rows RP-1..RP-3 fail today on BEHAVIOUR (the global arbiter
+receives the registration), not on a missing module: that attribution is part of the rows.
+
+* 7. Lock guarantees (scoped; measured with real Writer/Recovery.acquire, never with =Recovery.evidence=, which reads
+  only the journal)
+- G-lock-1 (responsive): after =Host.stop= or the Ownership-loss cascade with a responsive Writer and FS: =Writer.close=
+  /=terminate= released the disk lock (=RunLock.owner= =:none=), the arbiter record is retired (=:none=), and a real
+  =Writer.open= / =Run.Recovery.acquire= on the directory succeeds and is closed with =:ok=.
+- G-lock-2 (failure injection): a failed lock-release leg (=FaultFs= on the tombstone link) answers =close_failed= naming
+  the =lock= leg; the arbiter record is RETAINED (it is the only authority that can reclaim); a killed Writer (no
+  terminate) leaves the lock and the record; the next real acquire under the same arbiter reclaims or answers the
+  arbiter's own closed =reclaim_failed=; under a fresh arbiter the same-OS-process holder is refused =run_locked=. The
+  rows assert the exact clause the path produces and that no second Writer ever opened; they never relax a failed
+  observation into success.
+
+* 8. Rows
+Baseline (=host_mount_baseline_test.exs=, pass now): MB-1 OTP delivers the parent's EXIT to =terminate/3= of a gen_statem,
+never as an event; MB-2 a trapped linked plain process keeps running with the parent's EXIT queued behind an unmatched
+receive; MB-3 a =:sys=-suspended GenServer still terminates on its parent's exit; MB-4 DynamicSupervisor terminates
+children concurrently; MB-5 =Run.Recovery.evidence/2= reads the journal only (does not acquire or observe the lock);
+MB-6 today =Run.Supervisor= registers the Writer with the GLOBAL arbiter even when =opts[:ownership]= names a private one
+(the fact RP-1 turns into a requirement).
+RED (=host_mount_red_test.exs=): MR-1 layout and descendants; MR-2 start-ack vs ready (two mounts, one stalled;
+=ready_timeout= leaves the tree untouched); MR-3 ready follows the barrier result (synchronization witness); MR-4
+helper identity and registry owner (visibility awaited with a bounded witness, never assumed); MR-5 parent shutdown at
+each held barrier and while awaiting (Server suspended): helper and every owned DOWN, =Ownership= =:none= AND
+=RunLock.owner= =:none=, pre-queued waiter =run_host_stopped=, later await =run_host_owner_down=; MR-6 owner =:kill= at
+each barrier with a suspended worker, Writer and Run.Supervisor: whole subtree DOWN, =Ownership= AND =RunLock.owner=
+observed exactly (a failed observation is a failure); MR-7 never-released startup under a REAL isolated
+DynamicSupervisor with =child_shutdown_ms= 1_000: stop returns within the deadline with =run_host_stop_unproven=; the
+test then observes lock and arbiter; responsive-release control alongside; MR-8 unobserved helper join and unobserved
+descendant join -> =run_executor_teardown_incomplete= (observation seam), kill/join success control; MR-9 late
+identity swept after the producer is dead; MR-10 waiters: live timed-out caller expired by timer (observed with =:sys=,
+no event), dead caller by DOWN, valid waiter answered; MR-11 stop lifecycle: active stop -> ={:ok, :stopped}=, second
+active stop -> =run_host_owner_down=, stop on retained terminal idempotent with cached result preserved, expiry ->
+=run_host_owner_down=; MR-12 lock probes G-lock-1/G-lock-2 with real =Writer.open=/=Recovery.acquire=; MR-13 stop
+journals nothing (held at =:handoff_received=), cancel refused while held, admitted after stop; MR-14 census: two held
+mounts after a Monitor restart, a retained terminal owner NOT resurrected, a stalled owner skipped (=census= =:complete=,
+=skipped= 1), a stalled Host.Supervisor (nothing learned), a late reply after the deadline never displaces a replacement;
+MR-15 =Host.mounted= total budget with a suspended supervisor and with a stalled owner; MR-16 (RP-1..RP-3) injected
+arbiter passthrough: Writer, Server discovery, Host registration/status all on the private arbiter, global =:none=;
+arbiter-kill cascade with a mounted run then a real reacquire; MR-17 privacy canaries on the owner's =format_status=
+and a helper crash report; MR-18 slice-1 status/lookup/collision shapes unchanged (parity control).

@@ -109,3 +109,12 @@ owner's DOWN.
 * Non-goals
 Cross-process views, endpoint, admission changes, restart policy, host-owned teardown, projection index.
 The next slice mounts host-owned run trees under a host supervisor while preserving the owner/reaper protocol.
+
+* Amendments for slice 1b (docs/contracts/host-mounted-runs.org is authoritative where they overlap)
+- The Application mounts =Host.Monitor= after =Journal.Ownership= AND after =Host.Supervisor=, so a monitor restart restarts
+  no run tree; the Monitor reconciles mounted trees through a bounded census (=Host.census/1= is a NEW function; every
+  status/lookup/collision shape above is unchanged).
+- A mounted run's owner unregisters its record explicitly when its tree is torn down; the owner's DOWN remains the backstop.
+- =status/2='s =ownership:= option and the registration generation lookup use the same injected arbiter as the run subtree
+  once the arbiter passthrough of the mounted-runs contract exists.
+
