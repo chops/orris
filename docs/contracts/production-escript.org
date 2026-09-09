@@ -1,40 +1,59 @@
 #+title: Production escript packaging contract
 #+date: 2026-09-09
-#+status: RED written at public b693ef5; GREEN pending
+#+status: RED rev2 (corrected per review R1-R3) at public b693ef5; GREEN pending
 
 * Obligation
 The operator's CLI is delivered as an escript. A PRODUCTION build of that escript (=MIX_ENV=prod mix escript.build=)
-from a clean build path must succeed, must launch as an OS process that really opens a journal writer, and must
-package only the application, the Elixir/OTP runtime applications it starts, and its production dependency closure.
-Development and test tooling (Boundary, Credo, Dialyxir, Styler, mix_audit, usage_rules, stream_data and everything
-they pull in) is never packaged. The dev/test Boundary gate is preserved unchanged: this contract removes nothing from
-the checks the canonical verifier runs; it adds the production artifact as a measured surface.
+into a freshly created build directory must succeed, must launch as an OS process that really opens a journal writer,
+and must package EXACTLY: the application, the runtime applications the escript carries (=elixir=, =logger=), the
+production dependency closure, and one explicit build-only exception. Everything else, in particular development and
+test tooling (Credo, Dialyxir, Styler, mix_audit, usage_rules, stream_data, igniter, sourceror and all they pull in),
+is never packaged.
+
+* Build-time versus runtime (R1)
+22 production modules use Boundary macros, so =Boundary= must be available at COMPILE time in every environment,
+production included; the compiler stays unconditional. Boundary is NOT a runtime application: the packaged
+=ai_orchestrator.app= does not list it, so it is never started. Mix's escript builder packages every cached dependency
+including =runtime: false= ones (Mix 1.20.4 =Escript.Build.deps_files=), so Boundary's 17 beam entries (65,122
+compressed bytes, measured) are present in the artifact as a BUILD-ONLY EXCEPTION, accepted explicitly here. The
+mechanism for the GREEN is the reviewer-measured narrow one: keep the compiler, remove =only: [:dev, :test]= from the
+existing Boundary dependency, keep =runtime: false=, keep every version and the lock. This adopts no new dependency and
+changes no portable-core web dependency budget; the public dependency inventory wording ("Direct development/test")
+is updated with the GREEN. Boundary's own checks stay enabled in dev AND test.
 
 * Measured defect at b693ef5 (the RED)
-=mix.exs= registers =compilers: [:boundary] ++ Mix.compilers()= unconditionally while =:boundary= is declared
-=only: [:dev, :test]=. In =MIX_ENV=prod= the build stops with "The task compile.boundary could not be found", so no
-production escript can be produced at all, and the canonical verifier's escript stage builds a DEV escript that
-packages 43 applications (measured), about 26 of them development tooling.
+=mix.exs= registers =compilers: [:boundary] ++ Mix.compilers()= while =:boundary= is declared =only: [:dev, :test]=.
+In =MIX_ENV=prod= the build stops with "The task compile.boundary could not be found", so no production escript can be
+produced at all; the canonical verifier's escript stage builds a DEV escript that packages 43 applications
+(measured), about 26 of them development tooling. Making the compiler conditional instead is NOT a fix: the prod
+compile then fails with "module Boundary is not loaded" (reviewer-measured, conditional-prod.log).
 
 * Rows (=test/contracts/production_escript_test.exs=)
-One =setup_all= performs the actual build once, in place at the project root with a FRESH =MIX_BUILD_PATH= (clean
-build of every dependency and of the application; fetched dependency sources reused), moves the artifact out of =bin/=
-immediately and retains the numeric exit and full build output under =_build/<toolchain>/test/production_escript/=
-and on the row's failure message. (A copied project tree is not usable for this: rebar3 dependencies with include
-files fail include resolution outside the project root; measured and recorded with the RED packet.)
-- PE-1 clean production build :: =mix escript.build= under =MIX_ENV=prod= exits 0 and produces the artifact.
-- PE-2 attribution :: the production build output never names =compile.boundary=; a dev/test-only compiler is never
-  invoked for production. (This row exists so a RED is attributed to the actual defect, not to a generic build failure.)
+One =setup_all= performs the actual build once, in place at the project root, into a build directory created
+EXCLUSIVELY (random name, collision retry, asserted empty) under the toolchain build root; cleanup is registered
+before the build; a pre-existing =bin/ai-orchestrator= is preserved byte for byte with its mode and restored; the
+numeric exit, the full build output and the launch stdout/stderr/exit are retained under
+=_build/<toolchain>/test/production_escript/=. Measured while designing: building the CORE from a copied tree
+outside the project root failed rebar include resolution (=gproc.hrl=) in the two configurations tried; that proves
+those configurations fail, not that every copied root does; the in-place fresh-directory build is what this contract
+specifies.
+- PE-1 clean production build :: exit 0 and the artifact exists.
+- PE-2 build-only exception :: =boundary= is packaged (as measured) but is absent from the =applications= list of the
+  packaged =ai_orchestrator.app=; runtime startup closure is read from that file, never inferred from package contents.
 - PE-3 launch opens a writer :: the artifact, run as a separate OS process against a disposable copy of the
-  =kill9_resume= fixture with =cancel <run-dir>=, exits 0, prints the structured run summary on stdout and leaves the
-  writer's =events.head= behind (the verifier's own probe, repeated on the production artifact).
-- PE-4 packaged inventory :: the zip inside the artifact contains =ai_orchestrator=, =elixir=, =logger= and every
-  dependency declared without an =only:= restriction; it contains NO dependency declared with an =only:= that excludes
-  =:prod= (the forbidden set is derived from =mix.exs= at test time, never hard-coded).
-- PE-5 preservation :: in the test environment the Boundary compiler is still registered, so the dev/test gate the
-  verifier runs is untouched by the GREEN.
-Expected RED at b693ef5: PE-1..PE-4 fail (PE-1/PE-2 name =compile.boundary=; PE-3/PE-4 have no artifact); PE-5 passes.
-Expected GREEN: all five pass with the Boundary compiler registered only for =:dev= and =:test=.
+  =kill9_resume= fixture with =cancel <run-dir>=, exits 0, prints the structured run summary on stdout, and leaves
+  the writer's =events.head= behind (the verifier's own probe on the production artifact); stderr retained.
+- PE-4 exact inventory :: the set of =<app>/ebin/= applications in the artifact EQUALS the expected set
+  {=ai_orchestrator=, =elixir=, =logger=, =boundary=} + the 14 production dependencies pinned in the test
+  (acceptor_pool chatterbox ctx gproc grpcbox hpack jason opentelemetry opentelemetry_api opentelemetry_exporter
+  ssl_verify_fun telemetry tls_certificate_check zoi); extras and omissions are both reported.
+- PE-4a oracle agreement :: the pinned set equals the set derived from Mix's own production graph
+  (=mix deps.tree --only prod=, a source independent of the archive) plus the same fixed members.
+- PE-5 preservation :: the Boundary compiler stays registered in the test environment.
+- CO-1 / CO-2 oracle controls :: an extra dev-only transitive application (=sourceror=) and a missing required
+  transitive application (=grpcbox=) are each rejected by the comparison.
+Expected RED at b693ef5: PE-1..PE-4 fail (PE-1 carries the retained "compile.boundary" build output; PE-2/3/4 have no
+artifact); PE-4a, PE-5, CO-1, CO-2 pass (4/8). Expected GREEN: all eight pass.
 
 * Out of scope here
 Umbrella or sibling packaging choices (OPEN-02), release packaging, dependency adoption, installed daemon, public
