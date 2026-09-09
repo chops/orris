@@ -63,9 +63,11 @@ live cancellation of a mounted run, projection index and packaging stay outside.
   =:terminal= owner is idempotent =:ok= and preserves the cached result. Stop journals nothing.
 - =Host.mounted(host, timeout, batch: n)= — ALL blocking work (the =which_children= discovery and every per-owner status)
   runs inside ONE monotonic overall deadline in a task the caller monitors. Owners are queried in batches of =n=
-  (default: all at once); within a batch the queries are CONCURRENT and each is bounded by what REMAINS of the
-  deadline, never by a fresh per-query or per-batch budget, so a responsive owner is reported regardless of the
-  supervisor's child order and stalled owners cost only the remaining time. Partial results are the contract:
+  (default: all at once); within the ACTIVE batch the queries are CONCURRENT and each is bounded by what REMAINS of
+  the deadline, never by a fresh per-query or per-batch budget, so within the default all-at-once case a responsive
+  owner is reported regardless of the supervisor's child order and stalled owners cost only the remaining time;
+  owners in batches not yet started when the common deadline expires are reported =:unknown= (MR-15 exercises the
+  default single batch only). Partial results are the contract:
   owners that did not answer in time are listed with =phase: :unknown=; the listing element is
   =%{run_dir, run_id, owner, phase}=; a supervisor that does not answer within the deadline yields
   ={:error, %{clause: "host_supervisor_unavailable"}}=.
@@ -80,9 +82,17 @@ live cancellation of a mounted run, projection index and packaging stay outside.
   answers =%{phase, waiters, handoff_ref, owned: [roles]}= through =:sys.get_state= (a system message: it is NOT an owner
   event and therefore cannot trigger any lazy behaviour; waiter expiry is timer-driven and observable through it);
   the census request the Monitor sends is ={:census, ref, monitor}= and the reply an owner sends is
-  ={:census_reply, ref, record, phase}=; before applying any census reply the Monitor confirms the owner's phase with a
-  bounded =inspect= (a reply the owner does not confirm, or whose owner reports =:terminal=, is dropped: owner-alive
-  alone is never sufficient). =Host.mounted(host, timeout, batch: n)= exposes the discovery batch size for tests.
+  ={:census_reply, ref, record, phase}=; a reply is ELIGIBLE only while its request reference is still pending in the
+  Monitor (the census has not completed); before applying an eligible reply the Monitor confirms the owner's phase
+  with a bounded =inspect= (a reply the owner does not confirm, or whose owner reports =:terminal=, is dropped:
+  owner-alive alone is never sufficient); a reply whose request expired at the census deadline may be dropped.
+  =Host.mounted(host, timeout, batch: n)= exposes the discovery batch size for tests; =census_timeout:= on
+  =Host.Monitor.start_link= injects the census deadline for tests. Mounted-only handoff seam: the mount context key
+  =:handoff_relay= (a pid) makes the owner register =%{owner_handoff: {relay, ref}}= instead of =self()=, and sends the
+  relay ={:relay_owner, owner}=; the relay is test-owned and forwards the Server's real
+  ={:run_worker_registered, ref, worker, server}= to the owner only when released, so rows can hold the identity at
+  the EMISSION boundary without any post-notification suspension. Gating the producer BEFORE worker birth would need
+  a Run seam and is not claimed by this contract.
 - Helper escapes: the mounted barrier helper runs the user barrier under =try/catch= and reports
   ={:barrier_escape, kind, class, digest}= (the contract's =Diagnostic= result class and digest) to the owner; the
   helper never crashes with a raw reason, so no crash report can carry exception text or config bytes.
@@ -105,7 +115,10 @@ live cancellation of a mounted run, projection index and packaging stay outside.
   is suspended immediately after mount (its suspension is queued ahead of any handoff message because the Server's
   discovery completes only after =Run.Supervisor.start_link= returns), the real identity sits in its mailbox, and a
   parent shutdown runs =terminate/3= from the suspend loop whose sweep kills and joins that real worker after the
-  producer's DOWN. An identity message carrying the owner's handoff reference that arrives in any state other than
+  producer's DOWN. With =Run= untouched the producer cannot be gated before birth; the rows therefore gate at the
+  emission boundary through the =:handoff_relay= seam: never DELIVERED (the relay holds the real emission, the owner
+  acknowledges =:handoff= with no =:worker=, stop joins the producer's DOWN, a later release is inert) and produced but
+  unconsumed (owner suspended, relay released, shutdown sweeps the real worker). An identity message carrying the owner's handoff reference that arrives in any state other than
   =:handoff= is RETAINED by the owner (reported as the =:late= role by =inspect=, never dropped and never acted on) and
   is killed and joined by the teardown sweep; the synthetic-identity injection while a run is held is the separately
   labelled witness of that rule.
@@ -123,13 +136,15 @@ live cancellation of a mounted run, projection index and packaging stay outside.
   sends asynchronous census requests in batches of 64; the whole census (discovery included) is bounded by
   =census_timeout= (1_000 ms) measured from init; at the deadline the Task is killed and =census= is =:complete= with
   =skipped= = owners not answered. Partial knowledge stays partial: absence remains unknown (R7).
-- Census replies are applied as registrations under the registration rules AND a terminal rule: before applying any
-  reply the Monitor confirms the owner's phase with a bounded =inspect=; a reply whose owner does not confirm, or reports
-  =:terminal= (the tree already torn down), is dropped, so a retained terminal owner never resurrects an unregistered
-  entry even when the reply is a genuinely correlated fact captured while the owner was active; a live different owner
-  or a higher generation is never displaced. The rows exercise exactly that: the real census request queued at a
-  suspended live owner is captured from its mailbox, the reply is built from the trusted role map, and terminal
-  (completion + unregister with retention) or replacement (stop + remount) is staged between capture and application.
+- Census replies are applied as registrations under the registration rules, an eligibility rule and a terminal
+  rule: a reply is eligible only while its request is pending (replies for expired requests may be dropped);
+  before applying an eligible reply the Monitor confirms the owner's phase with a bounded =inspect=; a reply whose
+  owner does not confirm, or reports =:terminal= (the tree already torn down), is dropped, so a retained terminal
+  owner never resurrects an unregistered entry even when the reply is a genuinely correlated ACTIVE fact; a live
+  different owner or a higher generation is never displaced. The rows exercise exactly that with the deadline
+  injected long: a positive control proves an eligible active fact for a live suspended owner IS applied, then the
+  same kind of fact is delivered after completion + unregister (retention keeps the owner) and after replacement
+  (stop + remount) and must be dropped; the after-deadline case is kept separate.
 - Owners never wait on the Monitor (registration is a cast).
 
 * 6. Injected arbiter (the passthrough that does not exist yet; contract + RED now, code after review)
