@@ -357,6 +357,11 @@ defmodule AiOrchestrator.Host.RunOwner do
 
   defp finish(data, result), do: teardown_to(data, result)
 
+  defp release_links(owned) do
+    for pid <- owned |> Map.values() |> List.flatten(), is_pid(pid), do: Process.unlink(pid)
+    :ok
+  end
+
   # ONE cleanup owner: kill the helper, run the shared teardown over the held identities (late ones included),
   # unregister explicitly, answer every recorded waiter, enter :terminal with retention
   defp teardown_to(data, result) do
@@ -364,6 +369,10 @@ defmodule AiOrchestrator.Host.RunOwner do
     data = kill_helper(data)
     owned = Map.take(data.owned, @identity_roles ++ [:late])
     outcome = Owner.teardown(owned, data.budgets, data.join)
+    # by construction, never by scheduling: a terminal owner holds no link to any owned identity, survivors
+    # included (a survivor is a pid whose DOWN the join did not observe in time, never a process that can be
+    # kept alive), so the stop arbitration's "linked run supervisor => not terminal" evidence is exact
+    release_links(owned)
     # the producer (Server) is dead after the teardown above, so one sweep of the identities matching this
     # owner's reference that reached the mailbox (including during the teardown) is complete and finite
     swept = sweep(data.ref, data.budgets, data.join, 0)

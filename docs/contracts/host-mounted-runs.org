@@ -67,11 +67,13 @@ live cancellation of a mounted run, projection index and packaging stay outside.
   terminal owner (retention kept, nothing terminated) or =:stopping= after it has recorded the stopper (caller
   monitor + deadline) and armed its OWN teardown as its next internal event, so the obligation lives in the owner
   regardless of the caller's wait. LIFECYCLE ARBITRATION: the owner's own word (=:retained= / =:stopping=) always wins
-  and is awaited for the whole shared bound (the request is sent once). Evidence gathered while the owner is silent,
+  and is awaited for the whole shared bound (the request is sent once and KEPT across the probe and the continuing
+  wait with =wait_response=, so a late acknowledgment is honoured; it is consumed only at arbitration). Evidence gathered while the owner is silent,
   (a) its =:sys= word (a suspended terminal owner still answers and is kept; any other reported phase is active/startup)
   and (b) runtime evidence it cannot withhold, a live =Run.Supervisor= still LINKED to it (its =$initial_call=, set by
   =proc_lib= before init, so a Writer blocked in acquire counts) proving the subtree is not torn down and nothing is
-  retained, NEVER authorises destruction before the bound: it only decides the fate of an owner STILL silent at the
+  retained (exact by CONSTRUCTION: the owner unlinks every owned identity, teardown survivors included, before it
+  enters =:terminal=, so a terminal owner is never linked to a run supervisor whatever the scheduler does), NEVER authorises destruction before the bound: it only decides the fate of an owner STILL silent at the
   bound, and a sampled phase can therefore never be acted upon after it became obsolete. At the bound the owner is
   FROZEN (scheduler-level suspension, so it can neither answer nor transition while the decision is taken); a reply it
   has already sent is honoured (the owner replies before it informs the caller, so no reply means the caller was told
@@ -221,8 +223,10 @@ receives only its own workers' monitors and replies, never an unrelated caller D
 cannot resurrect a completed retained owner even after an unrelated unregister (invalidation is monotone), and an
 ELIGIBLE confirmed reply naming a different live owner never displaces the registered one (the older different-owner
 row is narrowed to eligibility only); S4 a stop cannot destroy a terminal owner whose state inspection is blocked, the
-lifecycle evidence row pins the link fact the arbitration rests on, and sampled active evidence cannot kill a result
-retained before a delayed fallback executes (the supervisor request is held by a forwarding proxy).
+lifecycle evidence row pins the link fact the arbitration rests on, sampled active evidence cannot kill a result
+retained before a delayed fallback executes (the supervisor request is held by a forwarding proxy), a real retained
+acknowledgment after the probe releases the stop agent (the request is kept, not abandoned), and a terminal owner
+retaining an incomplete teardown holds no link to any owned identity (survivors forced through the join seam).
 RED (=host_mount_red_test.exs=): MR-1 layout and descendants; MR-2 start-ack vs ready (two mounts, one stalled;
 =ready_timeout= leaves the tree untouched); MR-3 ready follows the barrier result (synchronization witness); MR-4
 helper identity and registry owner (visibility awaited with a bounded witness, never assumed); MR-5 parent shutdown at

@@ -241,7 +241,7 @@ defmodule AiOrchestrator.Host do
     request = :gen_statem.send_request(owner, {:stop_request, {caller, ref, max(timeout, child_shutdown)}})
     probe = min(min(div(child_shutdown, 2), div(caller_ms(timeout), 2)), remaining.())
 
-    case :gen_statem.receive_response(request, probe) do
+    case :gen_statem.wait_response(request, probe) do
       :timeout -> stop_unacknowledged(owner, supervisor, caller, ref, request, mon, remaining)
       answer -> acknowledged(answer, owner, mon, remaining)
     end
@@ -273,7 +273,7 @@ defmodule AiOrchestrator.Host do
 
   # the owner's word is awaited for the whole remaining bound; only then is the bound arbitrated
   defp await_word(evidence, owner, caller, ref, request, mon, remaining) do
-    case :gen_statem.receive_response(request, remaining.()) do
+    case :gen_statem.wait_response(request, remaining.()) do
       :timeout -> arbitrate_at_bound(evidence, owner, caller, ref, request, mon, remaining)
       answer -> acknowledged(answer, owner, mon, remaining)
     end

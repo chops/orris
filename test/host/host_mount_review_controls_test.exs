@@ -4,7 +4,9 @@ defmodule AiOrchestrator.Host.MountReviewControlsTest do
   the seven reproduced interleavings plus the neighbouring cases the review names; and from the 40a8d546 review
   (logs/shared-host-mount-green-40a8d546/codex/REVIEW.org, successor_test.exs): the four measured S1-S4 rows
   verbatim plus the eligible-replacement and lifecycle-evidence rows it asked for. Each row pins an obligation of
-  docs/contracts/host-mounted-runs.org against the real implementation; none relaxes an outcome. From the 4bbf7f6
+  docs/contracts/host-mounted-runs.org against the real implementation; none relaxes an outcome. From the 4bc5928
+  review (logs/shared-host-mount-green-4bc5928/codex/REVIEW.org): the late-acknowledgment row verbatim and the
+  terminal-with-survivor witness the review asked for. From the 4bbf7f6
   review (logs/shared-host-mount-green-4bbf7f6/codex/REVIEW.org): the monotone-invalidation variant of the S3
   delayed row and the sampled-evidence stop race row, verbatim.
   """
@@ -704,5 +706,112 @@ defmodule AiOrchestrator.Host.MountReviewControlsTest do
     assert_receive {:DOWN, ^pm, :process, ^proxy, :normal}, 1000
     assert Process.alive?(handle.owner), "obsolete active fallback destroyed a result after stop reported retained"
     assert {:ok, ^result} = Host.await(handle, 1000)
+  end
+
+  test "R1 a real retained acknowledgment after the probe releases the stop agent", %{dir: dir} do
+    h = start_host!(child_shutdown_ms: 2000)
+    handle = mount!(h, dir, nil)
+    assert {:ok, result} = Host.await(handle, @deadline)
+    observer = self()
+
+    blocker =
+      spawn(fn ->
+        :sys.replace_state(handle.owner, fn state ->
+          send(observer, :owner_callback_held)
+
+          receive do
+            :release_callback -> state
+          after
+            5000 -> state
+          end
+        end)
+      end)
+
+    on_exit(fn ->
+      send(handle.owner, :release_callback)
+      Process.exit(blocker, :kill)
+    end)
+
+    assert_receive :owner_callback_held, 1000
+    stop = Task.async(fn -> Host.stop(handle, 3000) end)
+
+    wait_until(fn ->
+      Enum.any?(
+        elem(Process.info(handle.owner, :messages), 1),
+        &match?({:"$gen_call", _, {:stop_request, _}}, &1)
+      )
+    end)
+
+    {:"$gen_call", {agent, _tag}, {:stop_request, _}} =
+      Enum.find(
+        elem(Process.info(handle.owner, :messages), 1),
+        &match?({:"$gen_call", _, {:stop_request, _}}, &1)
+      )
+
+    amon = Process.monitor(agent)
+    # The real state query can only be enqueued AFTER the first ack probe expired.
+    wait_until(fn ->
+      Enum.any?(
+        elem(Process.info(handle.owner, :messages), 1),
+        &match?({:system, {^agent, _}, :get_state}, &1)
+      )
+    end)
+
+    # Re-entry into the request wait proves the inspection leg has timed out.
+    wait_until(fn ->
+      Process.info(agent, :current_function) in [
+        {:current_function, {:gen, :receive_response, 2}},
+        {:current_function, {:gen, :wait_response, 2}}
+      ]
+    end)
+
+    send(handle.owner, :release_callback)
+    assert :ok == Task.await(stop, 1500)
+    assert {:ok, ^result} = Host.await(handle, 1000)
+
+    assert_receive {:DOWN, ^amon, :process, ^agent, :normal},
+                   200,
+                   "the actual retained reply reached the caller, but the stop agent discarded its acknowledgment and kept waiting"
+  end
+
+  # control of the construction behind the arbitration's link evidence: a survivor is a pid whose kill was sent but
+  # whose DOWN the join did not observe (here every join is refused through the seam, so the teardown reports
+  # survivors and retains run_executor_teardown_incomplete); a terminal owner must hold no link to any owned
+  # identity, survivor or not, because it unlinks them all BEFORE it enters :terminal. Measured fact recorded with
+  # this row (u1-review-red.log): a run supervisor suspended at scheduler level still dies from the teardown's kill,
+  # so a "live survivor" is only ever a dying process, never a process that can be kept alive.
+  test "R2 a terminal owner retaining an incomplete teardown holds no link to any owned identity", %{dir: dir} do
+    h = start_host!(child_shutdown_ms: 500)
+    refuse = fn _pid, _mon, _timeout -> false end
+    handle = mount!(h, dir, holding(self(), :subtree_started), join: refuse)
+    {ref, payload, helper} = await_held!(:subtree_started)
+    owned = [payload.supervisor, payload.server, payload.writer, payload.worker, helper]
+    send(helper, {:release, ref})
+    assert {:error, %{clause: "run_executor_teardown_incomplete", survivors: n} = result} = Host.await(handle, @deadline)
+    assert n >= 1
+    assert RunOwner.inspect(handle.owner).phase == :terminal
+    {:links, links} = Process.info(handle.owner, :links)
+    refute Enum.any?(owned, &(&1 in links)), "a terminal owner must not stay linked to an owned identity"
+    refute Enum.any?(links, &(is_pid(&1) and &1 != Process.whereis(h.hsup)))
+    # the stop arbitration therefore leaves this retained owner untouched even when it is silent at the bound
+    observer = self()
+
+    blocker =
+      spawn(fn ->
+        :sys.replace_state(handle.owner, fn state ->
+          send(observer, :survivor_owner_blocked)
+          receive(do: (:survivor_release -> state), after: (3_000 -> state))
+        end)
+      end)
+
+    on_exit(fn -> Process.exit(blocker, :kill) end)
+    assert_receive :survivor_owner_blocked, 1_000
+    answer = Host.stop(handle, 100)
+    Process.sleep(600)
+    alive = Process.alive?(handle.owner)
+    send(handle.owner, :survivor_release)
+    assert alive, "a silent terminal owner with reported survivors was classed active and killed"
+    assert answer in [:ok, {:error, %{clause: "run_host_stop_timeout"}}]
+    assert {:error, ^result} = Host.await(handle, 1_000)
   end
 end
