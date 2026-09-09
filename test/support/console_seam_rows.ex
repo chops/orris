@@ -104,44 +104,77 @@ defmodule AiOrchestrator.Test.ConsoleSeamRows do
     :ok
   end
 
+  @doc "A private Monitor owned by the test through start_supervised! (unique id); stopped with the test."
+  def monitor!(label) do
+    ExUnit.Callbacks.start_supervised!(%{
+      id: {:console_seam_monitor, label, System.unique_integer([:positive])},
+      start: {Monitor, :start_link, [[name: nil]]}
+    })
+  end
+
+  @doc "A Monitor that is already dead and REAPED (its DOWN observed) before use, for the unavailable-lookup case."
+  def dead_monitor! do
+    {:ok, pid} = Monitor.start_link(name: nil)
+    Process.unlink(pid)
+    ref = Process.monitor(pid)
+    Process.exit(pid, :kill)
+
+    receive do
+      {:DOWN, ^ref, :process, ^pid, _} -> pid
+    after
+      5_000 -> flunk("the killed monitor was not reaped")
+    end
+  end
+
   @doc """
-  THE COUNTING ROWS (contract F-8): `impl.host_view(run_ref, opts)` against a private Monitor holding real records.
-  1. own entry + one same-root peer + one outside-root entry (the outside one carries a path canary) -> 1
-  2. own entry ABSENT + two same-root peers -> 2 (rejects an unconditional subtract-one)
-  3. Monitor unavailable -> :unknown with a :lookup error
-  The outward view must contain no pid, reference or the canary path.
+  THE COUNTING ROWS (contract F-8): `impl.host_view(run_ref, opts)` against private Monitors holding real records.
+  Each step is a named assertion; `C-8` asserts which STEP a disposable witness fails.
+  1. own entry + one same-root peer + one outside-root entry (path canary) -> 1                 [step :own_present]
+  2. own entry ABSENT + two same-root peers (both directories exist) -> 2                        [step :own_absent]
+  3. Monitor dead and reaped -> :unknown with a :lookup error                                    [step :unavailable]
+  Privacy: the outward view holds no pid, reference or the canary path                           [step :privacy]
   """
   def counting_rows(impl, root, ref, run_id) do
-    {:ok, mon} = Monitor.start_link(name: nil)
     own = Path.join(root, ref)
     peer = Path.join(root, "peer_#{System.unique_integer([:positive])}")
-    File.mkdir_p!(peer)
+    peer2 = Path.join(root, "peer2_#{System.unique_integer([:positive])}")
     outside = Path.join(fresh("outside_SECRET_PATH_CANARY"), "run")
-    File.mkdir_p!(outside)
+    for dir <- [peer, peer2, outside], do: File.mkdir_p!(dir)
+
+    mon = monitor!(:own_present)
     for dir <- [own, peer, outside], do: registered!(mon, record(dir, run_id))
-    base = [root: root, monitor: mon, witness_run_id: run_id, budget_ms: 500]
-
-    assert {:ok, %{other_registered_directories: 1} = view} = impl.host_view(ref, base)
+    base = [root: root, budget_ms: 500]
+    assert {:ok, %{other_registered_directories: count} = view} = impl.host_view(ref, Keyword.put(base, :monitor, mon))
+    assert count == 1, "step :own_present expected 1 (peer only), got #{inspect(count)}"
     rendered = inspect(view, limit: :infinity)
-    refute rendered =~ "#PID", "pid leaked: #{rendered}"
-    refute rendered =~ "#Reference", "reference leaked: #{rendered}"
-    refute rendered =~ "SECRET_PATH_CANARY", "path leaked: #{rendered}"
+    refute rendered =~ "#PID", "step :privacy pid leaked: #{rendered}"
+    refute rendered =~ "#Reference", "step :privacy reference leaked: #{rendered}"
+    refute rendered =~ "SECRET_PATH_CANARY", "step :privacy path leaked: #{rendered}"
 
-    {:ok, mon2} = Monitor.start_link(name: nil)
+    mon2 = monitor!(:own_absent)
+    for dir <- [peer, peer2], do: registered!(mon2, record(dir, run_id))
+    assert {:ok, %{other_registered_directories: count2}} = impl.host_view(ref, Keyword.put(base, :monitor, mon2))
+    assert count2 == 2, "step :own_absent expected 2 (nothing subtracted), got #{inspect(count2)}"
 
-    for dir <- [peer, Path.join(root, "peer2_#{System.unique_integer([:positive])}")],
-        do: registered!(mon2, record(dir, run_id))
+    dead = dead_monitor!()
 
-    assert {:ok, %{other_registered_directories: 2}} = impl.host_view(ref, Keyword.put(base, :monitor, mon2))
-
-    {:ok, dead} = Monitor.start_link(name: nil)
-    Process.unlink(dead)
-    Process.exit(dead, :kill)
-
-    assert {:ok, %{other_registered_directories: :unknown, errors: errors}} =
+    assert {:ok, %{other_registered_directories: count3, errors: errors}} =
              impl.host_view(ref, Keyword.put(base, :monitor, dead))
 
-    assert Enum.any?(errors, &(&1.leg == :lookup))
+    assert count3 == :unknown, "step :unavailable expected :unknown, got #{inspect(count3)}"
+    assert Enum.any?(errors, &(&1.leg == :lookup)), "step :unavailable expected a :lookup error, got #{inspect(errors)}"
     :ok
+  end
+
+  @doc "Runs the counting rows and returns :ok or {:failed, step_atom} extracted from the assertion message."
+  def counting_outcome(impl, root, ref, run_id) do
+    counting_rows(impl, root, ref, run_id)
+    :ok
+  rescue
+    e in ExUnit.AssertionError ->
+      case Regex.run(~r/step :([a-z_]+)/, Exception.message(e)) do
+        [_, step] -> {:failed, String.to_atom(step)}
+        nil -> {:failed, :unnamed}
+      end
   end
 end

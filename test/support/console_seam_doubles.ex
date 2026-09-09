@@ -10,6 +10,7 @@ defmodule AiOrchestrator.Test.ConsoleSeamDoubles do
 
   alias AiOrchestrator.Contracts.FixtureHelper, as: F
   alias AiOrchestrator.Host
+  alias AiOrchestrator.Journal.Fold
   alias AiOrchestrator.PaneRegistry.FileRegistry
   alias AiOrchestrator.Test.ConsoleSeamDoubles
   alias AiOrchestrator.Test.FixedClock
@@ -60,9 +61,10 @@ defmodule AiOrchestrator.Test.ConsoleSeamDoubles do
         test_pid: test_pid
       ],
       gate_executor: GateDouble,
+      # ---- disposable witnesses for the counting rows (F-8 / C-8) and the budget row (F-7 / C-9) ----
+      # Each derives the run id from the resolved directory's journal (as the product must); none takes a witness option.
       gate_helper: GateDouble.helper(),
       gate_opts: [runner: fn _gate, _opts -> {:ok, gate_pass} end],
-      # ---- disposable witnesses for the counting rows (F-8 / C-8): wrong on purpose ----
       review_reader: fn _path -> {:ok, "- Verdict :: clean\n"} end
     ]
   end
@@ -82,43 +84,82 @@ defmodule AiOrchestrator.Test.ConsoleSeamDoubles do
     end
   end
 
+  defp own_and_root(run_ref, opts) do
+    root = Path.expand(Keyword.fetch!(opts, :root))
+    {Path.join(root, run_ref), root}
+  end
+
+  defp journal_run_id(dir) do
+    {:ok, state} = dir |> Path.join("events.jsonl") |> File.read!() |> String.split("\n", trim: true) |> Fold.fold_lines()
+    Fold.summary(state)["run_id"]
+  end
+
+  defp under_root?(dir, root), do: String.starts_with?(Path.expand(dir) <> "/", root <> "/")
+
+  defp unknown_view,
+    do: {:ok, %{other_registered_directories: :unknown, errors: [%{leg: :lookup, clause: "lookup_unavailable"}]}}
+
+  defmodule DisposableFaithful do
+    @moduledoc "DISPOSABLE WITNESS: the correct count (root-filtered, own directory excluded explicitly). Must pass every counting step."
+    def host_view(run_ref, opts), do: ConsoleSeamDoubles.__count__(run_ref, opts, :faithful)
+  end
+
   defmodule DisposableFixedZero do
-    @moduledoc false
+    @moduledoc "DISPOSABLE WITNESS: always zero, never unknown."
     def host_view(_run_ref, _opts), do: {:ok, %{other_registered_directories: 0, errors: []}}
   end
 
-  defmodule DisposableUnconditionalSubtract do
-    @moduledoc false
-    def host_view(run_ref, opts) do
-      run_id = Keyword.fetch!(opts, :witness_run_id)
-      _ = run_ref
-
-      case ConsoleSeamDoubles.__raw__(run_id, opts) do
-        :unknown ->
-          {:ok, %{other_registered_directories: :unknown, errors: [%{leg: :lookup, clause: "lookup_unavailable"}]}}
-
-        entries ->
-          {:ok, %{other_registered_directories: max(length(entries) - 1, 0), errors: []}}
-      end
-    end
+  defmodule DisposableSubtractOnly do
+    @moduledoc "DISPOSABLE WITNESS: root-filtered correctly, then subtracts one UNCONDITIONALLY (wrong when the own entry is absent)."
+    def host_view(run_ref, opts), do: ConsoleSeamDoubles.__count__(run_ref, opts, :subtract_only)
   end
 
   defmodule DisposableUnfiltered do
-    @moduledoc false
+    @moduledoc "DISPOSABLE WITNESS: excludes the own directory but does NOT filter by root."
+    def host_view(run_ref, opts), do: ConsoleSeamDoubles.__count__(run_ref, opts, :unfiltered)
+  end
+
+  defmodule DisposablePerLegReset do
+    @moduledoc "DISPOSABLE WITNESS for the budget row: gives EVERY host leg the full budget instead of the remaining time."
     def host_view(run_ref, opts) do
-      run_id = Keyword.fetch!(opts, :witness_run_id)
-      own = Path.expand(Path.join(Keyword.fetch!(opts, :root), run_ref))
+      budget = Keyword.get(opts, :budget_ms, 1_000)
+      mon = Keyword.get(opts, :monitor)
+      {own, _root} = ConsoleSeamDoubles.__own_and_root__(run_ref, opts)
+      run_id = ConsoleSeamDoubles.__journal_run_id__(own)
 
-      case ConsoleSeamDoubles.__raw__(run_id, opts) do
-        :unknown ->
-          {:ok, %{other_registered_directories: :unknown, errors: [%{leg: :lookup, clause: "lookup_unavailable"}]}}
+      legs = [
+        {:status, fn -> Host.status(own, monitor: mon, timeout: budget) end},
+        {:lookup, fn -> Host.lookup_run_id(run_id, monitor: mon, timeout: budget) end}
+      ]
 
-        entries ->
-          {:ok, %{other_registered_directories: Enum.count(entries, &(&1.run_dir != own)), errors: []}}
-      end
+      errors = for {leg, call} <- legs, match?({:error, _}, call.()), do: %{leg: leg, clause: "leg_timeout"}
+      {:ok, %{run_id: run_id, registered: :unknown, other_registered_directories: :unknown, errors: errors}}
     end
   end
 
   @doc false
-  def __raw__(run_id, opts), do: raw(run_id, opts)
+  def __own_and_root__(run_ref, opts), do: own_and_root(run_ref, opts)
+  @doc false
+  def __journal_run_id__(dir), do: journal_run_id(dir)
+
+  @doc false
+  def __count__(run_ref, opts, mode) do
+    {own, root} = own_and_root(run_ref, opts)
+    run_id = journal_run_id(own)
+
+    case raw(run_id, opts) do
+      :unknown ->
+        unknown_view()
+
+      entries ->
+        count =
+          case mode do
+            :faithful -> Enum.count(entries, &(under_root?(&1.run_dir, root) and Path.expand(&1.run_dir) != own))
+            :subtract_only -> max(Enum.count(entries, &under_root?(&1.run_dir, root)) - 1, 0)
+            :unfiltered -> Enum.count(entries, &(Path.expand(&1.run_dir) != own))
+          end
+
+        {:ok, %{other_registered_directories: count, errors: []}}
+    end
+  end
 end

@@ -230,20 +230,26 @@ defmodule AiOrchestrator.Contracts.PublicConsoleSeamRedTest do
 
   test "F-7 unknown states under ONE total budget with blocking host legs", %{root: root, opts: opts} do
     ref = fixture_run(root, "events_pre_dispatch.jsonl")
-    {:ok, mon} = Monitor.start_link(name: nil)
+    mon = Rows.monitor!(:f7)
 
     assert {:ok, %{registered: false, other_registered_directories: 0}} =
              @query.host_view(ref, Keyword.put(opts, :monitor, mon))
 
     :ok = :sys.suspend(mon)
-    started = System.monotonic_time(:millisecond)
-    assert {:ok, view} = @query.host_view(ref, Keyword.merge(opts, monitor: mon, budget_ms: 300))
-    elapsed = System.monotonic_time(:millisecond) - started
-    :ok = :sys.resume(mon)
-    assert view.registered == :unknown and view.other_registered_directories == :unknown
-    assert view.errors |> Enum.map(& &1.leg) |> Enum.sort() == [:lookup, :status]
-    assert elapsed < 550, "per-leg budgets would take >= 600 ms; one total budget took #{elapsed} ms"
-    assert view.run_id == Rows.run_id(Path.join(root, ref))
+
+    try do
+      started = System.monotonic_time(:millisecond)
+      assert {:ok, view} = @query.host_view(ref, Keyword.merge(opts, monitor: mon, budget_ms: 300))
+      elapsed = System.monotonic_time(:millisecond) - started
+      assert view.registered == :unknown and view.other_registered_directories == :unknown
+      legs = view.errors |> Enum.map(& &1.leg) |> Enum.sort()
+      # the two observed failures are required; a closed :mounted budget exhaustion may also be reported
+      assert legs in [[:lookup, :status], [:lookup, :mounted, :status]], inspect(legs)
+      assert elapsed < 550, "per-leg budgets would take >= 600 ms; one total budget took #{elapsed} ms"
+      assert view.run_id == Rows.run_id(Path.join(root, ref))
+    after
+      :ok = :sys.resume(mon)
+    end
   end
 
   test "F-8 counting excludes this directory, ignores other roots, reports unknown lookups and leaks no identity", %{
@@ -304,6 +310,70 @@ defmodule AiOrchestrator.Contracts.PublicConsoleSeamRedTest do
     end
 
     assert function_exported?(@prepare, :cancel, 2) and function_exported?(@prepare, :invoke, 3)
+  end
+
+  test "F-13 the supplied console actor is journaled by the built-in path (class and id preserved)", %{
+    root: root,
+    opts: opts
+  } do
+    ref = fixture_run(root, "events_pre_dispatch.jsonl")
+    assert {:ok, prepared} = @prepare.cancel(ref, opts)
+    assert {:ok, _} = @prepare.invoke(@console, prepared, opts)
+    requested = root |> Path.join(ref) |> cancel_event() |> get_in(["data", "requested_by"])
+    assert %{"class" => "console", "id" => "session_abc", "verb" => "cancel"} = requested
+  end
+
+  test "F-14 a valid agent-class actor is refused for cancel and the journal bytes and head stay unchanged", %{
+    root: root,
+    opts: opts
+  } do
+    ref = fixture_run(root, "events_pre_dispatch.jsonl")
+    journal = Path.join([root, ref, "events.jsonl"])
+    before = File.read!(journal)
+
+    agent = %{
+      "class" => "agent",
+      "id" => "agent_1",
+      "run_id" => Rows.run_id(Path.join(root, ref)),
+      "assignment_id" => "as_0001"
+    }
+
+    assert {:ok, prepared} = @prepare.cancel(ref, opts)
+    assert match?({:error, %{clause: "command_not_authorized"}}, @prepare.invoke(agent, prepared, opts))
+    assert File.read!(journal) == before
+    refute File.exists?(Path.join([root, ref, "events.head"]))
+  end
+
+  test "F-15 an invalid actor shape is refused before any execution", %{root: root, opts: opts} do
+    ref = fixture_run(root, "events_pre_dispatch.jsonl")
+    journal = Path.join([root, ref, "events.jsonl"])
+    before = File.read!(journal)
+    assert {:ok, prepared} = @prepare.cancel(ref, opts)
+
+    for bad <- [
+          %{"class" => "console"},
+          %{"id" => "x"},
+          "console",
+          %{"class" => "console", "id" => "session_abc", "extra" => 1}
+        ] do
+      assert match?(
+               {:error, %{clause: clause}}
+               when clause in ["invalid_command_actor", "command_actor_fields", "command_actor_id"],
+               @prepare.invoke(bad, prepared, opts)
+             ),
+             inspect(bad)
+    end
+
+    assert File.read!(journal) == before
+  end
+
+  defp cancel_event(dir) do
+    dir
+    |> Path.join("events.jsonl")
+    |> File.read!()
+    |> String.split("\n", trim: true)
+    |> Enum.map(&Jason.decode!/1)
+    |> Enum.find(&(&1["type"] == "run_cancel_requested"))
   end
 
   defp fixture_run(root, events_file) do

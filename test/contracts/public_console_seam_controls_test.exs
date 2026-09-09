@@ -138,18 +138,47 @@ defmodule AiOrchestrator.Contracts.PublicConsoleSeamControlsTest do
     assert File.exists?(Path.join(dir, "run-summary.org"))
   end
 
-  for {row, impl} <- [
-        {"C-8a", Doubles.DisposableFixedZero},
-        {"C-8b", Doubles.DisposableUnconditionalSubtract},
-        {"C-8c", Doubles.DisposableUnfiltered}
+  defp witness_fixture do
+    root = Rows.fresh("witness_root")
+    ref = "run_w"
+    File.mkdir_p!(Path.join(root, ref))
+    File.write!(Path.join([root, ref, "events.jsonl"]), Rows.kill9("events_pre_dispatch.jsonl"))
+    {root, ref, Rows.run_id(Path.join(root, ref))}
+  end
+
+  test "C-8 the labelled FAITHFUL witness passes every counting step" do
+    {root, ref, run_id} = witness_fixture()
+    assert Rows.counting_outcome(Doubles.DisposableFaithful, root, ref, run_id) == :ok
+  end
+
+  for {row, impl, step} <- [
+        {"C-8a", Doubles.DisposableFixedZero, :own_present},
+        {"C-8b", Doubles.DisposableSubtractOnly, :own_absent},
+        {"C-8c", Doubles.DisposableUnfiltered, :own_present}
       ] do
-    test "#{row} the counting rows reject the disposable witness #{inspect(impl)}" do
-      root = Rows.fresh("witness_root")
-      ref = "run_w"
-      File.mkdir_p!(Path.join(root, ref))
-      File.write!(Path.join([root, ref, "events.jsonl"]), Rows.kill9("events_pre_dispatch.jsonl"))
-      run_id = Rows.run_id(Path.join(root, ref))
-      assert_raise ExUnit.AssertionError, fn -> Rows.counting_rows(unquote(impl), root, ref, run_id) end
+    test "#{row} the counting rows reject #{inspect(impl)} at step #{inspect(step)}" do
+      {root, ref, run_id} = witness_fixture()
+      assert Rows.counting_outcome(unquote(impl), root, ref, run_id) == {:failed, unquote(step)}
+    end
+  end
+
+  test "C-9 a per-leg budget reset witness fails the single-budget elapsed bound" do
+    {root, ref, _run_id} = witness_fixture()
+    mon = Rows.monitor!(:budget_witness)
+    :ok = :sys.suspend(mon)
+
+    try do
+      started = System.monotonic_time(:millisecond)
+
+      assert {:ok, %{errors: errors}} =
+               Doubles.DisposablePerLegReset.host_view(ref, root: root, monitor: mon, budget_ms: 300)
+
+      elapsed = System.monotonic_time(:millisecond) - started
+      assert errors |> Enum.map(& &1.leg) |> Enum.sort() == [:lookup, :status]
+      assert elapsed >= 600, "a per-leg reset must exhaust each leg's full budget (got #{elapsed} ms)"
+      refute elapsed < 550, "the F-7 bound (< 550 ms) must reject this witness"
+    after
+      :ok = :sys.resume(mon)
     end
   end
 end
