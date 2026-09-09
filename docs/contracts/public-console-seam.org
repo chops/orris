@@ -1,6 +1,6 @@
 #+title: Public console seam contract (Prepare, Query, top-level exports)
 #+date: 2026-09-09
-#+status: RED rev2 (review R1-R5 folded) at 2c33d78 (TEST/DOC only); map: logs/liveview-console-map/claude/B3-PUBLIC-CONSOLE-API-MAP.org rev3 (A1-A4 folded)
+#+status: RED rev3 (three bounded corrections folded: differential host witnesses, Monitor ownership, actor propagation) at 2c33d78 (TEST/DOC only); map: logs/liveview-console-map/claude/B3-PUBLIC-CONSOLE-API-MAP.org rev3 (A1-A4 folded)
 
 * Obligation
 An external application (the console) reaches the core ONLY through modules the top boundary exports:
@@ -45,8 +45,16 @@ Controls, =test/contracts/public_console_seam_controls_test.exs= (hold at 2c33d7
   (validate abs+rel, status --json abs+rel == expected.json, list --json via =cwd:= project root, cancel rel, status 66)
 - "C-7 claim lifetime: the outcome precedes release; a release failure keeps the legacy exit 70 with projections written"
   (ObservingRegistry reports whether run-summary.org exists at release; release observed exactly once; A2)
-- "C-8a/b/c the counting rows reject the disposable witness <DisposableFixedZero | DisposableUnconditionalSubtract | DisposableUnfiltered>"
-  (the shared counting rows in =test/support/console_seam_rows.ex= raise ExUnit.AssertionError for each wrong implementation; A4)
+- "C-8 the labelled FAITHFUL witness passes every counting step" (DisposableFaithful: root-filtered, own directory excluded)
+- "C-8a the counting rows reject AiOrchestrator.Test.ConsoleSeamDoubles.DisposableFixedZero at step :own_present"
+- "C-8b the counting rows reject AiOrchestrator.Test.ConsoleSeamDoubles.DisposableSubtractOnly at step :own_absent"
+  (filters roots correctly, then subtracts one unconditionally: passes own-present, fails own-absent)
+- "C-8c the counting rows reject AiOrchestrator.Test.ConsoleSeamDoubles.DisposableUnfiltered at step :own_present"
+  (the shared counting rows in =test/support/console_seam_rows.ex= name their steps :own_present / :own_absent /
+  :unavailable / :privacy; both peer directories exist; witnesses derive the run id from the journal; Monitors are
+  started with start_supervised! and the dead one is reaped before use; A4)
+- "C-9 a per-leg budget reset witness fails the single-budget elapsed bound" (DisposablePerLegReset takes >= 600 ms for
+  budget 300 against a suspended Monitor; suspend/resume in try/after)
 Feature rows, =test/contracts/public_console_seam_red_test.exs= (RED at 2c33d78; every row fails on the undefined
 =AiOrchestrator.Prepare= / =AiOrchestrator.Query=; F-1/F-1b through the external consumer's compile):
 - "F-1 the public seam compiles for a consumer that references only exported modules"
@@ -66,8 +74,9 @@ Feature rows, =test/contracts/public_console_seam_red_test.exs= (RED at 2c33d78;
   run_ref_outside_root via symlink, symlinked root accepted; nothing written outside)
 - "F-6 discovery applies the scope filter" (runs under root; escaping symlink counted in skipped_outside_root; file skipped)
 - "F-7 unknown states under ONE total budget with blocking host legs" (no entry -> registered false; a suspended Monitor
-  -> registered and count :unknown, errors for :status and :lookup, elapsed < 550 ms for budget 300 (per-leg would be >= 600);
-  run_id still from the verified journal; A4/R3)
+  -> registered and count :unknown, errors for :status and :lookup REQUIRED and a closed :mounted error PERMITTED,
+  elapsed < 550 ms for budget 300 (per-leg would be >= 600, proven by C-9); suspend/resume in try/after; run_id still
+  from the verified journal; A4/R3)
 - "F-8 counting excludes this directory, ignores other roots, reports unknown lookups and leaks no identity"
   (real Monitor records with live pids: own + same-root peer + outside-root canary -> 1; own absent + two peers -> 2;
   dead Monitor -> :unknown with a :lookup error; no #PID/#Reference/canary path in the view; R3)
@@ -77,6 +86,11 @@ Feature rows, =test/contracts/public_console_seam_red_test.exs= (RED at 2c33d78;
 - "F-10 projection files are outputs, never inputs: canaries deleted, summary AND context unchanged, nothing recreated"
   (seeded canary run-summary.org/run-context.org; expected rendered summary/context computed independently from the
   verified fixture; File.rm!; both Query results unchanged; files not recreated; R4)
+- "F-13 the supplied console actor is journaled by the built-in path (class and id preserved)"
+  (run_cancel_requested.data.requested_by class "console", id "session_abc", verb "cancel"; R3)
+- "F-14 a valid agent-class actor is refused for cancel and the journal bytes and head stay unchanged"
+  (Policy clause command_not_authorized through the public wrapper; no events.head; R3)
+- "F-15 an invalid actor shape is refused before any execution" (invalid_command_actor / command_actor_fields / command_actor_id; bytes unchanged)
 - "F-11 unsupported verbs are refused with the existing clause"
 - "F-12 the public request is a verb and a handle only"
 Preservation (unchanged, must stay green): the CLI test set and the verifier's escript probe; host mount and review controls;

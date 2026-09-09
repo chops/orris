@@ -62,7 +62,8 @@ defmodule AiOrchestrator.Test.ConsoleSeamDoubles do
       ],
       gate_executor: GateDouble,
       # ---- disposable witnesses for the counting rows (F-8 / C-8) and the budget row (F-7 / C-9) ----
-      # Each derives the run id from the resolved directory's journal (as the product must); none takes a witness option.
+      # Each derives the run id from the resolved directory's journal (as the product must); none takes a witness
+      # option.
       gate_helper: GateDouble.helper(),
       gate_opts: [runner: fn _gate, _opts -> {:ok, gate_pass} end],
       review_reader: fn _path -> {:ok, "- Verdict :: clean\n"} end
