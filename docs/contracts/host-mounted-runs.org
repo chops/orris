@@ -66,12 +66,19 @@ live cancellation of a mounted run, projection index and packaging stay outside.
   =stop_request= naming the caller and its deadline; the owner answers from any responsive state, =:retained= for a
   terminal owner (retention kept, nothing terminated) or =:stopping= after it has recorded the stopper (caller
   monitor + deadline) and armed its OWN teardown as its next internal event, so the obligation lives in the owner
-  regardless of the caller's wait; a non-acknowledging owner is inspected through the =:sys= seam (a suspended
-  terminal owner still answers and is kept; a wait can never authorise loss of a cached result) and only an owner
-  that cannot be inspected either (blocked in its start phase) is terminated through the supervisor; answers ={:ok, :stopped}= when teardown completed with every owned DOWN
+  regardless of the caller's wait. LIFECYCLE PROOF: no owner is terminated without positive evidence that it holds no
+  retained result, in this order: (1) the owner's own word (=:retained= / =:stopping=); (2) its =:sys= word (a suspended
+  terminal owner still answers and is kept; any other reported phase is active/startup); (3) runtime evidence the owner
+  cannot withhold: a live =Run.Supervisor= still LINKED to the owner (its =$initial_call=, set by =proc_lib= before init,
+  so a Writer blocked in acquire counts) proves the subtree is not torn down and the owner retains nothing, so it is
+  terminated through the supervisor and killed at the bound. With none of these the state is UNKNOWN (an owner blocked
+  inside a system callback is indistinguishable from a blocked startup by its answers alone): the agent keeps waiting
+  for the owner's word until the shared bound and then reports unproven with the owner UNTOUCHED, because a wait can
+  never authorise the loss of a cached result. Answers ={:ok, :stopped}= when teardown completed with every owned DOWN
   observed, ={:error, %{clause: "run_executor_teardown_incomplete", survivors: n}}= when a join was not observed,
-  ={:error, %{clause: "run_host_stop_unproven"}}= when the child shutdown expired (the supervisor killed the owner; no
-  descendant/disk evidence is claimed: the caller observes =RunLock.owner= and =Ownership.status= itself). After an
+  ={:error, %{clause: "run_host_stop_unproven"}}= when the bound expired without a proven stop (an owner proven active
+  was killed by the supervisor; an owner without evidence was left as it was; no descendant/disk evidence is claimed:
+  the caller observes =RunLock.owner= and =Ownership.status= itself). After an
   active stop the owner is GONE: a second active-stop call answers =run_host_owner_down=. Stop on a retained
   =:terminal= owner is idempotent =:ok= and preserves the cached result. Stop journals nothing.
 - =Host.mounted(host, timeout, batch: n)= — ALL blocking work (the =which_children= discovery and every per-owner status)
@@ -88,8 +95,10 @@ live cancellation of a mounted run, projection index and packaging stay outside.
 - =Host.census(opts) :: {:ok, %{census: :pending | :complete, skipped: n}}= — a NEW function; every slice-1 status,
   lookup and collision shape is unchanged (parity preserved, no additive field on them). Like status/lookup it is a
   bounded call (=timeout:=, default 1_000) that never blocks the Monitor.
-- =Host.stop(handle, timeout)= budget: the caller's =timeout= bounds the WHOLE call; the child's configured shutdown
-  bounds the owner's teardown and is never restarted or extended by a stop call. When the caller's budget elapses
+- =Host.stop(handle, timeout)= budget: the caller's =timeout= bounds the WHOLE call as ONE absolute deadline (an agent
+  death mid-wait continues the same deadline); the child's configured shutdown is ONE shared bound for the request wait,
+  the evidence legs and the teardown, measured from the stop, never restarted or extended by a stop call, and no probe
+  budget inside it exceeds it (small injected bounds shrink the probes; there is no floor). When the caller's budget elapses
   first the call answers ={:error, %{clause: "run_host_stop_timeout"}}= and the teardown continues to its own
   outcome (readable by a later await while the owner lives; otherwise =run_host_owner_down=).
 - Test-only observation seams (declared here so the rows are honest; not an operator API): =Host.RunOwner.inspect(owner)=
@@ -150,7 +159,13 @@ live cancellation of a mounted run, projection index and packaging stay outside.
   requests may be dropped); the Monitor confirms the owner's phase in a bounded linked task under the common census
   deadline and stays responsive throughout (lookups and the deadline are never queued behind a confirmation); when
   the confirmation returns, eligibility, the owner and the generation are re-checked and a confirmed reply never
-  displaces a live different owner or a higher generation; the discovery task is linked to the Monitor so a Monitor
+  displaces a live different owner or a higher generation (each rule independently); every confirmation in flight is
+  correlated with its owner and directory, and an unregister naming that owner (registered or not), a DOWN dropping
+  that owner's entry, or a fresher registration of that directory INVALIDATES it (its result is discarded on arrival
+  and it is not counted as skipped), while
+  a result arriving after the absolute census deadline is counted skipped rather than applied, so a delayed
+  pre-terminal ACTIVE confirmation can never resurrect an entry unregistered in the meantime; the discovery
+  task is linked to the Monitor so a Monitor
   death cannot orphan it, and each batch's pending references are announced by an acknowledged call before its
   requests are sent; a reply whose
   owner does not confirm, or reports =:terminal= (the tree already torn down), is dropped, so a retained terminal
@@ -196,7 +211,12 @@ supervisor loss during stop; R2 queued identity swept at parent shutdown, identi
 identity reaching a retained owner collected; R3 confirmation blocked inside the owner never blocks lookups or the
 deadline, confirmed reply never displaces a live different owner; R4 absent supervisor closed without exiting the
 caller, one shared deadline across legs with the owner kept in unknown results, more than 64 owners at once; R5
-foreground registration with the injected arbiter.
+foreground registration with the injected arbiter. Adopted from the 40a8d546 review: S1 a mounted timeout kills and
+joins its owned discovery worker (linked to the caller, call bounded by the deadline, late reply drained); S2 a listing
+receives only its own workers' monitors and replies, never an unrelated caller DOWN; S3 a delayed active confirmation
+cannot resurrect a completed retained owner, and an ELIGIBLE confirmed reply naming a different live owner never
+displaces the registered one (the older different-owner row is narrowed to eligibility only); S4 a stop cannot destroy
+a terminal owner whose state inspection is blocked, and the lifecycle evidence row pins the link fact the proof rests on.
 RED (=host_mount_red_test.exs=): MR-1 layout and descendants; MR-2 start-ack vs ready (two mounts, one stalled;
 =ready_timeout= leaves the tree untouched); MR-3 ready follows the barrier result (synchronization witness); MR-4
 helper identity and registry owner (visibility awaited with a bounded witness, never assumed); MR-5 parent shutdown at

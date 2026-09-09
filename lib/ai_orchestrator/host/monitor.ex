@@ -150,6 +150,8 @@ defmodule AiOrchestrator.Host.Monitor do
     run_dir = Path.expand(run_dir)
     claimed = {Map.get(record, :owner), Map.get(record, :generation)}
 
+    state = invalidate(state, fn entry -> entry.owner == elem(claimed, 0) end)
+
     case Map.get(state.by_dir, run_dir) do
       %{owner: owner, generation: generation} when {owner, generation} == claimed -> {:noreply, drop(state, run_dir)}
       _stale_or_absent -> {:noreply, state}
@@ -163,14 +165,18 @@ defmodule AiOrchestrator.Host.Monitor do
   def handle_info({:census_deadline, epoch}, %{epoch: epoch} = state) do
     if is_pid(state.task) and Process.alive?(state.task), do: Process.exit(state.task, :kill)
     for {_ref, %{task: task}} <- state.confirming, Process.alive?(task), do: Process.exit(task, :kill)
-    skipped = map_size(state.pending) + map_size(state.confirming)
+    unanswered = Enum.count(state.confirming, fn {_ref, entry} -> not entry.stale end)
+    skipped = state.skipped + map_size(state.pending) + unanswered
     {:noreply, %{state | census: :complete, skipped: skipped, pending: %{}, confirming: %{}, task: nil}}
   end
 
   def handle_info({:census_deadline, _old_epoch}, state), do: {:noreply, state}
 
   # eligibility: the request must still be pending in the current epoch; the owner's confirmation then runs
-  # in a bounded linked task under the common deadline so this process stays responsive throughout
+  # in a bounded linked task under the common deadline so this process stays responsive throughout. The
+  # confirmation is correlated with its owner and directory: an unregister naming that owner, a DOWN dropping that
+  # owner's entry, or a fresher registration of that directory INVALIDATES the in-flight fact (task killed, entry
+  # removed) so a delayed pre-terminal result can never be accepted afterwards
   def handle_info({:census_reply, ref, record, _phase}, %{census: :pending} = state) do
     if Map.has_key?(state.pending, ref) and is_map(record) and is_pid(Map.get(record, :owner)) do
       monitor = self()
@@ -180,8 +186,8 @@ defmodule AiOrchestrator.Host.Monitor do
       task =
         spawn_link(fn -> send(monitor, {:census_confirmed, epoch, ref, record, confirmed_active?(record, budget)}) end)
 
-      {:noreply,
-       %{state | pending: Map.delete(state.pending, ref), confirming: Map.put(state.confirming, ref, %{task: task})}}
+      entry = %{task: task, run_dir: canonical(Map.get(record, :run_dir)), owner: Map.get(record, :owner), stale: false}
+      {:noreply, %{state | pending: Map.delete(state.pending, ref), confirming: Map.put(state.confirming, ref, entry)}}
     else
       {:noreply, state}
     end
@@ -189,10 +195,21 @@ defmodule AiOrchestrator.Host.Monitor do
 
   def handle_info({:census_reply, _ref, _record, _phase}, state), do: {:noreply, state}
 
+  # acceptance re-checks the absolute deadline (a result arriving after it counts as skipped) and discards a
+  # fact invalidated while it was in flight
   def handle_info({:census_confirmed, epoch, ref, record, confirmed?}, %{epoch: epoch} = state) do
     case Map.pop(state.confirming, ref) do
-      {nil, _} -> {:noreply, state}
-      {_task, confirming} -> {:noreply, apply_census(%{state | confirming: confirming}, record, confirmed?)}
+      {nil, _} ->
+        {:noreply, state}
+
+      {%{stale: stale}, confirming} ->
+        state = %{state | confirming: confirming}
+
+        cond do
+          stale -> {:noreply, state}
+          System.monotonic_time(:millisecond) > state.deadline_ms -> {:noreply, %{state | skipped: state.skipped + 1}}
+          true -> {:noreply, apply_census(state, record, confirmed?)}
+        end
     end
   end
 
@@ -240,13 +257,26 @@ defmodule AiOrchestrator.Host.Monitor do
     end
   end
 
-  # a live different owner or a higher generation is never displaced; a dead owner is never indexed
+  # each rule holds independently where a current entry exists: a higher generation is never displaced (even by a
+  # record whose current owner is dead), a live different owner is never displaced, a dead owner is never indexed
   defp census_admissible?(state, %{run_dir: run_dir, owner: owner, generation: generation}) do
     case Map.get(state.by_dir, run_dir) do
-      %{owner: other} when other != owner and is_pid(other) -> not Process.alive?(other) and Process.alive?(owner)
-      %{generation: existing} when existing > generation -> false
-      _ -> Process.alive?(owner)
+      nil ->
+        Process.alive?(owner)
+
+      %{owner: other, generation: existing} ->
+        existing <= generation and (other == owner or not Process.alive?(other)) and Process.alive?(owner)
     end
+  end
+
+  defp canonical(run_dir) when is_binary(run_dir), do: Path.expand(run_dir)
+  defp canonical(_other), do: nil
+
+  # lifecycle invalidation of in-flight confirmations: a matching entry is marked stale; its bounded task may still
+  # finish (or be killed at the deadline) but its result is discarded on arrival and it is not counted as skipped
+  defp invalidate(state, stale?) do
+    confirming = Map.new(state.confirming, fn {ref, entry} -> {ref, Map.put(entry, :stale, stale?.(entry))} end)
+    %{state | confirming: confirming}
   end
 
   defp complete(record) do
@@ -260,7 +290,10 @@ defmodule AiOrchestrator.Host.Monitor do
     end
   end
 
+  # a fresher registration of a directory supersedes every confirmation in flight for it
   defp index(state, %{run_dir: run_dir, run_id: run_id} = record, ref) do
+    state = invalidate(state, fn entry -> entry.run_dir == run_dir end)
+
     %{
       state
       | by_dir: Map.put(state.by_dir, run_dir, record),
@@ -274,7 +307,8 @@ defmodule AiOrchestrator.Host.Monitor do
       {nil, _by_dir} ->
         state
 
-      {%{run_id: run_id}, by_dir} ->
+      {%{run_id: run_id, owner: owner}, by_dir} ->
+        state = invalidate(state, fn entry -> entry.owner == owner end)
         {refs_for_dir, refs} = Enum.split_with(state.refs, fn {_ref, dir} -> dir == run_dir end)
         Enum.each(refs_for_dir, fn {ref, _dir} -> Process.demonitor(ref, [:flush]) end)
 

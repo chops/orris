@@ -22,6 +22,7 @@ defmodule AiOrchestrator.Host do
   alias AiOrchestrator.Host.Supervisor, as: HostSupervisor
   alias AiOrchestrator.Journal.Ownership
   alias AiOrchestrator.Run.Executor, as: RunExecutor
+  alias AiOrchestrator.Run.Supervisor, as: RunSupervisor
 
   @default_timeout 1_000
   @monitor_unavailable %{clause: "host_monitor_unavailable"}
@@ -80,6 +81,7 @@ defmodule AiOrchestrator.Host do
 
   # ---- mounted runs (docs/contracts/host-mounted-runs.org) ----
 
+  @infinite_caller_ms 60_000
   @default_mount_timeout 1_000
   @relay_keys [:join, :handoff_relay]
 
@@ -152,10 +154,11 @@ defmodule AiOrchestrator.Host do
   end
 
   @doc """
-  Synchronous stop bounded by the caller's `timeout` (the whole call); the child shutdown bounds the owner's
-  teardown and is never extended. Answers {:ok, :stopped}, the closed teardown_incomplete, :ok for a retained
-  terminal owner, run_host_owner_down when the owner is gone, run_host_stop_timeout when the caller's budget
-  elapsed first (teardown continues), run_host_stop_unproven when the supervisor had to kill the owner.
+  Synchronous stop bounded by the caller's `timeout` (the whole call, one absolute deadline); the child shutdown
+  bounds the owner's teardown and is never extended. Answers {:ok, :stopped}, the closed teardown_incomplete, :ok
+  for a retained terminal owner, run_host_owner_down when the owner is gone, run_host_stop_timeout when the
+  caller's budget elapsed first (the agent continues), run_host_stop_unproven when the bound elapsed without a
+  proven stop (an owner proven active was killed; an owner that gave no evidence is left untouched).
   """
   @spec stop(map(), timeout()) :: :ok | {:ok, :stopped} | {:error, map()}
   def stop(%{owner: owner} = handle, timeout) do
@@ -165,10 +168,11 @@ defmodule AiOrchestrator.Host do
       caller = self()
       supervisor = Map.get(handle, :supervisor, HostSupervisor)
       child_shutdown = HostSupervisor.child_shutdown_ms(supervisor)
+      deadline = absolute(timeout)
       # the stop agent is neither linked to the caller nor bounded by the caller's wait: it carries the
-      # obligation to obtain an acknowledgment or, failing that, the supervisor's termination
+      # obligation to obtain an acknowledgment or, failing that, a lifecycle proof before any termination
       {agent, amon} = spawn_monitor(fn -> stop_agent(owner, supervisor, child_shutdown, caller, ref, timeout) end)
-      outcome = stop_wait(owner, mon, agent, amon, ref, timeout)
+      outcome = stop_wait(owner, mon, agent, amon, ref, deadline)
       Process.demonitor(mon, [:flush])
       Process.demonitor(amon, [:flush])
       outcome
@@ -177,26 +181,33 @@ defmodule AiOrchestrator.Host do
     end
   end
 
-  defp stop_wait(owner, mon, _agent, amon, ref, timeout) do
+  defp absolute(:infinity), do: :infinity
+  defp absolute(timeout) when is_integer(timeout), do: System.monotonic_time(:millisecond) + timeout
+
+  defp left(:infinity), do: :infinity
+  defp left(deadline), do: max(deadline - System.monotonic_time(:millisecond), 0)
+
+  defp stop_wait(owner, mon, _agent, amon, ref, deadline) do
     receive do
       {:stop_outcome, ^ref, :retained} -> :ok
       {:stop_outcome, ^ref, outcome} -> outcome
       {:DOWN, ^mon, :process, ^owner, :killed} -> {:error, %{clause: "run_host_stop_unproven"}}
       {:DOWN, ^mon, :process, ^owner, _reason} -> stop_outcome_or_down(ref)
-      {:DOWN, ^amon, :process, _agent, _reason} -> stop_wait_owner_only(owner, mon, ref, timeout)
+      {:DOWN, ^amon, :process, _agent, _reason} -> stop_wait_owner_only(owner, mon, ref, deadline)
     after
-      timeout -> {:error, %{clause: "run_host_stop_timeout"}}
+      left(deadline) -> {:error, %{clause: "run_host_stop_timeout"}}
     end
   end
 
-  defp stop_wait_owner_only(owner, mon, ref, timeout) do
+  # the agent is gone: the same absolute caller deadline continues, never a fresh one
+  defp stop_wait_owner_only(owner, mon, ref, deadline) do
     receive do
       {:stop_outcome, ^ref, :retained} -> :ok
       {:stop_outcome, ^ref, outcome} -> outcome
       {:DOWN, ^mon, :process, ^owner, :killed} -> {:error, %{clause: "run_host_stop_unproven"}}
       {:DOWN, ^mon, :process, ^owner, _reason} -> stop_outcome_or_down(ref)
     after
-      timeout -> {:error, %{clause: "run_host_stop_timeout"}}
+      left(deadline) -> {:error, %{clause: "run_host_stop_timeout"}}
     end
   end
 
@@ -209,51 +220,87 @@ defmodule AiOrchestrator.Host do
     end
   end
 
-  # ONE shared bound: acknowledgment wait, the :sys inspection, and the teardown itself all live inside the
-  # declared child shutdown measured from the stop; the caller's wait neither resets nor cancels it. A
-  # retained terminal owner is never touched. An owner still alive at the bound is killed (reported unproven).
+  # ONE shared bound: the acknowledgment wait, the evidence legs and the teardown all live inside the declared
+  # child shutdown measured from the stop; the caller's wait neither resets nor cancels it. The request is sent
+  # once and its reply awaited for the whole bound: no probe budget exceeds the bound (no floor).
+  #
+  # Lifecycle proof before any termination (docs/contracts/host-mounted-runs.org, stop): the owner's own word
+  # (:retained / :stopping), else its :sys word (phase), else RUNTIME evidence the owner cannot withhold: a live
+  # Run.Supervisor still linked to it proves the subtree is not torn down, so the owner holds no retained result
+  # and termination destroys nothing. Without any of these the state is UNKNOWN: the agent keeps waiting for the
+  # owner's word until the bound and then reports unproven with the owner untouched, because a wait can never
+  # authorise the loss of a cached result.
   defp stop_agent(owner, supervisor, child_shutdown, caller, ref, timeout) do
     started = System.monotonic_time(:millisecond)
     remaining = fn -> max(child_shutdown - (System.monotonic_time(:millisecond) - started), 0) end
     mon = Process.monitor(owner)
-    ack_budget = max(min(div(child_shutdown, 2), div(max(timeout, 1), 2)), 50)
+    request = :gen_statem.send_request(owner, {:stop_request, {caller, ref, max(timeout, child_shutdown)}})
+    probe = min(min(div(child_shutdown, 2), div(caller_ms(timeout), 2)), remaining.())
 
-    ack =
-      try do
-        :gen_statem.call(owner, {:stop_request, {caller, ref, max(timeout, child_shutdown)}}, ack_budget)
-      catch
-        :exit, _ -> :no_ack
-      end
+    case :gen_statem.receive_response(request, probe) do
+      :timeout -> stop_unacknowledged(owner, supervisor, caller, ref, request, mon, remaining)
+      answer -> acknowledged(answer, owner, mon, remaining)
+    end
+  end
 
-    case ack do
-      {:ack, :retained} ->
+  defp caller_ms(:infinity), do: @infinite_caller_ms
+  defp caller_ms(timeout), do: timeout
+
+  defp acknowledged({:reply, {:ack, :retained}}, _owner, _mon, _remaining), do: :ok
+  defp acknowledged({:reply, {:ack, :stopping}}, owner, mon, remaining), do: enforce_bound(owner, mon, remaining)
+  defp acknowledged({:error, _owner_down}, _owner, _mon, _remaining), do: :ok
+
+  defp stop_unacknowledged(owner, supervisor, caller, ref, request, mon, remaining) do
+    case lifecycle_evidence(owner, supervisor, remaining) do
+      :retained ->
+        send(caller, {:stop_outcome, ref, :retained})
         :ok
 
-      {:ack, :stopping} ->
+      :active ->
+        spawn(fn -> DynamicSupervisor.terminate_child(supervisor, owner) end)
         enforce_bound(owner, mon, remaining)
 
-      :no_ack ->
-        stop_unacknowledged(owner, supervisor, caller, ref, mon, remaining)
+      :unknown ->
+        case :gen_statem.receive_response(request, remaining.()) do
+          :timeout -> send(caller, {:stop_outcome, ref, {:error, %{clause: "run_host_stop_unproven"}}})
+          answer -> acknowledged(answer, owner, mon, remaining)
+        end
     end
   end
 
-  # no acknowledgment: a suspended terminal owner still answers the :sys seam and is kept; anything else is
-  # terminated through its supervisor and held to the shared bound
-  defp stop_unacknowledged(owner, supervisor, caller, ref, mon, remaining) do
-    phase =
-      try do
-        RunOwner.inspect(owner, min(200, max(remaining.(), 1))).phase
-      catch
-        :exit, _ -> :unknown
-      end
-
-    if phase == :terminal do
-      send(caller, {:stop_outcome, ref, :retained})
-    else
-      spawn(fn -> DynamicSupervisor.terminate_child(supervisor, owner) end)
-      enforce_bound(owner, mon, remaining)
+  defp lifecycle_evidence(owner, supervisor, remaining) do
+    case inspected_phase(owner, min(200, remaining.())) do
+      :terminal -> :retained
+      :unknown -> if subtree_linked?(owner, supervisor), do: :active, else: :unknown
+      _active_or_starting -> :active
     end
   end
+
+  defp inspected_phase(_owner, 0), do: :unknown
+
+  defp inspected_phase(owner, budget) do
+    RunOwner.inspect(owner, budget).phase
+  catch
+    :exit, _ -> :unknown
+  end
+
+  # runtime evidence: a linked process whose initial call is the run supervisor (set by proc_lib at spawn,
+  # before its init, so a Writer blocked in acquire still counts) is a subtree that has not been torn down
+  defp subtree_linked?(owner, _supervisor) do
+    case Process.info(owner, :links) do
+      {:links, links} -> Enum.any?(links, &run_supervisor?/1)
+      nil -> false
+    end
+  end
+
+  defp run_supervisor?(pid) when is_pid(pid) do
+    case Process.info(pid, :dictionary) do
+      {:dictionary, dictionary} -> match?({:supervisor, RunSupervisor, _}, Keyword.get(dictionary, :"$initial_call"))
+      nil -> false
+    end
+  end
+
+  defp run_supervisor?(_port), do: false
 
   defp enforce_bound(owner, mon, remaining) do
     receive do
@@ -273,29 +320,58 @@ defmodule AiOrchestrator.Host do
     supervisor = Map.get(host, :supervisor, HostSupervisor)
     deadline = System.monotonic_time(:millisecond) + timeout
     remaining = fn -> max(deadline - System.monotonic_time(:millisecond), 0) end
-    me = self()
-    dref = make_ref()
-    {_pid, dmon} = spawn_monitor(fn -> send(me, {:discovered, dref, DynamicSupervisor.which_children(supervisor)}) end)
 
-    receive do
-      {:discovered, ^dref, children} ->
-        Process.demonitor(dmon, [:flush])
+    case discover(supervisor, remaining) do
+      {:ok, children} ->
         owners = for {_, pid, _, _} <- children, is_pid(pid), do: pid
         batch = Keyword.get(opts, :batch, :all)
         chunks = if batch == :all, do: [owners], else: Enum.chunk_every(owners, batch)
         {:ok, Enum.flat_map(chunks, &query_batch(&1, remaining))}
 
-      {:DOWN, ^dmon, :process, _pid, _reason} ->
-        {:error, %{clause: "host_supervisor_unavailable"}}
-    after
-      remaining.() ->
+      :unavailable ->
         {:error, %{clause: "host_supervisor_unavailable"}}
     end
   end
 
+  # discovery runs in a worker THIS process owns: linked (the caller's death ends it), its call bounded by what
+  # remains of the deadline (it never outlives the query), joined on timeout with its monitor and any late reply
+  # cleaned up; it exits normally on every path so the link never reaches the caller
+  defp discover(supervisor, remaining) do
+    me = self()
+    dref = make_ref()
+    budget = remaining.()
+    worker = spawn_link(fn -> send(me, {:discovered, dref, which_children(supervisor, budget)}) end)
+    dmon = Process.monitor(worker)
+
+    receive do
+      {:discovered, ^dref, answer} ->
+        Process.demonitor(dmon, [:flush])
+        answer
+
+      {:DOWN, ^dmon, :process, ^worker, _reason} ->
+        drain_discovery(dref)
+        :unavailable
+    after
+      remaining.() ->
+        Process.unlink(worker)
+        Process.exit(worker, :kill)
+        receive(do: ({:DOWN, ^dmon, :process, ^worker, _reason} -> :ok))
+        drain_discovery(dref)
+        :unavailable
+    end
+  end
+
+  defp which_children(supervisor, budget) do
+    {:ok, GenServer.call(supervisor, :which_children, budget)}
+  catch
+    :exit, _ -> :unavailable
+  end
+
+  defp drain_discovery(dref), do: receive(do: ({:discovered, ^dref, _} -> :ok), after: (0 -> :ok))
+
   # the active batch is queried concurrently by unlinked monitored workers, ONE :sys leg per owner, every
   # worker bounded by what remains of the single deadline; an expired batch starts no work; every unknown
-  # result keeps the owner it names
+  # result keeps the owner it names; only THIS batch's worker monitors and replies are ever received
   defp query_batch([], _remaining), do: []
 
   defp query_batch(chunk, remaining) do
@@ -306,7 +382,8 @@ defmodule AiOrchestrator.Host do
     else
       tag = make_ref()
       workers = Map.new(chunk, &{&1, query_worker(&1, tag, budget)})
-      collect_views(workers, tag, remaining, %{})
+      monitors = Map.new(workers, fn {owner, {_pid, mon}} -> {mon, owner} end)
+      collect_views(workers, monitors, tag, remaining, %{})
     end
   end
 
@@ -315,34 +392,32 @@ defmodule AiOrchestrator.Host do
     spawn_monitor(fn -> send(me, {tag, owner, phase_of(owner, budget)}) end)
   end
 
-  defp collect_views(workers, _tag, _remaining, views) when map_size(workers) == 0, do: Map.values(views)
+  defp collect_views(workers, _monitors, _tag, _remaining, views) when map_size(workers) == 0, do: Map.values(views)
 
-  defp collect_views(workers, tag, remaining, views) do
+  defp collect_views(workers, monitors, tag, remaining, views) do
     receive do
       {^tag, owner, view} when is_map_key(workers, owner) ->
         {{_pid, mon}, rest} = Map.pop(workers, owner)
         Process.demonitor(mon, [:flush])
-        collect_views(rest, tag, remaining, Map.put(views, owner, view))
+        collect_views(rest, Map.delete(monitors, mon), tag, remaining, Map.put(views, owner, view))
 
-      {:DOWN, mon, :process, _pid, _reason} ->
-        case Enum.find(workers, fn {_owner, {_p, m}} -> m == mon end) do
-          {owner, _} ->
-            collect_views(Map.delete(workers, owner), tag, remaining, Map.put_new(views, owner, unknown(owner)))
-
-          nil ->
-            collect_views(workers, tag, remaining, views)
-        end
+      {:DOWN, mon, :process, _pid, _reason} when is_map_key(monitors, mon) ->
+        owner = Map.fetch!(monitors, mon)
+        views = Map.put_new(views, owner, unknown(owner))
+        collect_views(Map.delete(workers, owner), Map.delete(monitors, mon), tag, remaining, views)
     after
       remaining.() ->
-        for {owner, {pid, mon}} <- workers do
+        for {_owner, {pid, mon}} <- workers do
           Process.demonitor(mon, [:flush])
           Process.exit(pid, :kill)
-          _ = owner
         end
 
+        drain_views(tag)
         Map.values(Map.merge(Map.new(workers, fn {owner, _} -> {owner, unknown(owner)} end), views))
     end
   end
+
+  defp drain_views(tag), do: receive(do: ({^tag, _owner, _view} -> drain_views(tag)), after: (0 -> :ok))
 
   defp unknown(owner), do: %{run_dir: nil, run_id: nil, owner: owner, phase: :unknown}
 

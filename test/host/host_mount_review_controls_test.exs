@@ -1,8 +1,10 @@
 defmodule AiOrchestrator.Host.MountReviewControlsTest do
   @moduledoc """
   Permanent controls adopted from the 86711a8 review (logs/shared-host-mount-green-86711a8/codex/REVIEW.org):
-  the seven reproduced interleavings plus the neighbouring cases the review names. Each row pins an obligation
-  of docs/contracts/host-mounted-runs.org against the real implementation; none relaxes an outcome.
+  the seven reproduced interleavings plus the neighbouring cases the review names; and from the 40a8d546 review
+  (logs/shared-host-mount-green-40a8d546/codex/REVIEW.org, successor_test.exs): the four measured S1-S4 rows
+  verbatim plus the eligible-replacement and lifecycle-evidence rows it asked for. Each row pins an obligation of
+  docs/contracts/host-mounted-runs.org against the real implementation; none relaxes an outcome.
   """
 
   use ExUnit.Case, async: false
@@ -299,7 +301,9 @@ defmodule AiOrchestrator.Host.MountReviewControlsTest do
     assert {:ok, %{census: :complete}} = Host.census(monitor: h.mon)
   end
 
-  test "R3 a confirmed census reply never displaces a live different owner", %{dir: dir} do
+  # narrowed claim (40a8d546 review): the impostor reply below carries an UNKNOWN reference, so this row checks
+  # eligibility only; replacement precedence under a genuinely eligible reply is the S3 replacement row
+  test "R3 an ineligible (unknown-reference) census reply for a registered directory is ignored", %{dir: dir} do
     h = start_host!(census_timeout: 20_000)
     handle = mount!(h, dir, holding(self(), :subtree_started))
     {_ref, payload, _helper} = await_held!(:subtree_started)
@@ -328,8 +332,7 @@ defmodule AiOrchestrator.Host.MountReviewControlsTest do
       match?({:ok, [%{owner: o}]} when o == handle.owner, Host.lookup_run_id("run_review_0001", monitor: h.mon))
     end)
 
-    # a later reply for the SAME directory naming another live owner is not eligible (its ref is unknown) and,
-    # even if it were, must not displace the live owner
+    # a later reply for the SAME directory naming another live owner is not eligible (its ref is unknown)
     impostor = spawn(fn -> receive(do: (:never -> :ok)) end)
     on_exit(fn -> Process.exit(impostor, :kill) end)
 
@@ -442,5 +445,210 @@ defmodule AiOrchestrator.Host.MountReviewControlsTest do
 
     send(owner, {:release, ref})
     assert {:ok, _} = Task.await(task, @deadline)
+  end
+
+  test "S1 mounted timeout kills and joins its discovery worker" do
+    parent = self()
+
+    sup =
+      spawn(fn ->
+        receive do
+          {:"$gen_call", {worker, _alias}, :which_children} -> send(parent, {:discovery_worker, worker})
+        end
+
+        receive do
+          :finish -> :ok
+        end
+      end)
+
+    on_exit(fn -> Process.exit(sup, :kill) end)
+    assert {:error, %{clause: "host_supervisor_unavailable"}} == Host.mounted(%{supervisor: sup}, 40)
+    assert_receive {:discovery_worker, worker}, 1000
+    on_exit(fn -> Process.exit(worker, :kill) end)
+    refute Process.alive?(worker), "timed-out discovery worker is still blocked in infinite which_children"
+  end
+
+  test "S2 mounted listing does not consume unrelated caller DOWN messages" do
+    {:ok, owner} =
+      Agent.start(fn -> %{phase: :awaiting, config: %{run_dir: "/tmp/control", command: %{run_id: "control"}}} end)
+
+    on_exit(fn -> Process.exit(owner, :kill) end)
+
+    sup =
+      spawn(fn ->
+        receive do
+          {:"$gen_call", from, :which_children} -> GenServer.reply(from, [{:undefined, owner, :worker, []}])
+        end
+      end)
+
+    {dead, mon} = spawn_monitor(fn -> :ok end)
+    Process.sleep(20)
+    assert {:ok, [%{owner: ^owner}]} = Host.mounted(%{supervisor: sup}, 500)
+
+    assert_receive {:DOWN, ^mon, :process, ^dead, :normal},
+                   100,
+                   "listing consumed the caller's unrelated monitor notification"
+  end
+
+  test "S3 delayed active confirmation cannot resurrect a completed retained owner", %{dir: dir} do
+    h = start_host!(census_timeout: 20_000)
+    handle = mount!(h, dir, holding(self(), :subtree_started))
+    {barrier_ref, payload, helper} = await_held!(:subtree_started)
+    {:ok, %{generation: gen}} = Ownership.status(dir, server: h.arb)
+    record = trusted_record(dir, payload, handle.owner, gen)
+    :ok = :sys.suspend(handle.owner)
+    :ok = Supervisor.terminate_child(h.root, Host.Monitor)
+    {:ok, _} = Supervisor.restart_child(h.root, Host.Monitor)
+    mon = Process.whereis(h.mon)
+    wait_until(fn -> Enum.any?(elem(Process.info(handle.owner, :messages), 1), &match?({:census, _, ^mon}, &1)) end)
+    observer = self()
+    tag = make_ref()
+
+    :sys.replace_state(handle.owner, fn state ->
+      receive do
+        {:census, ref, ^mon} -> send(observer, {tag, ref})
+      end
+
+      state
+    end)
+
+    assert_receive {^tag, cref}, 1000
+    :ok = :sys.resume(handle.owner)
+
+    blocker =
+      Task.async(fn ->
+        :sys.replace_state(handle.owner, fn state ->
+          send(observer, :s3_owner_blocked)
+
+          receive do
+            :s3_release -> state
+          after
+            5000 -> state
+          end
+        end)
+      end)
+
+    assert_receive :s3_owner_blocked, 1000
+    send(mon, {:census_reply, cref, record, :barrier_subtree})
+    wait_until(fn -> Map.has_key?(:sys.get_state(mon).confirming, cref) end)
+    task = :sys.get_state(mon).confirming[cref].task
+
+    wait_until(fn ->
+      Enum.any?(
+        elem(Process.info(handle.owner, :messages), 1),
+        &match?({:system, {^task, _}, :get_state}, &1)
+      )
+    end)
+
+    :erlang.suspend_process(task)
+    on_exit(fn -> if Process.alive?(task), do: Process.exit(task, :kill) end)
+    # The owner answers the genuine inspection with its ACTIVE state, while the
+    # confirmation worker is suspended before consuming that answer.
+    send(handle.owner, :s3_release)
+    Task.await(blocker, 6000)
+    wait_until(fn -> elem(Process.info(task, :message_queue_len), 1) > 0 end)
+    send(helper, {:release, barrier_ref})
+    assert {:ok, _} = Host.await(handle, @deadline)
+    assert RunOwner.inspect(handle.owner).phase == :terminal
+    assert {:ok, []} = Host.lookup_run_id("run_review_0001", monitor: mon)
+    :erlang.resume_process(task)
+    wait_until(fn -> not Map.has_key?(:sys.get_state(mon).confirming, cref) end)
+
+    assert {:ok, []} == Host.lookup_run_id("run_review_0001", monitor: mon),
+           "a delayed pre-terminal confirmation restored the unregistered terminal owner"
+  end
+
+  test "S4 stop cannot destroy a terminal owner when state inspection is blocked", %{dir: dir} do
+    h = start_host!(child_shutdown_ms: 500)
+    handle = mount!(h, dir, nil)
+    assert {:ok, result} = Host.await(handle, @deadline)
+    observer = self()
+
+    blocker =
+      spawn(fn ->
+        try do
+          :sys.replace_state(handle.owner, fn state ->
+            send(observer, :s4_blocked)
+
+            receive do
+              :s4_release -> state
+            after
+              3000 -> state
+            end
+          end)
+        catch
+          :exit, _ -> :ok
+        end
+      end)
+
+    assert_receive :s4_blocked, 1000
+    answer = Host.stop(handle, 100)
+    Process.sleep(600)
+    alive = Process.alive?(handle.owner)
+    send(handle.owner, :s4_release)
+    on_exit(fn -> Process.exit(blocker, :kill) end)
+    assert alive, "unconfirmed state was treated as active and the retained result was destroyed"
+    assert answer in [:ok, {:error, %{clause: "run_host_stop_timeout"}}]
+    assert {:ok, ^result} = Host.await(handle, 1000)
+  end
+
+  test "S3 an ELIGIBLE confirmed reply naming a different live owner never displaces the registered one", %{dir: dir} do
+    h = start_host!(census_timeout: 20_000)
+    d2 = dir <> "_other"
+    File.mkdir_p!(d2)
+    on_exit(fn -> File.rm_rf!(d2) end)
+    handle_a = mount!(h, dir, holding(self(), :subtree_started))
+    {_ref_a, payload_a, _helper_a} = await_held!(:subtree_started)
+    handle_b = mount!(h, d2, holding(self(), :subtree_started))
+    {_ref_b, payload_b, _helper_b} = await_held!(:subtree_started)
+    # a restarted Monitor learns A through A's own genuine census answer; B's request is captured instead
+    :ok = :sys.suspend(handle_b.owner)
+    :ok = Supervisor.terminate_child(h.root, Host.Monitor)
+    {:ok, _} = Supervisor.restart_child(h.root, Host.Monitor)
+    mon = Process.whereis(h.mon)
+
+    wait_until(fn ->
+      match?({:ok, [%{owner: o}]} when o == handle_a.owner, Host.lookup_run_id("run_review_0001", monitor: mon))
+    end)
+
+    wait_until(fn -> Enum.any?(elem(Process.info(handle_b.owner, :messages), 1), &match?({:census, _, ^mon}, &1)) end)
+    testpid = self()
+    tag = make_ref()
+
+    :sys.replace_state(handle_b.owner, fn state ->
+      receive(do: ({:census, ref, ^mon} -> send(testpid, {tag, ref})))
+      state
+    end)
+
+    assert_receive {^tag, cref_b}, 1_000
+    :ok = :sys.resume(handle_b.owner)
+    {:ok, %{generation: gen_a}} = Ownership.status(dir, server: h.arb)
+    # genuinely eligible (pending reference), genuinely confirmed (B is ACTIVE at its barrier), same generation:
+    # the record claims A's directory for B and must still lose to the live registered owner
+    forged = trusted_record(dir, payload_b, handle_b.owner, gen_a)
+    send(mon, {:census_reply, cref_b, forged, :barrier_subtree})
+    wait_until(fn -> not Map.has_key?(:sys.get_state(mon).pending, cref_b) end)
+    wait_until(fn -> not Map.has_key?(:sys.get_state(mon).confirming, cref_b) end)
+    assert {:ok, [%{owner: o}]} = Host.lookup_run_id("run_review_0001", monitor: mon)
+    assert o == handle_a.owner, "an eligible confirmed reply displaced a live different owner"
+    assert Process.alive?(handle_b.owner)
+    _ = payload_a
+  end
+
+  test "S4 lifecycle evidence: an owner at its barrier is linked to a live run supervisor, a retained one is not",
+       %{dir: dir} do
+    h = start_host!()
+    handle = mount!(h, dir, holding(self(), :subtree_started))
+    {ref, payload, helper} = await_held!(:subtree_started)
+    {:links, links} = Process.info(handle.owner, :links)
+    assert payload.supervisor in links, "the run supervisor is not linked to its owner"
+    {:dictionary, dictionary} = Process.info(payload.supervisor, :dictionary)
+    assert match?({:supervisor, Run.Supervisor, _}, Keyword.get(dictionary, :"$initial_call"))
+    send(helper, {:release, ref})
+    assert {:ok, _} = Host.await(handle, @deadline)
+    {:links, links} = Process.info(handle.owner, :links)
+    refute payload.supervisor in links
+    refute Enum.any?(links, &(is_pid(&1) and &1 != Process.whereis(h.hsup)))
+    assert :ok == Host.stop(handle, 1_000)
   end
 end
