@@ -1,0 +1,97 @@
+defmodule AiOrchestrator.Host.Executor do
+  @moduledoc """
+  `AiOrchestrator.Commands.Executor` over `AiOrchestrator.Run.Executor` that registers the owned run
+  subtree with `AiOrchestrator.Host.Monitor` (R6: fail-soft).
+
+  The composed barrier registers the owned identities at `:subtree_started` (a guarded cast: every
+  raise, throw or exit of the registration collapses to nothing) and then calls the user's barrier
+  exactly once with the identical label and map, returning its value unchanged and propagating any
+  escape unchanged, so the owner's closed `run_executor_down` semantics are untouched. Every other
+  label passes straight through. After `Run.Executor.execute/2` returns, the caller-side unregister
+  cast is guarded the same way. The command result, the journal bytes and the teardown are exactly
+  what `Run.Executor` produces for the same inputs.
+
+  In-VM seam: the context key `:host_monitor` (pid or registered name, default the Application
+  instance) selects the monitor and is stripped before delegation; it is never a command argument.
+  """
+
+  @behaviour AiOrchestrator.Commands.Executor
+
+  alias AiOrchestrator.Contract.Command
+  alias AiOrchestrator.Host.Monitor
+  alias AiOrchestrator.Journal.Ownership
+  alias AiOrchestrator.Run.Executor, as: RunExecutor
+
+  # the generation is read from the arbiter inside the owner, bounded so a silent arbiter costs the
+  # command at most this much and never its result
+  @generation_budget 1_000
+
+  @impl AiOrchestrator.Commands.Executor
+  @spec execute(Command.t(), keyword()) :: {:ok, map()} | {:error, map()}
+  def execute(%Command{} = command, context) when is_list(context) do
+    {monitor, context} = Keyword.pop(context, :host_monitor, Monitor)
+    caller = self()
+    token = make_ref()
+    user_barrier = Keyword.get(context, :barrier)
+    composed = compose(user_barrier, monitor, command, context[:run_dir], caller, token)
+    result = RunExecutor.execute(command, Keyword.put(context, :barrier, composed))
+    unregister_registered(monitor, token)
+    result
+  end
+
+  def execute(command, context), do: RunExecutor.execute(command, context)
+
+  defp compose(user_barrier, monitor, command, run_dir, caller, token) do
+    fn
+      :subtree_started = label, owned ->
+        guarded(fn -> register(monitor, command, run_dir, owned, caller, token) end)
+        call_user(user_barrier, label, owned)
+
+      label, owned ->
+        call_user(user_barrier, label, owned)
+    end
+  end
+
+  # no user barrier: the owner would have skipped the call, so the composed one answers :ok itself
+  defp call_user(nil, _label, _owned), do: :ok
+  defp call_user(barrier, label, owned) when is_function(barrier, 2), do: barrier.(label, owned)
+
+  defp register(monitor, %Command{run_id: run_id}, run_dir, owned, caller, token) when is_binary(run_dir) do
+    with {:ok, %{generation: generation}} <- Ownership.status(run_dir, acquire_timeout: @generation_budget),
+         {:ok, record} <- record(run_dir, run_id, owned, generation) do
+      :ok = Monitor.register(monitor, record)
+      send(caller, {__MODULE__, token, record})
+    end
+
+    :ok
+  end
+
+  defp register(_monitor, _command, _run_dir, _owned, _caller, _token), do: :ok
+
+  defp record(run_dir, run_id, owned, generation) do
+    identities = Map.take(owned, [:owner, :supervisor, :server, :writer, :worker])
+
+    if map_size(identities) == 5 and Enum.all?(Map.values(identities), &is_pid/1) do
+      {:ok, Map.merge(identities, %{run_dir: run_dir, run_id: run_id, generation: generation})}
+    else
+      :error
+    end
+  end
+
+  # the record the barrier registered reaches the caller as one private message consumed here; when
+  # the barrier never ran (refused command, escaped barrier) there is nothing to consume
+  defp unregister_registered(monitor, token) do
+    receive do
+      {__MODULE__, ^token, record} -> guarded(fn -> Monitor.unregister(monitor, record) end)
+    after
+      0 -> :ok
+    end
+  end
+
+  defp guarded(fun) do
+    fun.()
+    :ok
+  catch
+    _kind, _reason -> :ok
+  end
+end

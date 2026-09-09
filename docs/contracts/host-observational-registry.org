@@ -1,10 +1,16 @@
 #+TITLE: Observational host registry: in-VM live-run lookup without admission changes
-#+PROPERTY: status interface contract (RED; no implementation yet)
+#+PROPERTY: status implemented in-VM slice (GREEN); rows in test/host/
 
 * Implementation status
-Not implemented. This document and =test/host/host_registry_red_test.exs= define the first shared-host
-slice; =test/host/host_baseline_control_test.exs= pins the oracles the rows compare against on the current
-source. No library, CLI, dependency or admission change is part of this slice.
+Implemented (in-VM slice): =lib/ai_orchestrator/host.ex= (=AiOrchestrator.Host=: =status/2=, =lookup_run_id/2=,
+=collision/2=), =lib/ai_orchestrator/host/monitor.ex= (=Host.Monitor=) and =lib/ai_orchestrator/host/executor.ex=
+(=Host.Executor=); the Application mounts =Host.Monitor= after =Journal.Ownership=. The rows in
+=test/host/host_registry_red_test.exs= are the acceptance; =test/host/host_baseline_control_test.exs= pins the
+oracles they compare against. Nothing under =lib/ai_orchestrator/run/= changed, admission is unchanged and
+=Run= does not depend on =Host=. Delivered boundary deps are =[Run, Commands, Contract, Journal]= (Projection
+and Config are not used by this slice). Not delivered here, by design: the CLI does not route through
+=Host.Executor= yet (no runtime switch), no endpoint, no host-mounted run subtrees, no dependency change.
+=collision/2= answers ={:ok, %{clause: "host_registry_unique", count}}= when at most one directory carries the id.
 
 * Scope
 One BEAM. A purpose-built observational monitor records which run directories are live under this VM's
@@ -14,8 +20,8 @@ invocation) cannot see this monitor; cross-process views belong to a later host 
 
 * Boundary layout
 A new boundary =AiOrchestrator.Host= sits ABOVE =AiOrchestrator.Run= with dependencies
-=[Run, Commands, Contract, Journal, Projection, Config]= and exports =[Executor, Monitor]=. The Application and
-the CLI depend on =Host=; =Run= never depends on =Host=. Nothing under =lib/ai_orchestrator/run/= changes.
+=[Run, Commands, Contract, Journal]= and exports =[Executor, Monitor]=. The Application depends on =Host= (the
+CLI will once it routes commands through =Host.Executor=); =Run= never depends on =Host=. Nothing under =lib/ai_orchestrator/run/= changes.
 
 * Interface
 - =AiOrchestrator.Host.Monitor= :: a GenServer; the Application starts one named instance after

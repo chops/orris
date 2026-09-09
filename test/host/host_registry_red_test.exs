@@ -287,7 +287,9 @@ defmodule AiOrchestrator.Host.RegistryRedTest do
       task = start_async("start", dir, host_executor(), holding_barrier(self(), :live), host_monitor: monitor)
       {ref, _owned, owner} = await_held!(:live)
       assert {:ok, %{registered: true, generation: gen}} = host().status(dir, monitor: monitor)
-      {:ok, before} = journal(dir)
+      # the held run's own worker keeps journaling behind the barrier; the duplicates are measured
+      # against the journal once that run has nothing more to append
+      before = quiescent_journal!(dir)
 
       for verb <- ["start", "resume", "cancel"] do
         via_host =
@@ -413,7 +415,7 @@ defmodule AiOrchestrator.Host.RegistryRedTest do
       started = System.monotonic_time(:millisecond)
       task = Task.async(fn -> host().status(dir, monitor: proxy, ownership: stalled, timeout: @budget) end)
       assert_receive {:proxy_held, ^proxy, hold_ref}, @deadline
-      Process.sleep(@monitor_delay - (System.monotonic_time(:millisecond) - started))
+      Process.sleep(max(@monitor_delay - (System.monotonic_time(:millisecond) - started), 0))
       send(proxy, {:proxy_release, hold_ref})
       assert {:error, %{clause: "host_ownership_unavailable"}} = Task.await(task, @budget + @deadline)
       elapsed = System.monotonic_time(:millisecond) - started
@@ -596,6 +598,23 @@ defmodule AiOrchestrator.Host.RegistryRedTest do
       {:inv, ^route, label} -> [label | invocations(route)]
     after
       100 -> []
+    end
+  end
+
+  # the journal bytes once they have stopped changing for a settle window (bounded by @deadline)
+  defp quiescent_journal!(dir, previous \\ nil, since \\ System.monotonic_time(:millisecond)) do
+    {:ok, current} = journal(dir)
+
+    cond do
+      current == previous ->
+        current
+
+      System.monotonic_time(:millisecond) - since > @deadline ->
+        flunk("the held run's journal never settled")
+
+      true ->
+        Process.sleep(250)
+        quiescent_journal!(dir, current, since)
     end
   end
 

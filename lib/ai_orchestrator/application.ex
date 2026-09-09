@@ -1,7 +1,7 @@
 defmodule AiOrchestrator.Application do
   @moduledoc false
 
-  use Boundary, deps: [AiOrchestrator, AiOrchestrator.Journal]
+  use Boundary, deps: [AiOrchestrator, AiOrchestrator.Host, AiOrchestrator.Journal]
   use Application
 
   @impl true
@@ -27,8 +27,10 @@ defmodule AiOrchestrator.Application do
   the restarted arbiter reconstructs its registrations as the run trees
   restart above their own locks.
 
-  Run trees mount after the arbiter; none exist yet.
+  `AiOrchestrator.Host.Monitor` mounts after the arbiter: it only observes the run
+  subtrees whose writers the arbiter admitted, so losing the arbiter must take the
+  observations with it. Run trees mount after both; none exist yet.
   """
   @spec children() :: [Supervisor.child_spec() | {module(), term()} | module()]
-  def children, do: [AiOrchestrator.Journal.Ownership]
+  def children, do: [AiOrchestrator.Journal.Ownership, AiOrchestrator.Host.Monitor]
 end
