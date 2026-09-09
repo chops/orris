@@ -151,7 +151,7 @@ defmodule AiOrchestrator.Host.MountBaselineTest do
   end
 
   test "MB-5 Run.Recovery.evidence/2 reads the journal only: it neither acquires nor disturbs a held lock", %{dir: dir} do
-    {:ok, arb} = Ownership.start_link(name: nil)
+    arb = start_supervised!({Ownership, name: nil})
     File.write!(Path.join(dir, "events.jsonl"), "", [:exclusive])
     {:ok, writer, _} = Writer.open(dir, fs: SystemFs.new(), lock: lock_opts(), ownership: [server: arb])
     {:ok, %{"token" => token}} = RunLock.owner(SystemFs.new(), dir)
@@ -161,13 +161,21 @@ defmodule AiOrchestrator.Host.MountBaselineTest do
     :ok = Writer.close(writer)
   end
 
-  test "MB-6 today Run.Supervisor registers its Writer with the GLOBAL arbiter even when opts[:ownership] names a private one",
+  test "MB-6a (permanent preservation) Run.Supervisor without an ownership option registers with the GLOBAL arbiter",
        %{dir: dir} do
-    {:ok, arb} = Ownership.start_link(name: nil)
-    config = run_config(dir, ownership: [server: arb])
-    {:ok, sup} = Run.Supervisor.start_link(config)
-    # the test process is the subtree's linked parent; unlink before the orderly stop
-    Process.unlink(sup)
+    Process.flag(:trap_exit, true)
+    {:ok, sup} = Run.Supervisor.start_link(run_config(dir, []))
+    assert {:ok, %{state: :live}} = Ownership.status(dir)
+    :ok = Supervisor.stop(sup, :shutdown, @deadline)
+    assert :none == Ownership.status(dir)
+  end
+
+  @tag :historical
+  test "MB-6b (historical; retired by the approved passthrough refactor) today an injected ownership option is ignored by Run.Supervisor",
+       %{dir: dir} do
+    Process.flag(:trap_exit, true)
+    arb = start_supervised!({Ownership, name: nil})
+    {:ok, sup} = Run.Supervisor.start_link(run_config(dir, ownership: [server: arb]))
     assert :none == Ownership.status(dir, server: arb)
     assert {:ok, %{state: :live}} = Ownership.status(dir)
     :ok = Supervisor.stop(sup, :shutdown, @deadline)

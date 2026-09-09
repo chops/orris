@@ -1,3 +1,18 @@
+# A discovery stand-in for MR-15: forwards every call to the real host supervisor after a fixed delay.
+defmodule AiOrchestrator.Host.MountRedTest.DelayingProxy do
+  @moduledoc false
+  use GenServer
+
+  def start_link(opts), do: GenServer.start_link(__MODULE__, Map.new(opts))
+  @impl true
+  def init(state), do: {:ok, state}
+  @impl true
+  def handle_call(request, _from, %{target: target, delay: delay} = state) do
+    Process.sleep(delay)
+    {:reply, GenServer.call(target, request, 15_000), state}
+  end
+end
+
 defmodule AiOrchestrator.Host.MountRedTest do
   @moduledoc """
   RED acceptance rows for host-mounted runs (docs/contracts/host-mounted-runs.org).
@@ -16,6 +31,7 @@ defmodule AiOrchestrator.Host.MountRedTest do
 
   alias AiOrchestrator.Commands
   alias AiOrchestrator.Contract.Moment
+  alias AiOrchestrator.Host.MountRedTest.DelayingProxy
   alias AiOrchestrator.Journal.Fs.SystemFs
   alias AiOrchestrator.Journal.Ownership
   alias AiOrchestrator.Journal.RunLock
@@ -46,11 +62,54 @@ defmodule AiOrchestrator.Host.MountRedTest do
           {host(), :await, 2},
           {host(), :stop, 2},
           {host(), :mounted, 2},
-          {host(), :census, 1}
+          {host(), :census, 1},
+          {run_owner(), :inspect, 1}
         ] do
       assert Code.ensure_loaded?(mod) and function_exported?(mod, fun, arity),
              "#{inspect(mod)}.#{fun}/#{arity} does not exist"
     end
+  end
+
+  # the exact identities under the TRUSTED supervisor by child id (the H-6a lesson): every-DOWN checks use this map,
+  # never the subset the implementation chose to put in a payload
+  defp trusted_map!(supervisor) do
+    children = Supervisor.which_children(supervisor)
+    {_, server, _, _} = List.keyfind(children, Run.Server, 0)
+    {_, work, :supervisor, _} = List.keyfind(children, Run.Work.Supervisor, 0)
+    {_, writer, _, _} = Enum.find(children, &match?({{Writer, _}, pid, _, _} when is_pid(pid), &1))
+    [{_, worker, _, _}] = Supervisor.which_children(work)
+    %{supervisor: supervisor, server: server, writer: writer, work: work, worker: worker}
+  end
+
+  defp assert_payload_exact!(payload, owner) do
+    expected = payload.supervisor |> trusted_map!() |> Map.put(:owner, owner)
+    assert Enum.sort(Map.keys(payload)) == Enum.sort(Map.keys(expected)), "payload key set differs"
+    for {role, pid} <- expected, do: assert(payload[role] == pid, "#{role} identity differs")
+    expected
+  end
+
+  # a trapping test-owned process running `fun`, joined afterwards (Recovery.acquire requires a trapping caller)
+  defp trapping!(fun) do
+    parent = self()
+    ref = make_ref()
+
+    pid =
+      spawn(fn ->
+        Process.flag(:trap_exit, true)
+        send(parent, {ref, fun.()})
+      end)
+
+    mon = Process.monitor(pid)
+
+    result =
+      receive do
+        {^ref, r} -> r
+      after
+        @deadline -> flunk("trapping helper never answered")
+      end
+
+    assert_receive {:DOWN, ^mon, :process, ^pid, _}, @deadline
+    result
   end
 
   # ---- the isolated host root: private arbiter, host supervisor, monitor (Monitor LAST) ----
@@ -183,12 +242,16 @@ defmodule AiOrchestrator.Host.MountRedTest do
 
   # ================================================================= rows
   describe "layout and readiness" do
-    test "MR-1 the Application root order and a mounted tree as a descendant", %{dir: dir} do
+    test "MR-1b the Application root order is [Ownership, Host.Supervisor, Host.Monitor] (behavioural row)" do
       assert [Ownership, host_sup(), monitor_mod()] == AiOrchestrator.Application.children()
+    end
+
+    test "MR-1a a mounted tree is a descendant with the exact trusted identities in its barrier payload", %{dir: dir} do
       h = start_host!()
       handle = mount!(h, dir, holding(self(), :subtree_started))
       {ref, payload, helper} = await_held!(:subtree_started)
       assert handle.owner == payload.owner
+      assert_payload_exact!(payload, handle.owner)
       assert handle.owner in Enum.map(DynamicSupervisor.which_children(h.hsup), &elem(&1, 1))
       # Run.Supervisor's parent link is the owner itself (single owner, no protocol process)
       {:links, links} = Process.info(payload.supervisor, :links)
@@ -221,8 +284,7 @@ defmodule AiOrchestrator.Host.MountRedTest do
       handle = mount!(h, dir, holding(self(), :subtree_started))
       {ref, _payload, helper} = await_held!(:subtree_started)
       waiter = Task.async(fn -> host().ready(handle, @deadline) end)
-      refute_receive _, 200
-      assert nil == Task.yield(waiter, 100), "ready answered while the barrier had not returned"
+      assert nil == Task.yield(waiter, 300), "ready answered while the barrier had not returned"
       send(helper, {:release, ref})
       assert {:ok, %{supervisor: _, server: _, writer: _, worker: _}} = Task.await(waiter, @deadline)
       assert match?({:ok, %{}}, host().await(handle, @deadline))
@@ -234,9 +296,14 @@ defmodule AiOrchestrator.Host.MountRedTest do
       {ref, payload, helper} = await_held!(:subtree_started)
       assert helper != payload.owner, "the mounted barrier runs in a helper, not in the owner"
       assert payload.owner == handle.owner
+      expected = assert_payload_exact!(payload, handle.owner)
+      # registration precedes the user barrier inside the same helper: it is proven WHILE the run is held
+      {:ok, %{owner: registered, supervisor: sup, server: srv, writer: wr, worker: wk}} = await_registered!(h, dir)
+
+      assert {registered, sup, srv, wr, wk} ==
+               {handle.owner, expected.supervisor, expected.server, expected.writer, expected.worker}
+
       send(helper, {:release, ref})
-      {:ok, %{owner: registered}} = await_registered!(h, dir)
-      assert registered == handle.owner
       assert match?({:ok, %{}}, host().await(handle, @deadline))
     end
   end
@@ -256,7 +323,7 @@ defmodule AiOrchestrator.Host.MountRedTest do
         h = start_host!()
         handle = mount!(h, d, holding(self(), hold))
         {ref, payload, helper} = await_held!(hold)
-        mons = monitor_all(owned_pids(payload))
+        mons = payload.supervisor |> trusted_map!() |> Map.values() |> monitor_all()
         hmon = Process.monitor(helper)
 
         if suspend_server? do
@@ -286,8 +353,9 @@ defmodule AiOrchestrator.Host.MountRedTest do
         h = start_host!()
         handle = mount!(h, d, holding(self(), hold))
         {_ref, payload, helper} = await_held!(hold)
-        :ok = :sys.suspend(Map.fetch!(payload, role))
-        mons = monitor_all(owned_pids(payload))
+        trusted = trusted_map!(payload.supervisor)
+        :ok = :sys.suspend(Map.fetch!(trusted, role))
+        mons = trusted |> Map.values() |> monitor_all()
         hmon = Process.monitor(helper)
         kill_join!(handle.owner)
         assert_receive {:DOWN, ^hmon, :process, ^helper, _}, @deadline
@@ -323,15 +391,31 @@ defmodule AiOrchestrator.Host.MountRedTest do
         )
 
       handle = mount!(h, dir, nil, fs: fs)
-      assert_receive {:blocking, _}, @deadline
-      started = System.monotonic_time(:millisecond)
-      assert {:error, %{clause: "run_host_stop_unproven"}} == host().stop(handle, 2_000)
-      assert System.monotonic_time(:millisecond) - started < 1_000 + 2_000 + @slack
-      # the caller observes the disk and the arbiter itself: nothing was acquired, nothing is claimed
+      assert_receive {:blocking, blocked}, @deadline
+
+      try do
+        # the hook blocks the acquire INSIDE the private arbiter's call path: that arbiter is unavailable, not :none
+        assert match?(
+                 {:error, %{clause: "ownership_unavailable"}},
+                 Ownership.status(dir, server: h.arb, acquire_timeout: 300)
+               )
+
+        started = System.monotonic_time(:millisecond)
+        assert {:error, %{clause: "run_host_stop_unproven"}} == host().stop(handle, 2_000)
+        assert System.monotonic_time(:millisecond) - started < 1_000 + 2_000 + @slack
+        refute handle.owner in Enum.map(DynamicSupervisor.which_children(h.hsup), &elem(&1, 1))
+        # while the hook is still held nothing about the lock is claimed: unproven stays unproven
+      after
+        send(blocked, :unblock)
+      end
+
+      # EVENTUAL outcome after the controlled release: the caller observes lock and arbiter itself
+      bmon = Process.monitor(blocked)
+      assert_receive {:DOWN, ^bmon, :process, ^blocked, _}, @deadline
+      wait_until(fn -> Ownership.status(dir, server: h.arb, acquire_timeout: 500) == :none end)
       assert :none == RunLock.owner(SystemFs.new(), dir)
-      assert :none == Ownership.status(dir, server: h.arb)
-      refute handle.owner in Enum.map(DynamicSupervisor.which_children(h.hsup), &elem(&1, 1))
-      # responsive control on a fresh directory: the hook is released before stop
+      # responsive control on a SEPARATE isolated host: the hook is released before stop
+      h2 = start_host!()
       other = dir <> "_released"
       File.mkdir_p!(other)
       on_exit(fn -> File.rm_rf!(other) end)
@@ -349,12 +433,12 @@ defmodule AiOrchestrator.Host.MountRedTest do
            end}
         )
 
-      h2 = mount!(h, other, holding(self(), :subtree_started), fs: fs2)
-      assert_receive {:blocking2, blocked}, @deadline
-      send(blocked, :unblock)
+      handle2 = mount!(h2, other, holding(self(), :subtree_started), fs: fs2)
+      assert_receive {:blocking2, blocked2}, @deadline
+      send(blocked2, :unblock)
       {ref, _payload, helper} = await_held!(:subtree_started)
-      assert {:ok, :stopped} == host().stop(h2, @deadline)
-      assert_released!(other, h.arb)
+      assert {:ok, :stopped} == host().stop(handle2, @deadline)
+      assert_released!(other, h2.arb)
       refute Process.alive?(helper)
       send(helper, {:release, ref})
     end
@@ -390,25 +474,63 @@ defmodule AiOrchestrator.Host.MountRedTest do
         # the kill itself succeeded (control): the processes are gone even though the join was reported unobserved
         refute Process.alive?(victim)
       end
+
+      # (c) the caller's stop budget bounds the whole call and never extends the child shutdown
+      d = dir <> "_stop_timeout"
+      File.mkdir_p!(d)
+      on_exit(fn -> File.rm_rf!(d) end)
+      h = start_host!(child_shutdown_ms: 5_000)
+
+      slow = fn pid, mon, timeout ->
+        Process.sleep(400)
+        receive(do: ({:DOWN, ^mon, :process, ^pid, _} -> true), after: (timeout -> false))
+      end
+
+      handle = mount!(h, d, holding(self(), :subtree_started), join: slow)
+      {_ref, _payload, _helper} = await_held!(:subtree_started)
+      {result, elapsed} = timed(fn -> host().stop(handle, 100) end)
+      assert {:error, %{clause: "run_host_stop_timeout"}} == result
+      assert elapsed < 100 + @slack
+      # the teardown continued to its own outcome
+      wait_until(fn -> not Process.alive?(handle.owner) end)
+      assert_released!(d, h.arb)
     end
 
-    test "MR-9 a worker identity delivered before the producer died is swept and joined by the same owner", %{dir: dir} do
+    test "MR-9 late identity: the producer (Run.Server) is joined before the sweep; a synthetic identity with the real ref is swept",
+         %{dir: dir} do
+      # (a) REAL producer cut point: the Server is suspended the moment it starts (trace from Run.Supervisor's init),
+      # so the owner sits in :handoff with no identity; stop tears down; the Server's DOWN is joined; no identity ever
+      # reaches the owner (Server and Worker do not trap exits, so a stopped producer cannot send later)
       h = start_host!()
+      handle = mount!(h, dir, nil)
+      assert_receive {:run_child_started, sup, :server, server}, @deadline
+      :ok = :sys.suspend(server)
+      smon = Process.monitor(server)
+      wait_until(fn -> run_owner().inspect(handle.owner).phase == :handoff end)
+      assert {:ok, :stopped} == host().stop(handle, @deadline)
+      assert_receive {:DOWN, ^smon, :process, ^server, _}, @deadline
+      refute Process.alive?(sup)
+      assert_released!(dir, h.arb)
+      # (b) SYNTHETIC witness (labelled): the sweep after the joins kills an identity carrying the REAL handoff ref
+      d2 = dir <> "_synthetic"
+      File.mkdir_p!(d2)
+      on_exit(fn -> File.rm_rf!(d2) end)
 
       slow = fn pid, mon, timeout ->
         Process.sleep(150)
         receive(do: ({:DOWN, ^mon, :process, ^pid, _} -> true), after: (timeout -> false))
       end
 
-      handle = mount!(h, dir, holding(self(), :subtree_started), join: slow)
-      {_ref, _payload, _helper} = await_held!(:subtree_started)
-      %{ref: href} = run_owner().handoff(handle.owner)
+      handle2 = mount!(h, d2, holding(self(), :subtree_started), join: slow)
+      {_ref, payload, _helper} = await_held!(:subtree_started)
+      %{handoff_ref: href} = run_owner().inspect(handle2.owner)
       stray = spawn(fn -> receive(do: (:never -> :ok)) end)
-      smon = Process.monitor(stray)
-      stopper = Task.async(fn -> host().stop(handle, @deadline) end)
-      Process.sleep(100)
-      send(handle.owner, {:run_worker_registered, href, stray, self()})
-      assert_receive {:DOWN, ^smon, :process, ^stray, :killed}, @deadline
+      on_exit(fn -> Process.exit(stray, :kill) end)
+      smon2 = Process.monitor(stray)
+      stopper = Task.async(fn -> host().stop(handle2, @deadline) end)
+      wait_until(fn -> run_owner().inspect(handle2.owner).phase == :tearing_down end)
+      send(handle2.owner, {:run_worker_registered, href, stray, payload.server})
+      assert_receive {:DOWN, ^smon2, :process, ^stray, :killed}, @deadline
       assert {:ok, :stopped} == Task.await(stopper, @deadline)
     end
   end
@@ -421,8 +543,11 @@ defmodule AiOrchestrator.Host.MountRedTest do
       {ref, _payload, helper} = await_held!(:subtree_started)
       # (a) live caller, call timed out: the entry expires within its own deadline; observed through :sys (no event)
       assert {:error, %{clause: "await_timeout"}} == host().await(handle, 100)
+      # inspection is a system message, never an owner event: once the entry's own deadline (the caller's 100 ms)
+      # has passed it is gone WITHOUT any other message reaching the owner (a lazy, event-driven expiry would
+      # still show it here, because :sys.get_state is not an event)
       Process.sleep(150)
-      assert 0 == run_owner().waiter_count(handle.owner)
+      assert 0 == run_owner().inspect(handle.owner).waiters
       # (b) dead caller: DOWN cleanup
       dead = spawn(fn -> host().await(handle, @deadline) end)
       assert_waiters!(handle.owner, 1)
@@ -462,16 +587,24 @@ defmodule AiOrchestrator.Host.MountRedTest do
       dir: dir
     } do
       h = start_host!()
-      # G-lock-1: after stop the directory is reacquirable by a real Writer under the same arbiter
+      # G-lock-1: after stop the directory is reacquirable by a real Writer and by Recovery.acquire (trapping caller)
       handle = mount!(h, dir, holding(self(), :handoff_received))
       {_ref, _payload, _helper} = await_held!(:handoff_received)
       assert {:ok, :stopped} == host().stop(handle, @deadline)
       assert_released!(dir, h.arb)
       assert {:ok, writer, _} = Writer.open(dir, fs: SystemFs.new(), lock: lock_opts(), ownership: [server: h.arb])
       assert :ok == Writer.close(writer)
-      assert {:ok, acquired} = Run.Recovery.acquire(dir, lock: lock_opts(), ownership: [server: h.arb])
-      assert :ok == Run.Recovery.release(acquired)
-      # G-lock-2a: a failed tombstone link on release answers close_failed naming the lock leg; the record is retained
+
+      outcome =
+        trapping!(fn ->
+          with {:ok, acquired} <- Run.Recovery.acquire(dir, lock: lock_opts(), ownership: [server: h.arb]) do
+            Run.Recovery.release(acquired)
+          end
+        end)
+
+      assert :ok == outcome
+      assert_released!(dir, h.arb)
+      # G-lock-2a: a failed tombstone link on release -> close_failed naming the lock leg; the record is retained :down
       d2 = dir <> "_failrelease"
       File.mkdir_p!(d2)
       on_exit(fn -> File.rm_rf!(d2) end)
@@ -481,17 +614,28 @@ defmodule AiOrchestrator.Host.MountRedTest do
       :ok = FaultFs.inject(fs, :link, fn _ -> true end, {:error, :eacces})
       assert {:error, %{clause: "close_failed", failures: failures}} = Writer.close(w2)
       assert Enum.any?(failures, &(&1.leg == "lock"))
-      assert {:ok, %{state: :down}} = Ownership.status(d2, server: h.arb)
+      wait_until(fn -> match?({:ok, %{state: :down}}, Ownership.status(d2, server: h.arb)) end)
       assert {:ok, %{}} = RunLock.owner(SystemFs.new(), d2)
-      # the next real acquire under the same arbiter either reclaims or answers the arbiter's closed reclaim_failed
-      case Writer.open(d2, fs: SystemFs.new(), lock: lock_opts(), ownership: [server: h.arb]) do
-        {:ok, w3, _} ->
-          assert :ok == Writer.close(w3)
+      # deterministic per path: (i) responsive FS under the same arbiter reclaims -> a real Writer opens
+      assert {:ok, w3, _} = Writer.open(d2, fs: SystemFs.new(), lock: lock_opts(), ownership: [server: h.arb])
+      assert :ok == Writer.close(w3)
+      assert_released!(d2, h.arb)
+      # (ii) injected failure on the reclaim itself -> the arbiter's closed reclaim_failed (no path bytes)
+      d4 = dir <> "_reclaimfail"
+      File.mkdir_p!(d4)
+      on_exit(fn -> File.rm_rf!(d4) end)
+      fs4 = FaultFs.new()
+      File.write!(Path.join(d4, "events.jsonl"), "", [:exclusive])
+      {:ok, w5, _} = Writer.open(d4, fs: fs4, lock: lock_opts(), ownership: [server: h.arb])
+      :ok = FaultFs.inject(fs4, :link, fn _ -> true end, {:error, :eacces})
+      assert {:error, %{clause: "close_failed"}} = Writer.close(w5)
+      fs5 = FaultFs.new()
+      :ok = FaultFs.inject(fs5, :link, fn _ -> true end, {:error, :eacces})
 
-        {:error, %{clause: clause} = rejection} ->
-          assert clause == "reclaim_failed" and not is_map_key(rejection, :path), inspect(rejection)
-      end
+      assert {:error, %{clause: "reclaim_failed"} = rejection} =
+               Writer.open(d4, fs: fs5, lock: lock_opts(), ownership: [server: h.arb])
 
+      refute Map.has_key?(rejection, :path)
       # G-lock-2b: a killed Writer strands the lock; a fresh arbiter refuses the live same-OS holder as run_locked
       d3 = dir <> "_killed"
       File.mkdir_p!(d3)
@@ -500,8 +644,8 @@ defmodule AiOrchestrator.Host.MountRedTest do
       {:ok, w4, _} = Writer.open(d3, fs: SystemFs.new(), lock: lock_opts(), ownership: [server: h.arb])
       Process.unlink(w4)
       kill_join!(w4)
-      assert {:ok, %{state: :down}} = Ownership.status(d3, server: h.arb)
-      {:ok, fresh} = Ownership.start_link(name: nil)
+      wait_until(fn -> match?({:ok, %{state: :down}}, Ownership.status(d3, server: h.arb)) end)
+      fresh = start_supervised!(%{id: :fresh_arb, start: {Ownership, :start_link, [[name: nil]]}})
 
       assert {:error, %{clause: "run_locked"}} =
                Writer.open(d3, fs: SystemFs.new(), lock: lock_opts(), ownership: [server: fresh])
@@ -512,85 +656,121 @@ defmodule AiOrchestrator.Host.MountRedTest do
       handle = mount!(h, dir, holding(self(), :handoff_received))
       {_ref, _payload, _helper} = await_held!(:handoff_received)
       {:ok, before} = File.read(Path.join(dir, "events.jsonl"))
-      {command, ctx} = cancel_ctx(dir)
+      # same-BEAM comparison through the SAME private arbiter (the passthrough) -> second_live_writer
+      {command, ctx} = cancel_ctx(dir, ownership: [server: h.arb])
       assert {:error, %{clause: "second_live_writer"}} = Run.Executor.execute(command, ctx)
+      assert {:ok, ^before} = File.read(Path.join(dir, "events.jsonl"))
+      # cross-arbiter control (default admission against a lock held under a private arbiter) -> run_locked
+      {command, ctx} = cancel_ctx(dir, [])
+      assert {:error, %{clause: "run_locked"}} = Run.Executor.execute(command, ctx)
       assert {:ok, ^before} = File.read(Path.join(dir, "events.jsonl"))
       assert {:ok, :stopped} == host().stop(handle, @deadline)
       assert {:ok, ^before} = File.read(Path.join(dir, "events.jsonl"))
-      {command, ctx} = cancel_ctx(dir)
+      {command, ctx} = cancel_ctx(dir, ownership: [server: h.arb])
       assert match?({:ok, %{}}, Run.Executor.execute(command, ctx))
     end
   end
 
   describe "census, discovery, arbiter passthrough, privacy, parity" do
-    test "MR-14 census after a Monitor restart: live mounts rebuilt, terminal owner not resurrected, stalled owner skipped, stalled supervisor",
+    test "MR-14 census: live held mounts rebuilt, stalled owner skipped, concurrent mount, late reply vs replacement, terminal not resurrected, stalled supervisor",
          %{dir: dir} do
       h = start_host!()
-      d2 = dir <> "_two"
-      d3 = dir <> "_done"
-      for d <- [d2, d3], do: File.mkdir_p!(d)
-      on_exit(fn -> for d <- [d2, d3], do: File.rm_rf!(d) end)
+      dirs = for tag <- ~w(two done during), do: dir <> "_" <> tag
+      Enum.each(dirs, &File.mkdir_p!/1)
+      on_exit(fn -> Enum.each(dirs, &File.rm_rf!/1) end)
+      [d2, d_done, d_during] = dirs
       a = mount!(h, dir, holding(self(), :subtree_started))
       {ra, pa, ha} = await_held!(:subtree_started)
       b = mount!(h, d2, holding(self(), :subtree_started))
-      {rb, pb, hb} = await_held!(:subtree_started)
+      {_rb, _pb, _hb} = await_held!(:subtree_started)
+      # a completed run whose owner is RETAINED (terminal) and already unregistered
       H.reset_seams()
-      {command, ctx} = command_ctx(d3, fn _, _ -> :ok end, [])
+      {command, ctx} = command_ctx(d_done, fn _, _ -> :ok end, [])
       {:ok, c} = host().mount(command, ctx, host: h.host, budgets: @budgets, retention_ms: 30_000)
       assert {:ok, %{}} = host().await(c, @deadline)
-      assert {:ok, %{registered: false}} = host().status(d3, monitor: h.mon, ownership: h.arb)
-      # stall owner b so the census skips it
+      assert match?({:ok, %{registered: false}}, host().status(d_done, monitor: h.mon, ownership: h.arb))
+      assert match?(%{phase: :terminal}, run_owner().inspect(c.owner))
       :ok = :sys.suspend(b.owner)
       kill_join!(Process.whereis(h.mon))
+      # concurrent activity DURING the census: a new mount registers through the live path
+      e = mount!(h, d_during, holding(self(), :subtree_started))
+      {re, _pe, he} = await_held!(:subtree_started)
       assert {:ok, %{census: :complete, skipped: 1}} = await_census!(h)
 
       assert {:ok, %{registered: true, owner: owner_a, supervisor: sup_a}} =
                host().status(dir, monitor: h.mon, ownership: h.arb)
 
       assert sup_a == pa.supervisor and owner_a == a.owner
-      assert {:ok, %{registered: false}} = host().status(d2, monitor: h.mon, ownership: h.arb)
+      assert {:ok, %{registered: true, owner: owner_e}} = host().status(d_during, monitor: h.mon, ownership: h.arb)
+      assert owner_e == e.owner
 
-      assert match?({:ok, %{registered: false}}, host().status(d3, monitor: h.mon, ownership: h.arb)),
+      assert match?({:ok, %{registered: false}}, host().status(d2, monitor: h.mon, ownership: h.arb)),
+             "a skipped owner is partial knowledge"
+
+      assert match?({:ok, %{registered: false}}, host().status(d_done, monitor: h.mon, ownership: h.arb)),
              "a retained terminal owner must not be resurrected"
 
+      # a synthetic census reply naming the terminal owner (alive) is confirmed with the owner and dropped
+      send(Process.whereis(h.mon), {:census_reply, make_ref(), full_record(d_done, c.owner, 1), :awaiting})
+      Process.sleep(200)
+      assert match?({:ok, %{registered: false}}, host().status(d_done, monitor: h.mon, ownership: h.arb))
+
+      # late reply versus replacement: stop b (owner gone), mount b2 on the same directory,
+      # then a late reply for the old owner
       :ok = :sys.resume(b.owner)
-      # a late census reply (after the deadline) never displaces a live replacement: b re-registers on its own path only
-      send(ha, {:release, ra})
-      send(hb, {:release, rb})
-      assert match?({:ok, %{}}, host().await(a, @deadline))
-      assert match?({:ok, %{}}, host().await(b, @deadline))
-      _ = pb
-      # stalled host supervisor: census completes with nothing learned
+      old_owner = b.owner
+      assert {:ok, :stopped} == host().stop(b, @deadline)
+      b2 = mount!(h, d2, holding(self(), :subtree_started))
+      {rb2, _pb2, hb2} = await_held!(:subtree_started)
+      assert {:ok, %{registered: true, owner: owner_b2}} = await_registered!(h, d2)
+      assert owner_b2 == b2.owner
+      send(Process.whereis(h.mon), {:census_reply, make_ref(), full_record(d2, old_owner, 1), :awaiting})
+      Process.sleep(200)
+      assert {:ok, %{registered: true, owner: ^owner_b2}} = host().status(d2, monitor: h.mon, ownership: h.arb)
+      # stalled host supervisor: the census completes with nothing learned
       :ok = :sys.suspend(Process.whereis(h.hsup))
       kill_join!(Process.whereis(h.mon))
       assert {:ok, %{census: :complete}} = await_census!(h)
       :ok = :sys.resume(Process.whereis(h.hsup))
+      for {r, hp} <- [{ra, ha}, {re, he}, {rb2, hb2}], do: send(hp, {:release, r})
+      for x <- [a, e, b2], do: assert(match?({:ok, %{}}, host().await(x, @deadline)))
     end
 
-    test "MR-15 Host.mounted runs discovery and per-owner status inside one total budget", %{dir: dir} do
+    test "MR-15 Host.mounted: delayed discovery then stalled owners under ONE total budget (batch seam rejects per-leg resets)",
+         %{dir: dir} do
       h = start_host!()
-      handle = mount!(h, dir, holding(self(), :subtree_started))
-      {ref, _payload, helper} = await_held!(:subtree_started)
-      :ok = :sys.suspend(handle.owner)
-      {result, elapsed} = timed(fn -> host().mounted(h.host, 300) end)
-      assert {:ok, [%{run_dir: _, phase: :unknown}]} = result
-      assert elapsed < 300 + @slack
-      :ok = :sys.resume(handle.owner)
+      dirs = for tag <- ~w(one two three), do: dir <> "_" <> tag
+      Enum.each(dirs, &File.mkdir_p!/1)
+      on_exit(fn -> Enum.each(dirs, &File.rm_rf!/1) end)
+      handles = for d <- dirs, do: mount!(h, d, holding(self(), :subtree_started))
+      held = for _ <- dirs, do: await_held!(:subtree_started)
+      [h1, h2, _h3] = handles
+      :ok = :sys.suspend(h1.owner)
+      :ok = :sys.suspend(h2.owner)
+      # discovery answers only after 200 ms (a forwarding proxy in front of the host supervisor)
+      proxy = start_supervised!({DelayingProxy, target: Process.whereis(h.hsup), delay: 200})
+      {result, elapsed} = timed(fn -> host().mounted(%{h.host | supervisor: proxy}, 600, batch: 1) end)
+      assert {:ok, listed} = result
+      assert Enum.count(listed, &(&1.phase == :unknown)) == 2
+      # a fresh budget per discovery leg / per batch would need 200 + 2 x 600: rejected by the single budget
+      assert elapsed < 600 + @slack, "mounted took #{elapsed} ms"
       :ok = :sys.suspend(Process.whereis(h.hsup))
       {result, elapsed} = timed(fn -> host().mounted(h.host, 300) end)
       assert {:error, %{clause: "host_supervisor_unavailable"}} == result
       assert elapsed < 300 + @slack
       :ok = :sys.resume(Process.whereis(h.hsup))
-      send(helper, {:release, ref})
-      assert match?({:ok, %{}}, host().await(handle, @deadline))
+      :ok = :sys.resume(h1.owner)
+      :ok = :sys.resume(h2.owner)
+      for {r, _p, hp} <- held, do: send(hp, {:release, r})
+      for x <- handles, do: assert(match?({:ok, %{}}, host().await(x, @deadline)))
     end
 
     # ---- RP rows: UNGUARDED; they fail today on behaviour (baseline MB-6), not on a missing module ----
     test "MR-16/RP-1 Run.Supervisor registers its Writer with the injected arbiter, not the global one", %{dir: dir} do
-      {:ok, arb} = Ownership.start_link(name: nil)
+      Process.flag(:trap_exit, true)
+      arb = start_supervised!({Ownership, name: nil})
       config = run_config(dir, ownership: [server: arb])
       {:ok, sup} = Run.Supervisor.start_link(config)
-      Process.unlink(sup)
       assert {:ok, %{state: :live}} = Ownership.status(dir, server: arb)
       assert :none == Ownership.status(dir)
       :ok = Supervisor.stop(sup, :shutdown, @deadline)
@@ -598,10 +778,10 @@ defmodule AiOrchestrator.Host.MountRedTest do
     end
 
     test "MR-16/RP-2 Run.Server discovery confirms the Writer against the injected arbiter", %{dir: dir} do
-      {:ok, arb} = Ownership.start_link(name: nil)
+      Process.flag(:trap_exit, true)
+      arb = start_supervised!({Ownership, name: nil})
       config = dir |> run_config(ownership: [server: arb]) |> Map.put(:trace, self())
       {:ok, sup} = Run.Supervisor.start_link(config)
-      Process.unlink(sup)
       assert_receive {:run_server_driving, _server, %{ownership: {:ok, %{writer: writer}}}}, @deadline
       assert {:ok, %{writer: ^writer}} = Ownership.status(dir, server: arb)
       :ok = Supervisor.stop(sup, :shutdown, @deadline)
@@ -612,11 +792,11 @@ defmodule AiOrchestrator.Host.MountRedTest do
     } do
       h = start_host!()
       handle = mount!(h, dir, holding(self(), :subtree_started))
-      {ref, payload, helper} = await_held!(:subtree_started)
-      send(helper, {:release, ref})
+      {_ref, payload, _helper} = await_held!(:subtree_started)
+      # registration is proven WHILE the run is held; the interruption (arbiter kill) happens with the run live
       assert {:ok, %{registered: true, live: true}} = await_registered!(h, dir)
       assert :none == Ownership.status(dir), "the global arbiter must not see a run mounted under a private one"
-      mons = monitor_all(owned_pids(payload))
+      mons = payload.supervisor |> trusted_map!() |> Map.values() |> monitor_all()
       omon = Process.monitor(handle.owner)
       kill_join!(Process.whereis(h.arb))
       assert_receive {:DOWN, ^omon, :process, _, _}, @deadline
@@ -646,12 +826,14 @@ defmodule AiOrchestrator.Host.MountRedTest do
           # a crashing helper on a second mount
           d2 = Path.join(dir, canary <> "_crash")
           File.mkdir_p!(d2)
-          h2 = mount!(h, d2, fn _, _ -> raise "helper boom" end)
-          assert {:error, %{clause: "run_executor_down"}} = host().await(h2, @deadline)
-          Process.sleep(200)
+          h2 = mount!(h, d2, fn _, _ -> raise "helper boom " <> canary end)
+          assert {:error, %{clause: "run_executor_down"} = closed} = host().await(h2, @deadline)
+          refute String.contains?(inspect(closed, limit: :infinity), canary)
+          wait_until(fn -> not Process.alive?(h2.owner) or match?(%{phase: :terminal}, run_owner().inspect(h2.owner)) end)
+          Process.sleep(100)
         end)
 
-      refute String.contains?(log, canary), "helper crash report leaked the run directory"
+      refute String.contains?(log, canary), "the helper escape report leaked the raised reason or the run directory"
     end
 
     test "MR-18 slice-1 status, lookup and collision shapes are unchanged (parity control)", %{dir: dir} do
@@ -669,7 +851,7 @@ defmodule AiOrchestrator.Host.MountRedTest do
   defp assert_waiters!(owner, n) do
     deadline = System.monotonic_time(:millisecond) + 2_000
 
-    fn -> run_owner().waiter_count(owner) end
+    fn -> run_owner().inspect(owner).waiters end
     |> Stream.repeatedly()
     |> Enum.find(fn
       ^n -> true
@@ -696,13 +878,26 @@ defmodule AiOrchestrator.Host.MountRedTest do
     end
   end
 
+  defp full_record(dir, owner, generation) do
+    %{
+      run_dir: Path.expand(dir),
+      run_id: "run_mount_0001",
+      owner: owner,
+      supervisor: owner,
+      server: owner,
+      writer: owner,
+      worker: owner,
+      generation: generation
+    }
+  end
+
   defp timed(fun) do
     started = System.monotonic_time(:millisecond)
     result = fun.()
     {result, System.monotonic_time(:millisecond) - started}
   end
 
-  defp cancel_ctx(dir) do
+  defp cancel_ctx(dir, extra) do
     {_, _, scenario, [], opts_fun} = Enum.find(H.cases(), &match?({_, :run, "gated_run_seed", [], _}, &1))
     H.reset_seams()
 
@@ -717,6 +912,7 @@ defmodule AiOrchestrator.Host.MountRedTest do
         trace: self(),
         barrier: fn _, _ -> :ok end
       )
+      |> Keyword.merge(extra)
 
     {:ok, command} =
       Commands.build(@operator, "cancel", %{"reason" => "operator_cancel"},
