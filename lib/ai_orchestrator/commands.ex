@@ -15,6 +15,7 @@ defmodule AiOrchestrator.Commands do
   alias AiOrchestrator.Commands.Arguments
   alias AiOrchestrator.Commands.CommandId
   alias AiOrchestrator.Commands.Policy
+  alias AiOrchestrator.Commands.Telemetry
   alias AiOrchestrator.Contract.Command
   alias AiOrchestrator.Contract.Moment
 
@@ -46,18 +47,55 @@ defmodule AiOrchestrator.Commands do
 
   def build(_actor, _verb, _args, _opts), do: {:error, %{clause: "invalid_command_options"}}
 
-  @doc "Authorizes, builds, and sends a command through the configured executor."
+  @doc """
+  Authorizes, builds, and sends a command through the configured executor.
+
+  Every invocation is one telemetry span (`AiOrchestrator.Commands.Telemetry`): the origin of the
+  outcome is classified at the real boundaries — the build result, the executor port, and the single raw
+  executor reply — never inferred from a normalized error map. Each stage an invocation reaches runs
+  exactly once and no stage is retried: non-list options stop before `build/4` with
+  `invalid_command_options` (the actor label is still classified); a malformed keyword list reaches
+  `build/4` and keeps its baseline outcome; a build or executor-port rejection never calls the executor;
+  the executor runs once, only after successful admission. Return terms and escapes are unchanged.
+  """
   @spec invoke(map(), String.t(), map(), keyword()) :: result()
   def invoke(actor, verb, args, opts) when is_list(opts) do
-    with {:ok, command} <- build(actor, verb, args, opts),
-         {:ok, executor} <- fetch_executor(opts) do
-      command
-      |> executor.execute(Keyword.get(opts, :executor_opts, []))
-      |> normalize_executor_result()
-    end
+    Telemetry.span(
+      verb,
+      actor,
+      fn ->
+        case build(actor, verb, args, opts) do
+          {:ok, command} -> {:built, command}
+          {:error, rejection} = error -> {:halt, error, {:rejected, :build, rejection, nil}}
+        end
+      end,
+      fn command ->
+        case fetch_executor(opts) do
+          {:error, rejection} = error ->
+            {error, {:rejected, :executor_port, rejection, command}}
+
+          {:ok, executor} ->
+            reply = executor.execute(command, Keyword.get(opts, :executor_opts, []))
+            {normalize_executor_result(reply), executor_carrier(reply, command)}
+        end
+      end
+    )
   end
 
-  def invoke(_actor, _verb, _args, _opts), do: {:error, %{clause: "invalid_command_options"}}
+  # non-list options never reach build/4; the actor still goes through the span's closed classifier so a
+  # recognized class is reported; an unknown or malformed class label is :invalid. This is not actor validation.
+  def invoke(actor, verb, _args, _opts) do
+    rejection = %{clause: "invalid_command_options"}
+    Telemetry.span(verb, actor, fn -> {:halt, {:error, rejection}, {:rejected, :build, rejection, nil}} end, &noop/1)
+  end
+
+  # the carrier is decided from the RAW reply: any executor `{:error, map}` is an executor rejection whatever
+  # its clause says; a reply outside the contract is classified only by its closed result class
+  defp executor_carrier({:ok, %{}}, command), do: {:accepted, :executor, nil, command}
+  defp executor_carrier({:error, %{}}, command), do: {:rejected, :executor, :executor_rejected, command}
+  defp executor_carrier(other, command), do: {:invalid_executor_result, :executor, other, command}
+
+  defp noop(_command), do: raise(ArgumentError, "unreachable: the halted invocation has no executor stage")
 
   defp fetch_run_id(opts) do
     case Keyword.fetch(opts, :run_id) do

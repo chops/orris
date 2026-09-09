@@ -1,0 +1,108 @@
+#+TITLE: Command lifecycle telemetry at Commands.invoke/4
+#+PROPERTY: status implemented; scope = the Commands.invoke/4 boundary only
+
+* Scope
+This slice instruments exactly one boundary, =AiOrchestrator.Commands.invoke/4=, with native =:telemetry=
+events. This covers the command boundary; the broader lifecycle instrumentation remains planned (host, run, assignment, dispatch, gate, journal, projection, attention, recovery spans; the
+application-boundary OpenTelemetry handler; exporter isolation; propagated-id correlation across products).
+Nothing here adds a dependency, a span, an exporter, a host/console surface, a budget or a delivery API.
+=Commands.build/4=, the pure reducer and the journal are untouched.
+
+* Events
+| Event | When | Measurements |
+|-------+------+--------------|
+| =[:ai_orchestrator, :commands, :invoke, :start]= | on entry to =invoke/4=, every call | =%{monotonic_time, system_time}= |
+| =[:ai_orchestrator, :commands, :invoke, :stop]= | when =invoke/4= returns normally | =%{monotonic_time, duration}= |
+| =[:ai_orchestrator, :commands, :invoke, :exception]= | when a trappable =:error=, =:throw= or =:exit= escapes =invoke/4= | =%{monotonic_time, duration}= |
+
+=duration= is =terminal.monotonic_time - start.monotonic_time= in native time units
+(=System.monotonic_time/0=), never wall-clock arithmetic.
+
+* Cardinality
+Every invocation emits exactly one =:start=. A normally returning invocation then emits exactly one =:stop=;
+a trappable escape emits exactly one =:exception= and no =:stop=. The non-list-options clause of =invoke/4=
+is included: one =:start= and one =:stop= with clause =invalid_command_options=, and the actor label is still
+classified from the supplied actor (a recognized class is reported; an unknown or malformed class label
+is =:invalid=). This label is not actor-shape validation or authentication. A malformed keyword LIST is not that clause: it reaches =build/4= and keeps its baseline outcome,
+whatever rejection or trappable escape that is. =Commands.build/4= alone emits nothing.
+
+An abrupt external death of the invoking process (kill -9, VM halt, brutal shutdown) can prevent terminal
+emission. A terminal event is therefore not guaranteed. Consumers must not treat a missing =:stop= /
+=:exception= as an outcome.
+
+* Correlation
+- =invocation_ref= :: a fresh =reference()= per call, identical on the call's =:start= and its terminal event.
+  It is never derived from actor, run or command bytes.
+- =command_id_digest= :: the first 16 hex characters of SHA-256 over the command id, present once a
+  =Contract.Command= was built (stop after build, or an executor-stage exception); =nil= when the invocation
+  ended or escaped before a command existed. A lookup aid, not the id.
+
+* Metadata allowlist (exact keys; closed values)
+| Event | Keys |
+|-------+------|
+| start | =invocation_ref=, =verb=, =actor_class= |
+| stop | start keys + =outcome=, =stage=, =clause=, =result_class=, =command_id_digest= |
+| exception | start keys + =kind=, =class=, =stack_depth=, =command_id_digest= |
+
+- =verb= :: one of the policy verbs (=start resume resolve_attention repair cancel pause update_context
+  propose_plan propose_context_change ratify_plan=), otherwise the atom =:invalid=. A non-binary or unknown verb
+  is never copied.
+- =actor_class= :: ="operator" | "console" | "agent" | "system"=, otherwise =:invalid=. Actor id, run id and
+  assignment id are never copied.
+- =outcome= :: =:accepted | :rejected | :invalid_executor_result=.
+- =stage= :: =:build= (rejected by =build/4= or by the malformed-options clause), =:executor_port= (no or
+  invalid executor configured), =:executor= (a reply was obtained from the executor).
+- =clause= :: for =:rejected= at =:build= / =:executor_port=, the rejection's clause if it is one of the
+  closed constants =invalid_command_options invalid_command_verb invalid_command_actor unknown_actor_class
+  command_actor_fields command_actor_id command_actor_value command_not_authorized invalid_command_arguments
+  unknown_command_verb command_argument_fields command_argument_value command_argument_hash repair_kind
+  attention_ids run_id_required actor_run_id_mismatch invalid_command_id invalid_command_id_generator
+  invalid_command_moment invalid_command_clock command_executor_required invalid_command_executor=, else
+  ="unlisted"=; for any executor ={:error, map}= it is always ="executor_rejected"= regardless of the map's
+  own clause; =nil= otherwise.
+- =result_class= :: only for =:invalid_executor_result=, =Contract.Diagnostic.result_class/1= of the raw
+  reply (=atom binary list map tuple integer other=); =nil= otherwise.
+- =kind= :: =:error | :throw | :exit=; =class= :: =Contract.Diagnostic.result_class/1= of the reason;
+  =stack_depth= :: =length(stacktrace)=.
+
+Never emitted: arguments, options, =executor_opts=, prompts, paths, raw actor / run / command identities,
+tokens, executor replies, rejection maps, exception structs or messages, stack frames.
+
+* Origin classification
+The outcome's origin is an explicit carrier built by =invoke/4= at the real boundaries, never inferred
+from a normalized error map:
+- =build/4= answers ={:error, rejection}= -> ={:rejected, :build, rejection, nil}=;
+- the executor port refuses -> ={:rejected, :executor_port, rejection, command}=;
+- the single raw executor reply: ={:ok, map}= -> ={:accepted, :executor, nil, command}=; any
+  ={:error, map}= -> ={:rejected, :executor, :executor_rejected, command}= (a reply that mimics
+  =invalid_executor_result= or spoofs a build clause is still an executor rejection); anything else ->
+  ={:invalid_executor_result, :executor, raw_reply, command}= where only the reply's closed result class
+  reaches metadata.
+The span uses two sequential lexical catch boundaries — the build stage, then the executor stage — so an
+escape is attributed to its stage (digest =nil= versus the built command's digest) with exactly one
+=:exception= event and no process-global or mutable state. Each stage an invocation reaches runs exactly
+once and is never retried: non-list options bypass =build/4=; a build or executor-port rejection never calls
+the executor; the executor runs once, only after successful admission.
+
+* Domain preservation
+Return terms are passed through unchanged. An escape is re-raised with =:erlang.raise/3= carrying the
+original kind, reason and stacktrace. No retry, no journal write, no change to =Commands.build/4=.
+
+* Handler isolation (stated, not overstated)
+=:telemetry= executes attached handlers synchronously in the invoking process. A handler that raises is
+caught and detached by =:telemetry= (with a logged warning) and cannot change the command outcome. A handler
+that blocks blocks the invocation: handlers attached to these events are expected to be nonblocking.
+Exporter isolation (OTel, batching, backpressure) belongs to the later application-boundary handler slice.
+
+* Tests
+=test/commands/command_telemetry_red_test.exs= (CT-1..CT-16, CT-11b): cardinality and correlation for
+accepted, build-rejected, malformed, executor-port-refused, invalid-reply and executor-rejected calls;
+actor-class labels preserved through the non-list-options clause for every valid class, with unknown or
+malformed actors labelled =:invalid= (CT-16);
+exact term preservation for nested returns and rejections; exact kind/reason/full-stack preservation for
+raise, throw and exit through controlled synthetic-stack executors; duration equality and exact
+measurement keys; raising-handler isolation; overlapping invocations under one global observer proven by
+barrier executors; poisoned inputs and identities absent from every event; collision controls for
+replies that mimic the normalizer's diagnostic or spoof a build clause; build-stage seam failures (clock,
+id generator) as one start + one exception with a =nil= digest; =build/4= emits nothing.
+=test/commands/commands_test.exs= remains the command contract and is unchanged.
