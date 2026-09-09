@@ -3,7 +3,8 @@ defmodule AiOrchestrator do
   Local-first run supervisor for ai-pair backed agent workflows.
   """
 
-  use Boundary, deps: [], exports: []
+  # the public seam an external application may use (docs/contracts/public-console-seam.org)
+  use Boundary, deps: [], exports: [Commands, Prepare, Query]
 
   @doc """
   Returns the application version.
