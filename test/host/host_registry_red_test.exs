@@ -443,7 +443,7 @@ defmodule AiOrchestrator.Host.RegistryRedTest do
       elapsed = System.monotonic_time(:millisecond) - started
       assert elapsed >= @monitor_delay, "the monitor leg did not consume the measured delay"
       assert elapsed < @budget + @slack, "monitor plus ownership exceeded the single budget: #{elapsed} ms"
-      assert {:ok, %{state: :live, generation: 1}} = Ownership.status(dir), "the global arbiter kept answering"
+      assert match?({:ok, %{state: :live, generation: 1}}, Ownership.status(dir)), "the global arbiter kept answering"
       :ok = Writer.close(writer)
     end
 
