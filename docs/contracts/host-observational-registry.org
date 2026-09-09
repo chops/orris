@@ -1,0 +1,75 @@
+#+TITLE: Observational host registry: in-VM live-run lookup without admission changes
+#+PROPERTY: status interface contract (RED; no implementation yet)
+
+* Implementation status
+Not implemented. This document and =test/host/host_registry_red_test.exs= define the first shared-host
+slice; =test/host/host_baseline_control_test.exs= pins the oracles the rows compare against on the current
+source. No library, CLI, dependency or admission change is part of this slice.
+
+* Scope
+One BEAM. A purpose-built observational monitor records which run directories are live under this VM's
+run subtrees so an in-process caller can look them up. It changes nothing about command admission,
+journal ownership or the per-run owner/reaper protocol. Another OS process (for example a separate CLI
+invocation) cannot see this monitor; cross-process views belong to a later host endpoint.
+
+* Boundary layout
+A new boundary =AiOrchestrator.Host= sits ABOVE =AiOrchestrator.Run= with dependencies
+=[Run, Commands, Contract, Journal, Projection, Config]= and exports =[Executor, Monitor]=. The Application and
+the CLI depend on =Host=; =Run= never depends on =Host=. Nothing under =lib/ai_orchestrator/run/= changes.
+
+* Interface
+- =AiOrchestrator.Host.Monitor= :: a GenServer started by the Application after =Journal.Ownership=. State:
+  =by_dir= (canonical run directory -> identity record, unique) and =by_id= (run id -> list of identity
+  records, non-unique) plus a process monitor on each registered owner. Identity record:
+  =%{run_dir, run_id, owner, supervisor, server, writer, worker, generation}=. =register/1= and
+  =unregister/1= are asynchronous (=GenServer.cast=). Cleanup is the owner's =DOWN= (authoritative) and the
+  idempotent caller-side =unregister/1=. No client can remove another owner's entry.
+- =AiOrchestrator.Host.Executor= :: implements =Commands.Executor= by delegating to
+  =AiOrchestrator.Run.Executor.execute/2= with a composed barrier: for the label =:subtree_started= it first
+  registers the owned identities (a cast wrapped in try/catch so every raise, throw or exit collapses to =:ok=),
+  then calls the user's barrier exactly once with the identical label and map and returns the user barrier's
+  value unchanged, propagating any escape unchanged. Other labels pass straight through. After
+  =Run.Executor.execute/2= returns, the caller-side =unregister/1= cast is likewise guarded. The command result
+  is byte-for-byte what =Run.Executor= returned.
+- =AiOrchestrator.Host.status/1,2= :: =status(run_dir, opts)= consults the monitor with a bounded call and
+  =Journal.Ownership.status/2=. Answers: ={:ok, %{registered: true, live: true, generation, owner, supervisor,
+  server, writer, phase}}= when an entry exists and =Ownership= confirms the same generation and =:live=;
+  ={:ok, %{registered: false, live: false}}= when no entry exists (this is NOT proof that no run is live; see
+  R7); ={:ok, %{clause: "host_registry_inconsistent", generation}}= when the entry's generation disagrees
+  with =Ownership= (the entry is then ignored for everything else); ={:error, %{clause:
+  "host_monitor_unavailable"}}= when the monitor is absent, crashed, renamed or does not answer within the
+  bound. =lookup_run_id/1= returns every entry for a run id (a diagnostic list, never an admission input).
+- Diagnostics are closed maps naming only clause and generation: no run directory bytes, tokens, lock paths,
+  pids of other runs or reason terms.
+
+* Rules
+- R4 Hint only. Admission stays with the existing authorities: =second_live_writer= (same BEAM),
+  =run_locked= (another OS process or a stranded lock), =journal_exists= then the single =retry_only= attempt
+  for a stamped start, and the durable-prefix decision table. Registry presence authorizes nothing; registry
+  absence proves nothing. Same-run-id/different-directory collisions are diagnosed, never acted on.
+- R5 One monitor process; registration runs in the owner (the barrier), cleanup runs on the owner's DOWN and
+  from the caller after return; no Elixir Registry with mixed key kinds.
+- R6 Fail-soft. A missing, crashed, stalled or renamed monitor never changes the command result, the journal
+  bytes or the teardown; the user barrier keeps its ordering (=:handoff_received= then =:subtree_started=),
+  single invocation per label, return value and escape semantics (a raising barrier is still the owner's closed
+  =run_executor_down=).
+- R7 Orderly close versus stranded lock. On an orderly =Writer.close/1= the Writer releases the disk lock and
+  retires the arbiter record; a later acquisition proceeds under ordinary journal admission. A lock is
+  stranded only when the arbiter's registration is lost AND the Writer died before releasing; then the next
+  acquisition fails closed with =run_locked= until the tree re-registers or an operator adjudicates.
+
+* Rows
+Baseline (=host_baseline_control_test.exs=, must pass now): B-1 second live writer refused with generation;
+B-2 orderly close then reacquire; B-3 stranded lock after arbiter loss -> =run_locked=; B-4/B-4b owner
+barrier order, identities, return required, raising barrier -> =run_executor_down=; B-5 =Ownership.status=
+is the live-run authority.
+RED (=host_registry_red_test.exs=, fail on the missing interface only): H-1 entry lifetime; H-1c orderly
+teardown leaves nothing; H-2 second start refused by the existing clause with the journal unchanged and no
+entry; H-2b absence proves nothing; H-5 run-id collision diagnosed; H-7 generation disagreement reported
+inconsistent; H-6a missing monitor; H-6b single invocation and order; H-6c raising barrier; H-6d stalled
+monitor bounded; H-9a monitor killed mid-run; H-9b arbiter loss: orderly close reacquires, killed writer
+strands (with B-3).
+
+* Non-goals
+Cross-process views, endpoint, admission changes, restart policy, host-owned teardown, projection index.
+The next slice mounts host-owned run trees under a host supervisor while preserving the owner/reaper protocol.
