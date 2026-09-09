@@ -43,6 +43,7 @@ defmodule AiOrchestrator.Run.CommandExecutorRedTest do
   alias AiOrchestrator.Test.ScenarioHarness, as: H
 
   @cli_src Path.expand("../../lib/ai_orchestrator/cli.ex", __DIR__)
+  @trusted_src Path.expand("../../lib/ai_orchestrator/prepare/trusted.ex", __DIR__)
   @run_fsm_src Path.expand("../../lib/ai_orchestrator/lifecycle/run_fsm.ex", __DIR__)
   @executor_src Path.expand("../../lib/ai_orchestrator/run/executor.ex", __DIR__)
   @stamp_fixture Path.expand("../fixtures/contracts/journals/valid_requested_by", __DIR__)
@@ -4091,7 +4092,17 @@ defmodule AiOrchestrator.Run.CommandExecutorRedTest do
       for forbidden <- ["RunFSM.", "Writer.open(", "with_writer", "run_then_close", "event_sink"],
           do: refute(cli =~ forbidden, forbidden)
 
-      assert cli =~ "Commands.invoke("
+      # the sole lifecycle entry is Commands.invoke/4, reached through the SHARED trusted preparation
+      # (docs/contracts/public-console-seam.org): the CLI routes every verb through Prepare.Trusted.invoke and
+      # never calls Commands.invoke or any lifecycle seam itself; Trusted holds exactly that one entry
+      assert cli =~ "Trusted.invoke("
+      refute cli =~ "Commands.invoke("
+      trusted = File.read!(@trusted_src)
+      assert trusted =~ "Commands.invoke("
+
+      for forbidden <- ["RunFSM.", "Writer.open(", "with_writer", "run_then_close", "event_sink"],
+          do: refute(trusted =~ forbidden, forbidden)
+
       assert File.read!(@run_fsm_src) =~ ~r/not a supported public lifecycle (surface|entry)/i
       lib = Path.expand("../../lib", __DIR__)
 
