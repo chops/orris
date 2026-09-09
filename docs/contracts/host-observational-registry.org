@@ -18,27 +18,37 @@ A new boundary =AiOrchestrator.Host= sits ABOVE =AiOrchestrator.Run= with depend
 the CLI depend on =Host=; =Run= never depends on =Host=. Nothing under =lib/ai_orchestrator/run/= changes.
 
 * Interface
-- =AiOrchestrator.Host.Monitor= :: a GenServer started by the Application after =Journal.Ownership=. State:
+- =AiOrchestrator.Host.Monitor= :: a GenServer; the Application starts one named instance after
+  =Journal.Ownership=, and =start_link(name: name | nil)= starts injectable instances for tests. State:
   =by_dir= (canonical run directory -> identity record, unique) and =by_id= (run id -> list of identity
-  records, non-unique) plus a process monitor on each registered owner. Identity record:
-  =%{run_dir, run_id, owner, supervisor, server, writer, worker, generation}=. =register/1= and
-  =unregister/1= are asynchronous (=GenServer.cast=). Cleanup is the owner's =DOWN= (authoritative) and the
-  idempotent caller-side =unregister/1=. No client can remove another owner's entry.
+  records, non-unique) plus a process monitor on each registered owner. Identity record (complete, all keys
+  required): =%{run_dir, run_id, owner, supervisor, server, writer, worker, generation}=; =register/2= and
+  =unregister/2= take =(monitor, record)= and are asynchronous (=GenServer.cast=), so they never block or fail
+  the caller. Stale-cleanup protection: an entry is keyed by directory and carries its owner pid and
+  generation; a DOWN or =unregister= that names an owner or generation other than the current entry's leaves
+  the entry untouched (a late old-owner DOWN never erases the replacement), and a registration whose owner is
+  already dead is dropped on the immediate DOWN and never persists. No client can remove another owner's entry.
 - =AiOrchestrator.Host.Executor= :: implements =Commands.Executor= by delegating to
   =AiOrchestrator.Run.Executor.execute/2= with a composed barrier: for the label =:subtree_started= it first
   registers the owned identities (a cast wrapped in try/catch so every raise, throw or exit collapses to =:ok=),
   then calls the user's barrier exactly once with the identical label and map and returns the user barrier's
-  value unchanged, propagating any escape unchanged. Other labels pass straight through. After
-  =Run.Executor.execute/2= returns, the caller-side =unregister/1= cast is likewise guarded. The command result
-  is byte-for-byte what =Run.Executor= returned.
-- =AiOrchestrator.Host.status/1,2= :: =status(run_dir, opts)= consults the monitor with a bounded call and
-  =Journal.Ownership.status/2=. Answers: ={:ok, %{registered: true, live: true, generation, owner, supervisor,
-  server, writer, phase}}= when an entry exists and =Ownership= confirms the same generation and =:live=;
-  ={:ok, %{registered: false, live: false}}= when no entry exists (this is NOT proof that no run is live; see
-  R7); ={:ok, %{clause: "host_registry_inconsistent", generation}}= when the entry's generation disagrees
-  with =Ownership= (the entry is then ignored for everything else); ={:error, %{clause:
-  "host_monitor_unavailable"}}= when the monitor is absent, crashed, renamed or does not answer within the
-  bound. =lookup_run_id/1= returns every entry for a run id (a diagnostic list, never an admission input).
+  value unchanged (=:ok= or not), propagating any raise, throw or exit unchanged so the owner's closed
+  =run_executor_down= semantics are untouched. Other labels pass straight through. After
+  =Run.Executor.execute/2= returns, the caller-side =unregister/2= cast is likewise guarded. The command
+  result, the journal bytes and the observed cleanup are byte-for-byte what =Run.Executor= produces for the
+  same inputs. In-VM seam: the executor context key =:host_monitor= (pid or registered name, default the
+  Application instance) selects the monitor and is stripped before delegation; it is not a command argument.
+- =AiOrchestrator.Host.status/2= :: =status(run_dir, opts)= consults the monitor with a bounded call
+  (=monitor:= pid or name, default the Application instance; =timeout:= ms, default 1_000) and then
+  =Journal.Ownership.status/2= under the same bound. Answers: ={:ok, %{registered: true, live: true,
+  generation, owner, supervisor, server, writer, worker}}= when an entry exists and =Ownership= confirms the
+  same generation and =:live=; ={:ok, %{registered: false}}= when no entry exists — an UNKNOWN, carrying no
+  =live= key, never a claim that no run is live (R7); ={:ok, %{clause: "host_registry_inconsistent",
+  generation}}= when the entry's generation disagrees with =Ownership= (the entry is then ignored for
+  everything else); ={:error, %{clause: "host_monitor_unavailable"}}= when the monitor is absent, crashed,
+  renamed or does not answer within the bound, or when =Ownership= cannot answer. =lookup_run_id/2= returns
+  every entry for a run id (a diagnostic list, never an admission input); =collision/2= reports
+  ={:ok, %{clause: "host_registry_collision", count}}= when more than one directory carries the id.
 - Diagnostics are closed maps naming only clause and generation: no run directory bytes, tokens, lock paths,
   pids of other runs or reason terms.
 
@@ -59,16 +69,23 @@ the CLI depend on =Host=; =Run= never depends on =Host=. Nothing under =lib/ai_o
   acquisition fails closed with =run_locked= until the tree re-registers or an operator adjudicates.
 
 * Rows
-Baseline (=host_baseline_control_test.exs=, must pass now): B-1 second live writer refused with generation;
-B-2 orderly close then reacquire; B-3 stranded lock after arbiter loss -> =run_locked=; B-4/B-4b owner
-barrier order, identities, return required, raising barrier -> =run_executor_down=; B-5 =Ownership.status=
-is the live-run authority.
-RED (=host_registry_red_test.exs=, fail on the missing interface only): H-1 entry lifetime; H-1c orderly
-teardown leaves nothing; H-2 second start refused by the existing clause with the journal unchanged and no
-entry; H-2b absence proves nothing; H-5 run-id collision diagnosed; H-7 generation disagreement reported
-inconsistent; H-6a missing monitor; H-6b single invocation and order; H-6c raising barrier; H-6d stalled
-monitor bounded; H-9a monitor killed mid-run; H-9b arbiter loss: orderly close reacquires, killed writer
-strands (with B-3).
+Baseline controls (=host_baseline_control_test.exs=, must pass now; raw =Writer=/=Ownership= rows, never
+counted as host feature rows): B-1 second live writer refused with generation; B-2 orderly close then
+reacquire; B-3 stranded lock after arbiter loss -> =run_locked=; B-4/B-4b owner barrier order, identities,
+return required, raising barrier -> =run_executor_down=; B-5 =Ownership.status= is the live-run authority.
+RED (=host_registry_red_test.exs=; the guard fails on the missing interface, the bodies exercise real held
+commands so a no-op stub is rejected): H-1 a held run is registered with exact identities and the same
+generation =Ownership= reports, and the entry is gone after completion and owner DOWN (absence carries no
+=live= key); H-1b delayed registration for a dead owner never persists; H-1d stale DOWN/unregister from an
+older owner never erases the replacement; H-2 duplicate start/resume/cancel against a HELD live run through
+=Host.Executor= produce exactly the =Run.Executor= results, journal bytes and generation unchanged; H-2b
+absence proves nothing; H-5 two HELD concurrent runs under one monitor: two entries, exact identities,
+collision diagnosed; H-7 complete record with a disagreeing generation -> inconsistent, matching generation ->
+live; H-6a/H-6d absent and stalled monitors: result, journal, barrier labels/payload and cleanup identical to
+=Run.Executor=, status bounded; H-6b/H-6c non-=:ok= return, raise, throw and exit of the user barrier behave
+identically on both routes; H-9a the monitor proven registered then killed (DOWN joined) mid-run: the run
+completes; H-9c the Server killed mid-run: closed =run_server_down= unchanged and the entry removed on the
+owner's DOWN.
 
 * Non-goals
 Cross-process views, endpoint, admission changes, restart policy, host-owned teardown, projection index.
