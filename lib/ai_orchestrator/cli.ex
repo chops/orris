@@ -104,10 +104,10 @@ defmodule AiOrchestrator.CLI do
   end
 
   # the operator actor is authorization, not authentication: its id is the CLI's existing operator value
-  defp invoke_prepared(%Prepared{} = prepared) do
-    actor = %{"class" => "operator", "id" => Keyword.get(prepared.context, :operator, "operator")}
+  defp invoke_prepared(prepared) do
+    actor = %{"class" => "operator", "id" => Keyword.get(Prepared.context(prepared), :operator, "operator")}
 
-    case Trusted.invoke(actor, prepared, Run.Executor, &command_outcome(&1, prepared.run_dir)) do
+    case Trusted.invoke(actor, prepared, Run.Executor, &command_outcome(&1, Prepared.run_dir(prepared))) do
       {:ok, result} -> result
       {:error, %{reason: reason}} -> error(70, reason)
     end

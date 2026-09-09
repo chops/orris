@@ -3,8 +3,9 @@ defmodule AiOrchestrator.Prepare.Scope do
   The ONE resolver from a public run handle (`run_ref`: a directory NAME under a server-configured root) to a run
   directory, shared by reads and mutations (docs/contracts/public-console-seam.org, F-5/F-6).
 
-  Closed behaviour: the configured root is canonicalised (symlinks followed); an absent root answers
-  `runs_root_missing`; a handle must be one non-empty printable path segment (no separators, not "." or "..",
+  Closed behaviour: the configured root is canonicalised PHYSICALLY (made absolute without lexical collapse, every
+  component must exist, each symlink resolved before a later ".." applies to the resolved parent); an absent or
+  non-directory root answers `runs_root_missing`; a handle must be one non-empty printable path segment (no separators, not "." or "..",
   at most 255 bytes) or it is `run_ref_invalid`; an absent target is `run_directory_missing`, a non-directory is
   `run_directory_invalid`, and a directory whose canonical path leaves the root is `run_ref_outside_root`.
 
@@ -37,7 +38,7 @@ defmodule AiOrchestrator.Prepare.Scope do
   end
 
   defp canonical_directory(root) do
-    with {:ok, canonical} <- canonical(Path.expand(root)),
+    with {:ok, canonical} <- canonical(root),
          true <- File.dir?(canonical) do
       {:ok, canonical}
     else
@@ -48,18 +49,28 @@ defmodule AiOrchestrator.Prepare.Scope do
   @doc "Whether `path`'s canonical (physically traversed) form lies strictly inside the canonical `root`."
   @spec inside?(Path.t(), Path.t()) :: boolean()
   def inside?(path, root) do
-    case canonical(Path.expand(path)) do
+    case canonical(path) do
       {:ok, canonical} -> contained?(canonical, root)
       :error -> false
     end
   end
 
-  @doc "The canonical form of an absolute path: every symlink resolved in traversal order, `..` applied to the RESOLVED parent."
+  @doc """
+  The canonical form of a path: made absolute WITHOUT lexical collapse, then every component walked physically
+  (each must exist; symlinks resolved in traversal order; `..` applied to the RESOLVED parent); `:error` when the
+  operating system could not walk it.
+  """
   @spec canonical(Path.t()) :: {:ok, Path.t()} | :error
-  def canonical(path), do: walk(Path.split(path), "/", @max_links)
+  def canonical(path), do: walk(Path.split(absolute(path)), "/", @max_links)
 
-  defp contained?(_path, "/"), do: true
-  defp contained?(path, root), do: String.starts_with?(path, root <> "/")
+  defp absolute("/" <> _rest = path), do: path
+  defp absolute(path), do: Path.join(File.cwd!(), path)
+
+  # strict: the root itself is never inside the root
+  defp contained?(path, root), do: path != root and String.starts_with?(path, prefix(root))
+
+  defp prefix("/"), do: "/"
+  defp prefix(root), do: root <> "/"
 
   defp valid_ref(ref) when is_binary(ref) do
     cond do
@@ -90,9 +101,9 @@ defmodule AiOrchestrator.Prepare.Scope do
     end
   end
 
-  # Physical traversal: each component is joined to the RESOLVED accumulator; a symlink's target components are
-  # pushed back onto the queue (never collapsed lexically) so a later ".." applies to the resolved parent, exactly as
-  # the operating system walks the path. Bounded in link depth; unresolvable paths answer :error.
+  # Physical traversal: each component is joined to the RESOLVED accumulator and must exist; a symlink's target
+  # components are pushed back onto the queue (never collapsed lexically) so a later ".." applies to the resolved
+  # parent, exactly as the operating system walks the path. Bounded in link depth; unwalkable paths answer :error.
   defp walk(_parts, _acc, 0), do: :error
   defp walk([], acc, _links), do: {:ok, acc}
   defp walk(["/" | rest], _acc, links), do: walk(rest, "/", links)
@@ -102,13 +113,18 @@ defmodule AiOrchestrator.Prepare.Scope do
   defp walk([part | rest], acc, links) do
     candidate = Path.join(acc, part)
 
-    case File.read_link(candidate) do
-      {:ok, link} ->
-        base = if String.starts_with?(link, "/"), do: "/", else: acc
-        walk(Enum.reject(Path.split(link), &(&1 == "/")) ++ rest, base, links - 1)
+    case File.lstat(candidate) do
+      {:ok, %File.Stat{type: :symlink}} -> follow(candidate, rest, acc, links)
+      {:ok, _present} -> walk(rest, candidate, links)
+      {:error, _absent_or_unreadable} -> :error
+    end
+  end
 
-      {:error, _not_a_link_or_absent} ->
-        walk(rest, candidate, links)
+  defp follow(candidate, rest, acc, links) do
+    case File.read_link(candidate) do
+      {:ok, "/" <> _target = link} -> walk(Enum.reject(Path.split(link), &(&1 == "/")) ++ rest, "/", links - 1)
+      {:ok, link} -> walk(Path.split(link) ++ rest, acc, links - 1)
+      {:error, _unreadable} -> :error
     end
   end
 

@@ -32,7 +32,9 @@ The CLI keeps its directory-based path, its error maps, exit codes, projection f
 - Physical confinement (GREEN rev2, review R1/R2): the resolver walks components in filesystem order, resolving each
   symlink before applying a later "..", so =root/run -> bridge/../actual= with =bridge= pointing outside is refused;
   root "/" is an accepted configured root; the host count applies the same confinement to registered directories.
-  This is stationary-filesystem correctness; the concurrent-rename race stays outside the design as stated.
+  The configured root is walked the same way (GREEN rev3, review R1 follow-through): made absolute without lexical
+  collapse, every component must exist on the operating system, and containment is strict (the root is never inside
+  itself). This is stationary-filesystem correctness; the concurrent-rename race stays outside the design as stated.
 - server_opts (server-only, never from a request): =root=, =budget_ms= (default 1_000; bounds the host observation legs
   after resolution and the verified read, A4), plus the CLI's seam keys (fs, id, clock, dispatch, gate, pane registry, operator).
 - Private tier =Prepare.Trusted= (not exported by the top): directory-based =validate/1=, =start/2=, =resume/2=, =cancel/2=,
@@ -67,6 +69,9 @@ Controls, =test/contracts/public_console_seam_controls_test.exs= (hold at 2c33d7
 - "C-13 a compound link escape is neither read nor discovered" (summary refused) and "C-13b the listing skips and counts
   both escaping links independently of the summary row" (the listing assertion in its OWN row)
 - "C-14 the CLI extraction preserves the formerly ignored cancel_reason option" (reviewer probe, R3)
+- "C-15 root: a configured root applies a parent component after physical symlink traversal", "C-16 root: a
+  nonexistent component before a parent component is refused as runs_root_missing" and "C-17 scope: strict
+  containment excludes the root itself" (reviewer probes on 6947c43, R1 follow-through)
 Feature rows, =test/contracts/public_console_seam_red_test.exs= (RED at 2c33d78; every row fails on the undefined
 =AiOrchestrator.Prepare= / =AiOrchestrator.Query=; F-1/F-1b through the external consumer's compile):
 - "F-1 the public seam compiles for a consumer that references only exported modules"

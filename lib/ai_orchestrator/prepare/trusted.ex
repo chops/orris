@@ -90,12 +90,12 @@ defmodule AiOrchestrator.Prepare.Trusted do
   """
   @spec invoke(map(), Prepared.t(), module(), outcome()) ::
           {:ok, term()} | {:error, %{stage: :claim | :release, reason: reason()}}
-  def invoke(actor, %Prepared{} = prepared, executor, outcome) when is_atom(executor) and is_function(outcome, 1) do
+  def invoke(actor, prepared, executor, outcome) when is_atom(executor) and is_function(outcome, 1) do
     run = fn claimed_opts -> outcome.(commands_invoke(actor, prepared, executor, claimed_opts)) end
 
-    case prepared.claims do
-      :none -> {:ok, run.(prepared.context)}
-      {:panes, spec} -> with_pane_claims(spec, prepared.run_dir, prepared.context, run)
+    case Prepared.claims(prepared) do
+      :none -> {:ok, run.(Prepared.context(prepared))}
+      {:panes, spec} -> with_pane_claims(spec, Prepared.run_dir(prepared), Prepared.context(prepared), run)
     end
   end
 
@@ -187,7 +187,7 @@ defmodule AiOrchestrator.Prepare.Trusted do
   # ---- extraction of the CLI's private rules (cli.ex at 2c33d78), behaviour unchanged ----
 
   defp prepared(verb, args, run_dir, fsm_opts, inputs) do
-    %Prepared{
+    Prepared.new(%{
       verb: verb,
       args: args,
       run_id: Keyword.fetch!(fsm_opts, :run_id),
@@ -195,12 +195,12 @@ defmodule AiOrchestrator.Prepare.Trusted do
       context: fsm_opts |> Keyword.put(:run_dir, run_dir) |> Keyword.merge(input_context(inputs)),
       claims: if(is_nil(inputs), do: :none, else: {:panes, inputs.spec}),
       inputs: if(is_nil(inputs), do: nil, else: Map.take(inputs, [:spec_hash, :plan_hash]))
-    }
+    })
   end
 
   defp commands_invoke(actor, prepared, executor, claimed_opts) do
-    Commands.invoke(actor, prepared.verb, prepared.args,
-      run_id: prepared.run_id,
+    Commands.invoke(actor, Prepared.verb(prepared), Prepared.args(prepared),
+      run_id: Prepared.run_id(prepared),
       executor: executor,
       executor_opts: claimed_opts
     )

@@ -62,7 +62,15 @@ defmodule AiOrchestrator.Prepare do
 
   @doc "Executes an admitted command with the built-in foreground executor; pane claims are taken around it."
   @spec invoke(map(), Prepared.t(), keyword()) :: {:ok, %{events: [map()], close: term()}} | {:error, rejection()}
-  def invoke(actor, %Prepared{} = prepared, _server_opts) do
+  def invoke(actor, prepared, _server_opts) do
+    if Prepared.prepared?(prepared) do
+      invoke_prepared(actor, prepared)
+    else
+      {:error, %{clause: "invalid_prepared", detail: nil}}
+    end
+  end
+
+  defp invoke_prepared(actor, prepared) do
     case Trusted.invoke(actor, prepared, Run.Executor, & &1) do
       {:ok, {:ok, result}} -> {:ok, %{events: Map.get(result, :events, []), close: Map.get(result, :close, :ok)}}
       {:ok, {:error, rejection}} -> {:error, public_rejection(rejection)}
@@ -70,8 +78,6 @@ defmodule AiOrchestrator.Prepare do
       {:error, %{stage: :release, reason: reason}} -> {:error, %{clause: "pane_release_failed", detail: reason}}
     end
   end
-
-  def invoke(_actor, _prepared, _server_opts), do: {:error, %{clause: "invalid_prepared", detail: nil}}
 
   defp prepare(run_ref, server_opts, trusted) do
     with {:ok, run_dir} <- Scope.resolve(run_ref, server_opts) do

@@ -163,11 +163,11 @@ defmodule AiOrchestrator.Query do
 
   defp mounted_leg(run_dir, server_opts, remaining) do
     host = %{supervisor: Keyword.get(server_opts, :host_supervisor, Host.Supervisor)}
-    own = Path.expand(run_dir)
+    own = canonical_or_expanded(run_dir)
 
     case Host.mounted(host, remaining.()) do
       {:ok, views} ->
-        case Enum.find(views, &(is_binary(&1.run_dir) and Path.expand(&1.run_dir) == own)) do
+        case Enum.find(views, &(is_binary(&1.run_dir) and canonical_or_expanded(&1.run_dir) == own)) do
           nil -> {:unknown, []}
           view -> {view.phase, []}
         end
@@ -178,7 +178,7 @@ defmodule AiOrchestrator.Query do
   end
 
   defp canonical_or_expanded(path) do
-    case Scope.canonical(Path.expand(path)) do
+    case Scope.canonical(path) do
       {:ok, canonical} -> canonical
       :error -> Path.expand(path)
     end

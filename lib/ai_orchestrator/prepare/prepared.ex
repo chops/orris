@@ -17,4 +17,32 @@ defmodule AiOrchestrator.Prepare.Prepared do
 
   @enforce_keys [:verb, :args, :run_id, :run_dir, :context, :claims]
   defstruct verb: nil, args: %{}, run_id: nil, run_dir: nil, context: [], claims: :none, inputs: nil
+
+  # ---- the trusted tier's builder and readers: the ONLY code that expands the opaque term ----
+
+  @doc false
+  @spec new(map()) :: t()
+  def new(%{} = fields), do: struct!(__MODULE__, fields)
+
+  @spec prepared?(term()) :: boolean()
+  def prepared?(%__MODULE__{}), do: true
+  def prepared?(_other), do: false
+
+  @spec verb(t()) :: String.t()
+  def verb(%__MODULE__{verb: verb}), do: verb
+
+  @spec args(t()) :: map()
+  def args(%__MODULE__{args: args}), do: args
+
+  @spec run_id(t()) :: String.t()
+  def run_id(%__MODULE__{run_id: run_id}), do: run_id
+
+  @spec run_dir(t()) :: Path.t()
+  def run_dir(%__MODULE__{run_dir: run_dir}), do: run_dir
+
+  @spec context(t()) :: keyword()
+  def context(%__MODULE__{context: context}), do: context
+
+  @spec claims(t()) :: :none | {:panes, map()}
+  def claims(%__MODULE__{claims: claims}), do: claims
 end

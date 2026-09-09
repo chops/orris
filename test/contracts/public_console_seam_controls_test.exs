@@ -171,9 +171,11 @@ defmodule AiOrchestrator.Contracts.PublicConsoleSeamControlsTest do
     try do
       started = System.monotonic_time(:millisecond)
 
-      # ---- adopted from the 0ebffdf review (logs/console-seam-red-2c33d78/codex): R1 traversal, R2 confinement, R3 drift ----
       assert {:ok, %{errors: errors}} =
                Doubles.DisposablePerLegReset.host_view(ref, root: root, monitor: mon, budget_ms: 300)
+
+      # ---- adopted from the 0ebffdf/6947c43 reviews (logs/console-seam-red-2c33d78/codex): R1 traversal and
+      # configured-root precision, R2 confinement, R3 drift ----
 
       elapsed = System.monotonic_time(:millisecond) - started
       assert errors |> Enum.map(& &1.leg) |> Enum.sort() == [:lookup, :status]
@@ -255,5 +257,32 @@ defmodule AiOrchestrator.Contracts.PublicConsoleSeamControlsTest do
 
     event = Enum.find(events, &(&1["type"] == "run_cancel_requested"))
     assert event["data"]["reason"] == "operator_cancel"
+  end
+
+  test "C-15 root: a configured root applies a parent component after physical symlink traversal" do
+    {root, outside} = escape_fixture()
+    File.ln_s!(Path.join(outside, "deep"), Path.join(root, "bridge"))
+    configured = Path.join(root, "bridge/..")
+    assert File.read!(Path.join(configured, "actual/marker")) == "outside"
+    assert {:ok, resolved} = Scope.resolve("actual", root: configured)
+    assert File.read!(Path.join(resolved, "marker")) == "outside"
+  end
+
+  test "C-16 root: a nonexistent component before a parent component is refused as runs_root_missing" do
+    {root, _outside} = escape_fixture()
+    configured = Path.join(root, "nonexistent/..")
+    refute File.dir?(configured)
+
+    assert match?(
+             {:error, %{clause: "runs_root_missing"}},
+             Scope.resolve("actual", root: configured)
+           )
+  end
+
+  test "C-17 scope: strict containment excludes the root itself" do
+    refute Scope.inside?("/", "/")
+    {root, _outside} = escape_fixture()
+    assert {:ok, canonical} = Scope.canonical(root)
+    refute Scope.inside?(canonical, canonical)
   end
 end
