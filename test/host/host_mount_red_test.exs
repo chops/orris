@@ -888,8 +888,21 @@ defmodule AiOrchestrator.Host.MountRedTest do
       handles = for d <- dirs, do: mount!(h, d, holding(self(), :subtree_started))
       held = for _ <- dirs, do: await_held!(:subtree_started)
       [h1, h2, h3] = handles
-      :ok = :sys.suspend(h1.owner)
-      :ok = :sys.suspend(h2.owner)
+      # a stalled owner is one blocked INSIDE a callback (a suspension alone still answers system messages,
+      # so it would not stall the phase query): each blocker holds the owner until the row releases it
+      test_pid = self()
+
+      blockers =
+        for o <- [h1.owner, h2.owner] do
+          Task.async(fn ->
+            :sys.replace_state(o, fn state ->
+              send(test_pid, {:blocked, o})
+              receive(do: (:release_blocked -> state), after: (10_000 -> state))
+            end)
+          end)
+        end
+
+      for o <- [h1.owner, h2.owner], do: assert_receive({:blocked, ^o}, @deadline)
       # discovery answers only after 300 ms; the two stalled owners consume the rest of the 600 ms deadline;
       # the responsive owner is queried CONCURRENTLY with them, so it is known regardless of child order.
       # A fresh 600 ms per leg would need 300 + 600 = 900 ms and is rejected by the 750 ms bound.
@@ -904,8 +917,8 @@ defmodule AiOrchestrator.Host.MountRedTest do
       assert {:error, %{clause: "host_supervisor_unavailable"}} == result
       assert elapsed < 300 + @slack
       :ok = :sys.resume(Process.whereis(h.hsup))
-      :ok = :sys.resume(h1.owner)
-      :ok = :sys.resume(h2.owner)
+      for o <- [h1.owner, h2.owner], do: send(o, :release_blocked)
+      for b <- blockers, do: Task.await(b, @deadline)
       for {rf, _p, hp} <- held, do: send(hp, {:release, rf})
       for x <- handles, do: assert(match?({:ok, %{}}, host().await(x, @deadline)))
     end

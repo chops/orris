@@ -61,18 +61,23 @@ live cancellation of a mounted run, projection index and packaging stay outside.
   owner), independent of any later event: a live caller whose call timed out is removed within its deadline; a dead
   caller is removed on DOWN; a valid waiter stays until the result. ={:error, %{clause: "await_timeout"}}= never cancels.
   An await that reaches an owner already in =terminate/3= or gone answers ={:error, %{clause: "run_host_owner_down"}}=.
-- =Host.stop(handle, timeout \\ child_shutdown_ms)= — SYNCHRONOUS, never an unconditional =:ok=. Active owner: records
-  the stopper as a waiter (bounded registration: a =:stop= call is answered by the owner from any responsive state; a
-  non-responsive owner in =:starting= is stopped through =terminate_child=, so the stopper never blocks on an await),
-  then =DynamicSupervisor.terminate_child=; answers ={:ok, :stopped}= when teardown completed with every owned DOWN
+- =Host.stop(handle, timeout)= — SYNCHRONOUS, never an unconditional =:ok=. The stop is an ACKNOWLEDGED protocol: a
+  detached stop agent (never linked to the caller, not bounded by the caller's wait) sends the owner a
+  =stop_request= naming the caller and its deadline; the owner answers from any responsive state, =:retained= for a
+  terminal owner (retention kept, nothing terminated) or =:stopping= after it has recorded the stopper (caller
+  monitor + deadline) and armed its OWN teardown as its next internal event, so the obligation lives in the owner
+  regardless of the caller's wait; a non-acknowledging owner is inspected through the =:sys= seam (a suspended
+  terminal owner still answers and is kept; a wait can never authorise loss of a cached result) and only an owner
+  that cannot be inspected either (blocked in its start phase) is terminated through the supervisor; answers ={:ok, :stopped}= when teardown completed with every owned DOWN
   observed, ={:error, %{clause: "run_executor_teardown_incomplete", survivors: n}}= when a join was not observed,
   ={:error, %{clause: "run_host_stop_unproven"}}= when the child shutdown expired (the supervisor killed the owner; no
   descendant/disk evidence is claimed: the caller observes =RunLock.owner= and =Ownership.status= itself). After an
   active stop the owner is GONE: a second active-stop call answers =run_host_owner_down=. Stop on a retained
   =:terminal= owner is idempotent =:ok= and preserves the cached result. Stop journals nothing.
 - =Host.mounted(host, timeout, batch: n)= — ALL blocking work (the =which_children= discovery and every per-owner status)
-  runs inside ONE monotonic overall deadline in a task the caller monitors. Owners are queried in batches of =n=
-  (default: all at once); within the ACTIVE batch the queries are CONCURRENT and each is bounded by what REMAINS of
+  runs inside ONE absolute deadline; discovery and every per-owner query are unlinked monitored workers whose
+  failure is a closed result (a caller is never exited); each owner costs ONE =:sys= leg. Owners are queried in
+  batches of =n= (default: ALL at once, =batch: :all=; a finite batch is a supported option); within the ACTIVE batch the queries are CONCURRENT and each is bounded by what REMAINS of
   the deadline, never by a fresh per-query or per-batch budget, so within the default all-at-once case a responsive
   owner is reported regardless of the supervisor's child order and stalled owners cost only the remaining time;
   owners in batches not yet started when the common deadline expires are reported =:unknown= (MR-15 exercises the
@@ -116,7 +121,9 @@ live cancellation of a mounted run, projection index and packaging stay outside.
   helper (its join has its own budget; an unobserved helper join is a survivor, never silently =:ok=); orderly
   =Supervisor.stop= (stop budget); kill every still-live owned pid; join each (join budget); then the late-identity
   sweep: because the Server (the only producer of =run_worker_registered=) is dead after the orderly stop/kill, one
-  mailbox sweep after the joins is complete and finite; a swept identity is killed and joined the same way. Neither
+  mailbox sweep after the joins is complete and finite: the hosted owner drains every queued identity carrying its
+  handoff reference (including those that arrived during the teardown), kills and joins each, and counts an unobserved
+  join as a survivor; an identity that reaches a RETAINED terminal owner is collected at once. Neither
   =Run.Server= nor =Run.Worker= traps exits, so a producer that is stopped can never send a later identity. With =Run= untouched the producer cannot be gated before birth; the rows therefore gate at the
   emission boundary through the =:handoff_relay= seam: never DELIVERED (the relay holds the real emission, the owner
   acknowledges =:handoff= with no =:worker=, stop joins the producer's DOWN, a later release is inert) and produced but
@@ -139,8 +146,13 @@ live cancellation of a mounted run, projection index and packaging stay outside.
   =census_timeout= (1_000 ms) measured from init; at the deadline the Task is killed and =census= is =:complete= with
   =skipped= = owners not answered. Partial knowledge stays partial: absence remains unknown (R7).
 - Census replies are applied as registrations under the registration rules, an eligibility rule and a terminal
-  rule: a reply is eligible only while its request is pending (replies for expired requests may be dropped);
-  before applying an eligible reply the Monitor confirms the owner's phase with a bounded =inspect=; a reply whose
+  rule: a reply is eligible only while its request is pending in the CURRENT census epoch (replies for expired
+  requests may be dropped); the Monitor confirms the owner's phase in a bounded linked task under the common census
+  deadline and stays responsive throughout (lookups and the deadline are never queued behind a confirmation); when
+  the confirmation returns, eligibility, the owner and the generation are re-checked and a confirmed reply never
+  displaces a live different owner or a higher generation; the discovery task is linked to the Monitor so a Monitor
+  death cannot orphan it, and each batch's pending references are announced by an acknowledged call before its
+  requests are sent; a reply whose
   owner does not confirm, or reports =:terminal= (the tree already torn down), is dropped, so a retained terminal
   owner never resurrects an unregistered entry even when the reply is a genuinely correlated ACTIVE fact; a live
   different owner or a higher generation is never displaced. The rows exercise exactly that with the deadline
@@ -178,6 +190,13 @@ children concurrently; MB-5 =Run.Recovery.evidence/2= reads the journal only (do
 MB-6a (permanent preservation) =Run.Supervisor= WITHOUT an =ownership= option registers its Writer with the global
 arbiter; MB-6b (tagged =:historical=, retired by the approved passthrough refactor, never deleted silently) today the
 same happens even when =opts[:ownership]= names a private arbiter (the fact RP-1 turns into a requirement).
+Review controls (=host_mount_review_controls_test.exs=, adopted from the 86711a8 review): R1 stop deadline shorter
+than any acknowledgment still tears down; suspended retained owner kept; dead stopper; active/terminal crossing;
+supervisor loss during stop; R2 queued identity swept at parent shutdown, identity arriving during teardown swept,
+identity reaching a retained owner collected; R3 confirmation blocked inside the owner never blocks lookups or the
+deadline, confirmed reply never displaces a live different owner; R4 absent supervisor closed without exiting the
+caller, one shared deadline across legs with the owner kept in unknown results, more than 64 owners at once; R5
+foreground registration with the injected arbiter.
 RED (=host_mount_red_test.exs=): MR-1 layout and descendants; MR-2 start-ack vs ready (two mounts, one stalled;
 =ready_timeout= leaves the tree untouched); MR-3 ready follows the barrier result (synchronization witness); MR-4
 helper identity and registry owner (visibility awaited with a bounded witness, never assumed); MR-5 parent shutdown at

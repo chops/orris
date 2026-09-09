@@ -81,7 +81,6 @@ defmodule AiOrchestrator.Host do
   # ---- mounted runs (docs/contracts/host-mounted-runs.org) ----
 
   @default_mount_timeout 1_000
-  @default_batch 64
   @relay_keys [:join, :handoff_relay]
 
   @doc """
@@ -163,54 +162,98 @@ defmodule AiOrchestrator.Host do
     if Process.alive?(owner) do
       ref = make_ref()
       mon = Process.monitor(owner)
-      # the stopper is recorded by a cast (answered from any responsive state, including :terminal, where the
-      # owner keeps its retention); an owner blocked in its start phase never processes it and is stopped by
-      # the supervisor within the child shutdown, which this call reports as unproven
-      :gen_statem.cast(owner, {:stop_waiter, {self(), ref}})
+      caller = self()
       supervisor = Map.get(handle, :supervisor, HostSupervisor)
-      stopper = Task.async(fn -> stop_child(supervisor, owner, ref) end)
-
-      receive do
-        {:stop_outcome, ^ref, :retained} ->
-          Task.shutdown(stopper, :brutal_kill)
-          Process.demonitor(mon, [:flush])
-          :ok
-
-        {:stop_outcome, ^ref, outcome} ->
-          Task.shutdown(stopper, :brutal_kill)
-          Process.demonitor(mon, [:flush])
-          outcome
-
-        {:DOWN, ^mon, :process, ^owner, :killed} ->
-          Task.shutdown(stopper, :brutal_kill)
-          {:error, %{clause: "run_host_stop_unproven"}}
-
-        {:DOWN, ^mon, :process, ^owner, _reason} ->
-          Task.shutdown(stopper, :brutal_kill)
-
-          receive do
-            {:stop_outcome, ^ref, outcome} -> outcome
-          after
-            0 -> {:error, %{clause: "run_host_owner_down"}}
-          end
-      after
-        timeout ->
-          Task.shutdown(stopper, :brutal_kill)
-          Process.demonitor(mon, [:flush])
-          {:error, %{clause: "run_host_stop_timeout"}}
-      end
+      child_shutdown = HostSupervisor.child_shutdown_ms(supervisor)
+      # the stop agent is neither linked to the caller nor bounded by the caller's wait: it carries the
+      # obligation to obtain an acknowledgment or, failing that, the supervisor's termination
+      {agent, amon} = spawn_monitor(fn -> stop_agent(owner, supervisor, child_shutdown, caller, ref, timeout) end)
+      outcome = stop_wait(owner, mon, agent, amon, ref, timeout)
+      Process.demonitor(mon, [:flush])
+      Process.demonitor(amon, [:flush])
+      outcome
     else
       {:error, %{clause: "run_host_owner_down"}}
     end
   end
 
-  # a retained (terminal) owner answers the stop cast itself and must not be terminated; every other owner is
-  # terminated through its supervisor, bounded by the child shutdown
-  defp stop_child(supervisor, owner, ref) do
+  defp stop_wait(owner, mon, _agent, amon, ref, timeout) do
     receive do
       {:stop_outcome, ^ref, :retained} -> :ok
+      {:stop_outcome, ^ref, outcome} -> outcome
+      {:DOWN, ^mon, :process, ^owner, :killed} -> {:error, %{clause: "run_host_stop_unproven"}}
+      {:DOWN, ^mon, :process, ^owner, _reason} -> stop_outcome_or_down(ref)
+      {:DOWN, ^amon, :process, _agent, _reason} -> stop_wait_owner_only(owner, mon, ref, timeout)
     after
-      50 -> DynamicSupervisor.terminate_child(supervisor, owner)
+      timeout -> {:error, %{clause: "run_host_stop_timeout"}}
+    end
+  end
+
+  defp stop_wait_owner_only(owner, mon, ref, timeout) do
+    receive do
+      {:stop_outcome, ^ref, :retained} -> :ok
+      {:stop_outcome, ^ref, outcome} -> outcome
+      {:DOWN, ^mon, :process, ^owner, :killed} -> {:error, %{clause: "run_host_stop_unproven"}}
+      {:DOWN, ^mon, :process, ^owner, _reason} -> stop_outcome_or_down(ref)
+    after
+      timeout -> {:error, %{clause: "run_host_stop_timeout"}}
+    end
+  end
+
+  defp stop_outcome_or_down(ref) do
+    receive do
+      {:stop_outcome, ^ref, :retained} -> :ok
+      {:stop_outcome, ^ref, outcome} -> outcome
+    after
+      0 -> {:error, %{clause: "run_host_owner_down"}}
+    end
+  end
+
+  # ONE shared bound: acknowledgment wait, the :sys inspection, and the teardown itself all live inside the
+  # declared child shutdown measured from the stop; the caller's wait neither resets nor cancels it. A
+  # retained terminal owner is never touched. An owner still alive at the bound is killed (reported unproven).
+  defp stop_agent(owner, supervisor, child_shutdown, caller, ref, timeout) do
+    started = System.monotonic_time(:millisecond)
+    remaining = fn -> max(child_shutdown - (System.monotonic_time(:millisecond) - started), 0) end
+    mon = Process.monitor(owner)
+    ack_budget = max(min(div(child_shutdown, 2), div(max(timeout, 1), 2)), 50)
+
+    ack =
+      try do
+        :gen_statem.call(owner, {:stop_request, {caller, ref, max(timeout, child_shutdown)}}, ack_budget)
+      catch
+        :exit, _ -> :no_ack
+      end
+
+    case ack do
+      {:ack, :retained} ->
+        :ok
+
+      {:ack, :stopping} ->
+        enforce_bound(owner, mon, remaining)
+
+      :no_ack ->
+        phase =
+          try do
+            RunOwner.inspect(owner, min(200, max(remaining.(), 1))).phase
+          catch
+            :exit, _ -> :unknown
+          end
+
+        if phase == :terminal do
+          send(caller, {:stop_outcome, ref, :retained})
+        else
+          spawn(fn -> DynamicSupervisor.terminate_child(supervisor, owner) end)
+          enforce_bound(owner, mon, remaining)
+        end
+    end
+  end
+
+  defp enforce_bound(owner, mon, remaining) do
+    receive do
+      {:DOWN, ^mon, :process, ^owner, _reason} -> :ok
+    after
+      remaining.() -> Process.exit(owner, :kill)
     end
   end
 
@@ -224,45 +267,95 @@ defmodule AiOrchestrator.Host do
     supervisor = Map.get(host, :supervisor, HostSupervisor)
     deadline = System.monotonic_time(:millisecond) + timeout
     remaining = fn -> max(deadline - System.monotonic_time(:millisecond), 0) end
-    discovery = Task.async(fn -> DynamicSupervisor.which_children(supervisor) end)
+    me = self()
+    dref = make_ref()
+    {_pid, dmon} = spawn_monitor(fn -> send(me, {:discovered, dref, DynamicSupervisor.which_children(supervisor)}) end)
 
-    case Task.yield(discovery, remaining.()) || Task.shutdown(discovery, :brutal_kill) do
-      {:ok, children} ->
+    receive do
+      {:discovered, ^dref, children} ->
+        Process.demonitor(dmon, [:flush])
         owners = for {_, pid, _, _} <- children, is_pid(pid), do: pid
-        batch = Keyword.get(opts, :batch, @default_batch)
+        batch = Keyword.get(opts, :batch, :all)
+        chunks = if batch == :all, do: [owners], else: Enum.chunk_every(owners, batch)
+        {:ok, Enum.flat_map(chunks, &query_batch(&1, remaining))}
 
-        listed = owners |> Enum.chunk_every(batch) |> Enum.flat_map(&query_batch(&1, remaining))
-
-        {:ok, listed}
-
-      _ ->
+      {:DOWN, ^dmon, :process, _pid, _reason} ->
+        {:error, %{clause: "host_supervisor_unavailable"}}
+    after
+      remaining.() ->
         {:error, %{clause: "host_supervisor_unavailable"}}
     end
   end
 
-  # the active batch is queried concurrently, every query bounded by what remains of the single deadline
+  # the active batch is queried concurrently by unlinked monitored workers, ONE :sys leg per owner, every
+  # worker bounded by what remains of the single deadline; an expired batch starts no work; every unknown
+  # result keeps the owner it names
+  defp query_batch([], _remaining), do: []
+
   defp query_batch(chunk, remaining) do
     budget = remaining.()
 
-    chunk
-    |> Task.async_stream(&phase_of(&1, budget),
-      timeout: budget + 50,
-      on_timeout: :kill_task,
-      ordered: false,
-      max_concurrency: max(length(chunk), 1)
-    )
-    |> Enum.map(fn
-      {:ok, view} -> view
-      _ -> %{run_dir: nil, run_id: nil, owner: nil, phase: :unknown}
-    end)
+    if budget == 0 do
+      Enum.map(chunk, &unknown/1)
+    else
+      me = self()
+      tag = make_ref()
+
+      workers =
+        for owner <- chunk, into: %{} do
+          {pid, mon} = spawn_monitor(fn -> send(me, {tag, owner, phase_of(owner, budget)}) end)
+          {owner, {pid, mon}}
+        end
+
+      collect_views(workers, tag, remaining, %{})
+    end
   end
 
+  defp collect_views(workers, _tag, _remaining, views) when map_size(workers) == 0, do: Map.values(views)
+
+  defp collect_views(workers, tag, remaining, views) do
+    receive do
+      {^tag, owner, view} when is_map_key(workers, owner) ->
+        {{_pid, mon}, rest} = Map.pop(workers, owner)
+        Process.demonitor(mon, [:flush])
+        collect_views(rest, tag, remaining, Map.put(views, owner, view))
+
+      {:DOWN, mon, :process, _pid, _reason} ->
+        case Enum.find(workers, fn {_owner, {_p, m}} -> m == mon end) do
+          {owner, _} ->
+            collect_views(Map.delete(workers, owner), tag, remaining, Map.put_new(views, owner, unknown(owner)))
+
+          nil ->
+            collect_views(workers, tag, remaining, views)
+        end
+    after
+      remaining.() ->
+        for {owner, {pid, mon}} <- workers do
+          Process.demonitor(mon, [:flush])
+          Process.exit(pid, :kill)
+          _ = owner
+        end
+
+        Map.values(Map.merge(Map.new(workers, fn {owner, _} -> {owner, unknown(owner)} end), views))
+    end
+  end
+
+  defp unknown(owner), do: %{run_dir: nil, run_id: nil, owner: owner, phase: :unknown}
+
   defp phase_of(owner, budget) do
-    phase = :gen_statem.call(owner, :phase, budget)
-    {_state, data} = :sys.get_state(owner, budget)
-    %{run_dir: data.config.run_dir, run_id: data.config.command.run_id, owner: owner, phase: phase}
+    {state, data} =
+      case :sys.get_state(owner, budget) do
+        {state, %{} = data} -> {state, data}
+        %{} = data -> {Map.get(data, :phase, :unknown), data}
+      end
+
+    config = Map.get(data, :config) || %{}
+    command = Map.get(config, :command)
+    run_id = if is_map(command), do: Map.get(command, :run_id)
+    %{run_dir: Map.get(config, :run_dir), run_id: run_id, owner: owner, phase: Map.get(data, :phase, state)}
   catch
-    :exit, _ -> %{run_dir: nil, run_id: nil, owner: owner, phase: :unknown}
+    :exit, _ -> unknown(owner)
+    :error, _ -> unknown(owner)
   end
 
   @doc "The Monitor's census state: {:ok, %{census: :pending | :complete, skipped: n}} (bounded call)."

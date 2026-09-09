@@ -52,9 +52,14 @@ defmodule AiOrchestrator.Host.RunOwner do
   def start_link(args), do: :gen_statem.start_link(__MODULE__, args, [])
 
   @doc "Test-only observation seam through `:sys.get_state` (a system message, never an owner event)."
-  @spec inspect(pid()) :: %{phase: atom(), waiters: non_neg_integer(), handoff_ref: reference(), owned: [atom()]}
-  def inspect(owner) do
-    {_state, data} = :sys.get_state(owner)
+  @spec inspect(pid(), timeout()) :: %{
+          phase: atom(),
+          waiters: non_neg_integer(),
+          handoff_ref: reference(),
+          owned: [atom()]
+        }
+  def inspect(owner, timeout \\ 5_000) do
+    {_state, data} = :sys.get_state(owner, timeout)
 
     %{
       phase: data.phase,
@@ -87,6 +92,7 @@ defmodule AiOrchestrator.Host.RunOwner do
       request: nil,
       waiters: %{},
       ready_waiters: %{},
+      stoppers: %{},
       result: nil,
       record: nil,
       budgets: Map.merge(@default_budgets, Map.get(args, :budgets, %{})),
@@ -144,6 +150,12 @@ defmodule AiOrchestrator.Host.RunOwner do
 
   def handle_event(:state_timeout, :handoff_budget, :handoff, data),
     do: {:next_state, :barrier_subtree, run_barrier(%{data | phase: :barrier_subtree}, :subtree_started)}
+
+  # a matched identity reaching a RETAINED owner (its tree is gone) is collected at once, never left uncollected
+  def handle_event(:info, {:run_worker_registered, ref, worker, _server}, :terminal, %{ref: ref} = data) do
+    _ = collect([worker], data.budgets, data.join)
+    :keep_state_and_data
+  end
 
   # a late identity (any other state) is retained, never dropped, never acted on before teardown
   def handle_event(:info, {:run_worker_registered, ref, worker, _server}, state, %{ref: ref} = data)
@@ -209,16 +221,44 @@ defmodule AiOrchestrator.Host.RunOwner do
      [{{:timeout, {:waiter, mon}}, timeout, :expire}]}
   end
 
-  # stop: a terminal owner tells the stopper it is retained (idempotent, retention kept); an active owner
-  # records the stopper, whose answer is the completed outcome of the teardown that the supervisor's
-  # termination (terminate/3) then runs
-  def handle_event(:cast, {:stop_waiter, {pid, ref}}, :terminal, _data) do
+  # stop protocol: the owner ACKNOWLEDGES from any responsive state. A terminal owner answers :retained and
+  # keeps its retention. An active owner records the stopper (caller monitor + deadline), answers :stopping
+  # and arms its OWN teardown as the next internal event: the obligation is in this process, independent of
+  # whether the caller keeps waiting. The completed outcome reaches every live recorded stopper.
+  def handle_event({:call, from}, {:stop_request, {pid, ref, _deadline_ms}}, :terminal, _data) do
     send(pid, {:stop_outcome, ref, :retained})
-    :keep_state_and_data
+    {:keep_state_and_data, [{:reply, from, {:ack, :retained}}]}
   end
 
-  def handle_event(:cast, {:stop_waiter, {pid, ref}}, _state, data),
-    do: {:keep_state, %{data | waiters: Map.put(data.waiters, {:stopper, ref}, pid)}}
+  def handle_event({:call, from}, {:stop_request, {pid, ref, deadline_ms}}, _state, data) do
+    mon = Process.monitor(pid)
+    stoppers = Map.put(data.stoppers, ref, %{pid: pid, mon: mon})
+
+    actions = [
+      {:reply, from, {:ack, :stopping}},
+      {{:timeout, {:stopper, ref}}, deadline_ms, :expire},
+      {:next_event, :internal, :stop_now}
+    ]
+
+    {:keep_state, %{data | stoppers: stoppers}, actions}
+  end
+
+  def handle_event(:internal, :stop_now, :terminal, _data), do: :keep_state_and_data
+
+  def handle_event(:internal, :stop_now, _state, data) do
+    {:next_state, :terminal, data, _actions} = teardown_to(data, {:error, %{clause: "run_host_stopped"}})
+    {:stop, :normal, data}
+  end
+
+  def handle_event({:timeout, {:stopper, ref}}, :expire, _state, data), do: {:keep_state, drop_stopper(data, ref)}
+
+  def handle_event(:info, {:DOWN, mon, :process, _pid, _}, _state, %{stoppers: stoppers} = data)
+      when map_size(stoppers) > 0 do
+    case Enum.find(stoppers, fn {_ref, %{mon: m}} -> m == mon end) do
+      {ref, _} -> {:keep_state, drop_stopper(data, ref)}
+      nil -> :keep_state_and_data
+    end
+  end
 
   def handle_event({:call, from}, :phase, state, _data), do: {:keep_state_and_data, [{:reply, from, state}]}
 
@@ -321,15 +361,46 @@ defmodule AiOrchestrator.Host.RunOwner do
     data = kill_helper(data)
     owned = Map.take(data.owned, @identity_roles ++ [:late])
     outcome = Owner.teardown(owned, data.budgets, data.join)
+    # the producer (Server) is dead after the teardown above, so one sweep of the identities matching this
+    # owner's reference that reached the mailbox (including during the teardown) is complete and finite
+    swept = sweep(data.ref, data.budgets, data.join, 0)
     if is_map(data.record), do: guarded(fn -> Monitor.unregister(data.host.monitor, data.record) end)
 
     result =
-      case outcome do
-        :ok -> result
-        {:error, incomplete} -> {:error, incomplete}
+      case {outcome, swept} do
+        {:ok, 0} -> result
+        {:ok, n} -> {:error, %{clause: "run_executor_teardown_incomplete", survivors: n}}
+        {{:error, %{survivors: n} = incomplete}, m} -> {:error, %{incomplete | survivors: n + m}}
       end
 
     terminal(data, result)
+  end
+
+  # drain every queued identity matching this owner's reference, kill and join each; unobserved joins count
+  defp sweep(ref, budgets, join, unobserved) do
+    receive do
+      {:run_worker_registered, ^ref, worker, _server} ->
+        sweep(ref, budgets, join, unobserved + collect([worker], budgets, join))
+    after
+      0 -> unobserved
+    end
+  end
+
+  defp collect(pids, budgets, join) do
+    monitors = for pid <- pids, is_pid(pid), do: {pid, Process.monitor(pid)}
+    for {pid, _} <- monitors, Process.alive?(pid), do: Process.exit(pid, :kill)
+    Enum.count(monitors, fn {pid, mon} -> not join.(pid, mon, Map.get(budgets, :join, 5_000)) end)
+  end
+
+  defp drop_stopper(data, ref) do
+    case Map.pop(data.stoppers, ref) do
+      {nil, _} ->
+        data
+
+      {%{mon: mon}, rest} ->
+        Process.demonitor(mon, [:flush])
+        %{data | stoppers: rest}
+    end
   end
 
   defp kill_helper(%{task: nil} = data), do: data
@@ -343,16 +414,27 @@ defmodule AiOrchestrator.Host.RunOwner do
   end
 
   defp terminal(data, result) do
-    for {mon, from} <- data.waiters do
-      case {mon, result} do
-        {{:stopper, ref}, {:error, %{clause: "run_host_stopped"}}} -> send(from, {:stop_outcome, ref, {:ok, :stopped}})
-        {{:stopper, ref}, other} -> send(from, {:stop_outcome, ref, other})
-        _ -> reply_waiter(mon, from, result)
-      end
+    for {mon, from} <- data.waiters, do: reply_waiter(mon, from, result)
+
+    for {ref, %{pid: pid, mon: mon}} <- data.stoppers do
+      Process.demonitor(mon, [:flush])
+      answer = if match?({:error, %{clause: "run_host_stopped"}}, result), do: {:ok, :stopped}, else: result
+      if Process.alive?(pid), do: send(pid, {:stop_outcome, ref, answer})
     end
 
     for {mon, from} <- data.ready_waiters, do: reply_waiter(mon, from, result)
-    data = %{data | result: result, waiters: %{}, ready_waiters: %{}, task: nil, request: nil, phase: :terminal}
+
+    data = %{
+      data
+      | result: result,
+        waiters: %{},
+        ready_waiters: %{},
+        stoppers: %{},
+        task: nil,
+        request: nil,
+        phase: :terminal
+    }
+
     {:next_state, :terminal, data, [{:state_timeout, data.retention_ms, :expire_retention}]}
   end
 

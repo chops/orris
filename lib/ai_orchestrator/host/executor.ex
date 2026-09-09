@@ -35,7 +35,8 @@ defmodule AiOrchestrator.Host.Executor do
       user_barrier when is_nil(user_barrier) or is_function(user_barrier, 2) ->
         caller = self()
         token = make_ref()
-        composed = compose(user_barrier, monitor, command, context[:run_dir], caller, token)
+        ownership = Keyword.get(context, :ownership, [])
+        composed = compose(user_barrier, monitor, command, context[:run_dir], ownership, caller, token)
         result = RunExecutor.execute(command, Keyword.put(context, :barrier, composed))
         unregister_registered(monitor, token)
         result
@@ -50,10 +51,10 @@ defmodule AiOrchestrator.Host.Executor do
 
   def execute(command, context), do: RunExecutor.execute(command, context)
 
-  defp compose(user_barrier, monitor, command, run_dir, caller, token) do
+  defp compose(user_barrier, monitor, command, run_dir, ownership, caller, token) do
     fn
       :subtree_started = label, owned ->
-        guarded(fn -> register(monitor, command, run_dir, owned, caller, token) end)
+        guarded(fn -> register(monitor, command, run_dir, ownership, owned, caller, token) end)
         call_user(user_barrier, label, owned)
 
       label, owned ->
@@ -65,8 +66,11 @@ defmodule AiOrchestrator.Host.Executor do
   defp call_user(nil, _label, _owned), do: :ok
   defp call_user(barrier, label, owned) when is_function(barrier, 2), do: barrier.(label, owned)
 
-  defp register(monitor, %Command{run_id: run_id}, run_dir, owned, caller, token) when is_binary(run_dir) do
-    with {:ok, %{generation: generation}} <- Ownership.status(run_dir, acquire_timeout: @generation_budget),
+  # the generation comes from the SAME arbiter the run registered with (context[:ownership], default global)
+  defp register(monitor, %Command{run_id: run_id}, run_dir, ownership, owned, caller, token) when is_binary(run_dir) do
+    lookup = Keyword.merge([acquire_timeout: @generation_budget], ownership)
+
+    with {:ok, %{generation: generation}} <- Ownership.status(run_dir, lookup),
          {:ok, record} <- record(run_dir, run_id, owned, generation) do
       :ok = Monitor.register(monitor, record)
       send(caller, {__MODULE__, token, record})
@@ -75,7 +79,7 @@ defmodule AiOrchestrator.Host.Executor do
     :ok
   end
 
-  defp register(_monitor, _command, _run_dir, _owned, _caller, _token), do: :ok
+  defp register(_monitor, _command, _run_dir, _ownership, _owned, _caller, _token), do: :ok
 
   defp record(run_dir, run_id, owned, generation) do
     case registration(run_dir, run_id, owned, generation) do

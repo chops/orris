@@ -56,14 +56,31 @@ defmodule AiOrchestrator.Host.Monitor do
 
   @impl true
   def init(opts) do
-    state = %{by_dir: %{}, by_id: %{}, refs: %{}, census: :pending, pending: %{}, skipped: 0, task: nil}
+    # exits are trapped so the census tasks are LINKED (this process's death ends them) without their failure
+    # ending this process
+    Process.flag(:trap_exit, true)
+
+    state = %{
+      by_dir: %{},
+      by_id: %{},
+      refs: %{},
+      census: :pending,
+      pending: %{},
+      confirming: %{},
+      skipped: 0,
+      task: nil,
+      epoch: nil,
+      deadline_ms: nil
+    }
+
     {:ok, start_census(state, opts)}
   end
 
-  # The census (docs/contracts/host-mounted-runs.org): a monitored Task performs the discovery and sends the
-  # requests in batches; the pending references reach this process BEFORE any request is sent; the whole
-  # census is bounded by census_timeout measured from init; at the deadline the Task is killed, unanswered
-  # requests are counted as skipped, and a reply for an expired reference is dropped.
+  # The census (docs/contracts/host-mounted-runs.org): a LINKED task performs the discovery and sends the
+  # requests in batches, each batch's pending references first announced to this process by an ACKNOWLEDGED
+  # call (a happens-before, not a cross-recipient ordering assumption); the census carries an epoch, is
+  # bounded by census_timeout measured from init, and at the deadline the task and every confirmation in
+  # flight are killed, the unanswered requests counted as skipped, and later replies for that epoch dropped.
   defp start_census(state, opts) do
     case Keyword.get(opts, :host_supervisor) do
       nil ->
@@ -71,16 +88,15 @@ defmodule AiOrchestrator.Host.Monitor do
 
       supervisor ->
         monitor = self()
+        epoch = make_ref()
         timeout = Keyword.get(opts, :census_timeout, @default_census_timeout)
-
-        {:ok, task} = Task.start(fn -> census_requests(supervisor, monitor) end)
-        Process.send_after(monitor, :census_deadline, timeout)
-        %{state | task: task}
+        task = spawn_link(fn -> census_requests(supervisor, monitor, epoch) end)
+        Process.send_after(monitor, {:census_deadline, epoch}, timeout)
+        %{state | task: task, epoch: epoch, deadline_ms: System.monotonic_time(:millisecond) + timeout}
     end
   end
 
-  # discovery, then the requests in batches; the pending references reach the Monitor before their requests
-  defp census_requests(supervisor, monitor) do
+  defp census_requests(supervisor, monitor, epoch) do
     targets =
       try do
         for {_, pid, _, _} <- DynamicSupervisor.which_children(supervisor), is_pid(pid), do: {pid, make_ref()}
@@ -89,17 +105,20 @@ defmodule AiOrchestrator.Host.Monitor do
       end
 
     for batch <- Enum.chunk_every(targets, @census_batch) do
-      send(monitor, {:census_pending, Enum.map(batch, &elem(&1, 1))})
+      :ok = GenServer.call(monitor, {:census_pending, epoch, Enum.map(batch, &elem(&1, 1))})
       for {pid, ref} <- batch, do: send(pid, {:census, ref, monitor})
     end
-
-    send(monitor, :census_discovered)
   end
 
   @impl true
   def handle_call({:lookup, run_dir}, _from, state), do: {:reply, Map.get(state.by_dir, run_dir), state}
 
   def handle_call(:census, _from, state), do: {:reply, %{census: state.census, skipped: state.skipped}, state}
+
+  def handle_call({:census_pending, epoch, refs}, _from, %{epoch: epoch, census: :pending} = state),
+    do: {:reply, :ok, %{state | pending: Enum.reduce(refs, state.pending, &Map.put(&2, &1, true))}}
+
+  def handle_call({:census_pending, _epoch, _refs}, _from, state), do: {:reply, :ok, state}
 
   def handle_call({:lookup_run_id, run_id}, _from, state) do
     entries = state.by_id |> Map.get(run_id, MapSet.new()) |> Enum.map(&Map.fetch!(state.by_dir, &1))
@@ -141,34 +160,46 @@ defmodule AiOrchestrator.Host.Monitor do
 
   # ---- census messages ----
   @impl true
-  def handle_info({:census_pending, refs}, state),
-    do: {:noreply, %{state | pending: Enum.reduce(refs, state.pending, &Map.put(&2, &1, true))}}
-
-  def handle_info(:census_discovered, state), do: {:noreply, state}
-
-  def handle_info(:census_deadline, state) do
+  def handle_info({:census_deadline, epoch}, %{epoch: epoch} = state) do
     if is_pid(state.task) and Process.alive?(state.task), do: Process.exit(state.task, :kill)
-    {:noreply, %{state | census: :complete, skipped: map_size(state.pending), pending: %{}, task: nil}}
+    for {_ref, %{task: task}} <- state.confirming, Process.alive?(task), do: Process.exit(task, :kill)
+    skipped = map_size(state.pending) + map_size(state.confirming)
+    {:noreply, %{state | census: :complete, skipped: skipped, pending: %{}, confirming: %{}, task: nil}}
   end
 
-  # eligibility: the request must still be pending; then the owner confirms its phase through the inspect
-  # seam (a system message a suspended live owner answers; a dead owner exits it; a terminal owner reports it)
-  def handle_info({:census_reply, ref, record, _phase}, state) do
-    if Map.has_key?(state.pending, ref) do
-      state = %{state | pending: Map.delete(state.pending, ref)}
+  def handle_info({:census_deadline, _old_epoch}, state), do: {:noreply, state}
 
-      if confirmed_active?(record) do
-        handle_cast({:register, record}, state)
-      else
-        {:noreply, state}
-      end
+  # eligibility: the request must still be pending in the current epoch; the owner's confirmation then runs
+  # in a bounded linked task under the common deadline so this process stays responsive throughout
+  def handle_info({:census_reply, ref, record, _phase}, %{census: :pending} = state) do
+    if Map.has_key?(state.pending, ref) and is_map(record) and is_pid(Map.get(record, :owner)) do
+      monitor = self()
+      epoch = state.epoch
+      budget = max(state.deadline_ms - System.monotonic_time(:millisecond), 1)
+
+      task =
+        spawn_link(fn -> send(monitor, {:census_confirmed, epoch, ref, record, confirmed_active?(record, budget)}) end)
+
+      {:noreply,
+       %{state | pending: Map.delete(state.pending, ref), confirming: Map.put(state.confirming, ref, %{task: task})}}
     else
       {:noreply, state}
     end
   end
 
-  # only the DOWN carrying the CURRENT entry's monitor reference removes it: an old owner's late DOWN
-  # finds its reference gone (demonitored when the replacement registered) and touches nothing
+  def handle_info({:census_reply, _ref, _record, _phase}, state), do: {:noreply, state}
+
+  def handle_info({:census_confirmed, epoch, ref, record, confirmed?}, %{epoch: epoch} = state) do
+    case Map.pop(state.confirming, ref) do
+      {nil, _} -> {:noreply, state}
+      {_task, confirming} -> {:noreply, apply_census(%{state | confirming: confirming}, record, confirmed?)}
+    end
+  end
+
+  def handle_info({:census_confirmed, _epoch, _ref, _record, _ok}, state), do: {:noreply, state}
+
+  def handle_info({:EXIT, _task, _reason}, state), do: {:noreply, state}
+
   def handle_info({:DOWN, ref, :process, _owner, _reason}, state) do
     case Map.pop(state.refs, ref) do
       {nil, _refs} -> {:noreply, state}
@@ -178,13 +209,43 @@ defmodule AiOrchestrator.Host.Monitor do
 
   def handle_info(_other, state), do: {:noreply, state}
 
-  defp confirmed_active?(%{owner: owner}) when is_pid(owner) do
-    RunOwner.inspect(owner).phase not in [:terminal, :tearing_down]
+  # a normal termination (supervisor shutdown, retirement) ends the census work it owns; a link alone would not
+  @impl true
+  def terminate(_reason, state) do
+    if is_pid(state.task) and Process.alive?(state.task), do: Process.exit(state.task, :kill)
+    for {_ref, %{task: task}} <- state.confirming, Process.alive?(task), do: Process.exit(task, :kill)
+    :ok
+  end
+
+  defp confirmed_active?(%{owner: owner}, budget) when is_pid(owner) do
+    RunOwner.inspect(owner, budget).phase not in [:terminal, :tearing_down]
   catch
     :exit, _ -> false
   end
 
-  defp confirmed_active?(_record), do: false
+  defp confirmed_active?(_record, _budget), do: false
+
+  # census precedence: a confirmed reply never displaces a live different owner or a higher generation
+  defp apply_census(state, _record, false), do: state
+
+  defp apply_census(state, record, true) do
+    case complete(record) do
+      {:ok, %{run_dir: run_dir, owner: owner, generation: generation} = record} ->
+        case Map.get(state.by_dir, run_dir) do
+          %{owner: other} when other != owner and is_pid(other) ->
+            if Process.alive?(other), do: state, else: state |> drop(run_dir) |> index(record, Process.monitor(owner))
+
+          %{generation: existing} when existing > generation ->
+            state
+
+          _ ->
+            if Process.alive?(owner), do: state |> drop(run_dir) |> index(record, Process.monitor(owner)), else: state
+        end
+
+      :error ->
+        state
+    end
+  end
 
   defp complete(record) do
     with true <- Enum.all?(@record_keys, &Map.has_key?(record, &1)),
