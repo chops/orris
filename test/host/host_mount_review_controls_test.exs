@@ -4,7 +4,9 @@ defmodule AiOrchestrator.Host.MountReviewControlsTest do
   the seven reproduced interleavings plus the neighbouring cases the review names; and from the 40a8d546 review
   (logs/shared-host-mount-green-40a8d546/codex/REVIEW.org, successor_test.exs): the four measured S1-S4 rows
   verbatim plus the eligible-replacement and lifecycle-evidence rows it asked for. Each row pins an obligation of
-  docs/contracts/host-mounted-runs.org against the real implementation; none relaxes an outcome.
+  docs/contracts/host-mounted-runs.org against the real implementation; none relaxes an outcome. From the 4bbf7f6
+  review (logs/shared-host-mount-green-4bbf7f6/codex/REVIEW.org): the monotone-invalidation variant of the S3
+  delayed row and the sampled-evidence stop race row, verbatim.
   """
 
   use ExUnit.Case, async: false
@@ -551,6 +553,9 @@ defmodule AiOrchestrator.Host.MountReviewControlsTest do
     assert {:ok, _} = Host.await(handle, @deadline)
     assert RunOwner.inspect(handle.owner).phase == :terminal
     assert {:ok, []} = Host.lookup_run_id("run_review_0001", monitor: mon)
+    # An unrelated lifecycle event must not revalidate this already-stale fact.
+    Host.Monitor.unregister(mon, %{run_dir: dir <> "_unrelated", owner: self(), generation: 1})
+    assert {:ok, []} = Host.lookup_run_id("run_review_0001", monitor: mon)
     :erlang.resume_process(task)
     wait_until(fn -> not Map.has_key?(:sys.get_state(mon).confirming, cref) end)
 
@@ -650,5 +655,54 @@ defmodule AiOrchestrator.Host.MountReviewControlsTest do
     refute payload.supervisor in links
     refute Enum.any?(links, &(is_pid(&1) and &1 != Process.whereis(h.hsup)))
     assert :ok == Host.stop(handle, 1_000)
+  end
+
+  test "S4 sampled active evidence cannot kill a result retained before fallback termination", %{dir: dir} do
+    h = start_host!()
+    handle = mount!(h, dir, holding(self(), :subtree_started))
+    {ref, payload, helper} = await_held!(:subtree_started)
+    :ok = :sys.suspend(payload.server)
+    send(helper, {:release, ref})
+    assert {:ok, _} = Host.ready(handle, 1000)
+    :ok = :sys.suspend(handle.owner)
+    :ok = :sys.resume(payload.server)
+
+    wait_until(fn ->
+      Enum.any?(elem(Process.info(handle.owner, :messages), 1), &match?({_tag, {:ok, %{}}}, &1))
+    end)
+
+    # Delay only the supervisor termination request, not owner operation. Its
+    # normal run result is already queued BEFORE the later stop request.
+    observer = self()
+
+    proxy =
+      spawn(fn ->
+        receive do
+          {:"$gen_call", from, request} ->
+            send(observer, {:fallback_pending, self()})
+
+            receive do
+              :finish_fallback -> :ok
+            after
+              5000 -> :ok
+            end
+
+            result = GenServer.call(h.hsup, request, 5000)
+            GenServer.reply(from, result)
+        end
+      end)
+
+    on_exit(fn -> Process.exit(proxy, :kill) end)
+    stop = Task.async(fn -> Host.stop(%{handle | supervisor: proxy}, 2000) end)
+    assert_receive {:fallback_pending, ^proxy}, 1500
+    :ok = :sys.resume(handle.owner)
+    assert :ok == Task.await(stop, 2500)
+    assert {:ok, result} = Host.await(handle, 1000)
+    assert RunOwner.inspect(handle.owner).phase == :terminal
+    pm = Process.monitor(proxy)
+    send(proxy, :finish_fallback)
+    assert_receive {:DOWN, ^pm, :process, ^proxy, :normal}, 1000
+    assert Process.alive?(handle.owner), "obsolete active fallback destroyed a result after stop reported retained"
+    assert {:ok, ^result} = Host.await(handle, 1000)
   end
 end

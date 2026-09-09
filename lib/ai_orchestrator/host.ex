@@ -224,12 +224,16 @@ defmodule AiOrchestrator.Host do
   # child shutdown measured from the stop; the caller's wait neither resets nor cancels it. The request is sent
   # once and its reply awaited for the whole bound: no probe budget exceeds the bound (no floor).
   #
-  # Lifecycle proof before any termination (docs/contracts/host-mounted-runs.org, stop): the owner's own word
-  # (:retained / :stopping), else its :sys word (phase), else RUNTIME evidence the owner cannot withhold: a live
-  # Run.Supervisor still linked to it proves the subtree is not torn down, so the owner holds no retained result
-  # and termination destroys nothing. Without any of these the state is UNKNOWN: the agent keeps waiting for the
-  # owner's word until the bound and then reports unproven with the owner untouched, because a wait can never
-  # authorise the loss of a cached result.
+  # Lifecycle ARBITRATION (docs/contracts/host-mounted-runs.org, stop): the owner's own word (:retained /
+  # :stopping) always wins and is awaited for the whole bound. Evidence gathered while the owner is silent (its
+  # :sys phase; a live Run.Supervisor still linked to it, which proves the subtree is not torn down and so no
+  # result is retained) NEVER authorises destruction before the bound: it only decides what happens to an owner
+  # that is STILL silent at the bound. At the bound the owner is frozen (scheduler-level suspension, so it can
+  # neither answer nor transition while the decision is taken), its reply is checked first (it replies before it
+  # informs the caller, so no reply means the caller was told nothing), the link evidence is re-read under the
+  # freeze, and only a still-linked, still-silent owner that is a child of this host's supervisor is killed.
+  # Everything else is resumed untouched and reported unproven: a wait can never authorise the loss of a cached
+  # result. A sampled phase can therefore never be acted upon after it became obsolete.
   defp stop_agent(owner, supervisor, child_shutdown, caller, ref, timeout) do
     started = System.monotonic_time(:millisecond)
     remaining = fn -> max(child_shutdown - (System.monotonic_time(:millisecond) - started), 0) end
@@ -257,21 +261,69 @@ defmodule AiOrchestrator.Host do
         :ok
 
       :active ->
-        spawn(fn -> DynamicSupervisor.terminate_child(supervisor, owner) end)
-        enforce_bound(owner, mon, remaining)
+        # the host kills only what it hosts: membership is confirmed with the supervisor (bounded) before any
+        # decision at the bound; the evidence itself is re-read under the freeze, never trusted from here
+        arbitrated = if child_of?(supervisor, owner, remaining), do: :active, else: :unknown
+        await_word(arbitrated, owner, caller, ref, request, mon, remaining)
 
       :unknown ->
-        case :gen_statem.receive_response(request, remaining.()) do
-          :timeout -> send(caller, {:stop_outcome, ref, {:error, %{clause: "run_host_stop_unproven"}}})
-          answer -> acknowledged(answer, owner, mon, remaining)
-        end
+        await_word(:unknown, owner, caller, ref, request, mon, remaining)
     end
   end
 
-  defp lifecycle_evidence(owner, supervisor, remaining) do
+  # the owner's word is awaited for the whole remaining bound; only then is the bound arbitrated
+  defp await_word(evidence, owner, caller, ref, request, mon, remaining) do
+    case :gen_statem.receive_response(request, remaining.()) do
+      :timeout -> arbitrate_at_bound(evidence, owner, caller, ref, request, mon, remaining)
+      answer -> acknowledged(answer, owner, mon, remaining)
+    end
+  end
+
+  defp arbitrate_at_bound(evidence, owner, caller, ref, request, mon, remaining) do
+    frozen = freeze(owner)
+
+    case :gen_statem.receive_response(request, 0) do
+      :timeout ->
+        if evidence == :active and frozen and subtree_linked?(owner) do
+          Process.exit(owner, :kill)
+          thaw(owner)
+          enforce_bound(owner, mon, remaining)
+        else
+          thaw(owner)
+          send(caller, {:stop_outcome, ref, {:error, %{clause: "run_host_stop_unproven"}}})
+        end
+
+      answer ->
+        thaw(owner)
+        acknowledged(answer, owner, mon, remaining)
+    end
+  end
+
+  # scheduler-level freeze: the only primitive that makes "check the owner's word, then kill" atomic against the
+  # owner's own transitions; a dead owner is simply not frozen
+  defp freeze(owner) do
+    :erlang.suspend_process(owner, [])
+  catch
+    :error, _ -> false
+  end
+
+  defp thaw(owner) do
+    :erlang.resume_process(owner)
+  catch
+    :error, _ -> false
+  end
+
+  defp child_of?(supervisor, owner, remaining) do
+    children = GenServer.call(supervisor, :which_children, max(remaining.(), 1))
+    Enum.any?(children, fn {_id, pid, _type, _mods} -> pid == owner end)
+  catch
+    :exit, _ -> false
+  end
+
+  defp lifecycle_evidence(owner, _supervisor, remaining) do
     case inspected_phase(owner, min(200, remaining.())) do
       :terminal -> :retained
-      :unknown -> if subtree_linked?(owner, supervisor), do: :active, else: :unknown
+      :unknown -> if subtree_linked?(owner), do: :active, else: :unknown
       _active_or_starting -> :active
     end
   end
@@ -286,7 +338,7 @@ defmodule AiOrchestrator.Host do
 
   # runtime evidence: a linked process whose initial call is the run supervisor (set by proc_lib at spawn,
   # before its init, so a Writer blocked in acquire still counts) is a subtree that has not been torn down
-  defp subtree_linked?(owner, _supervisor) do
+  defp subtree_linked?(owner) do
     case Process.info(owner, :links) do
       {:links, links} -> Enum.any?(links, &run_supervisor?/1)
       nil -> false

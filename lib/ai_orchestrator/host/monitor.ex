@@ -272,10 +272,13 @@ defmodule AiOrchestrator.Host.Monitor do
   defp canonical(run_dir) when is_binary(run_dir), do: Path.expand(run_dir)
   defp canonical(_other), do: nil
 
-  # lifecycle invalidation of in-flight confirmations: a matching entry is marked stale; its bounded task may still
+  # lifecycle invalidation of in-flight confirmations is MONOTONE (stale never reverts): a matching entry is marked
+  # stale; its bounded task may still
   # finish (or be killed at the deadline) but its result is discarded on arrival and it is not counted as skipped
   defp invalidate(state, stale?) do
-    confirming = Map.new(state.confirming, fn {ref, entry} -> {ref, Map.put(entry, :stale, stale?.(entry))} end)
+    confirming =
+      Map.new(state.confirming, fn {ref, entry} -> {ref, Map.put(entry, :stale, entry.stale or stale?.(entry))} end)
+
     %{state | confirming: confirming}
   end
 

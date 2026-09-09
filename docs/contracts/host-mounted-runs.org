@@ -66,15 +66,19 @@ live cancellation of a mounted run, projection index and packaging stay outside.
   =stop_request= naming the caller and its deadline; the owner answers from any responsive state, =:retained= for a
   terminal owner (retention kept, nothing terminated) or =:stopping= after it has recorded the stopper (caller
   monitor + deadline) and armed its OWN teardown as its next internal event, so the obligation lives in the owner
-  regardless of the caller's wait. LIFECYCLE PROOF: no owner is terminated without positive evidence that it holds no
-  retained result, in this order: (1) the owner's own word (=:retained= / =:stopping=); (2) its =:sys= word (a suspended
-  terminal owner still answers and is kept; any other reported phase is active/startup); (3) runtime evidence the owner
-  cannot withhold: a live =Run.Supervisor= still LINKED to the owner (its =$initial_call=, set by =proc_lib= before init,
-  so a Writer blocked in acquire counts) proves the subtree is not torn down and the owner retains nothing, so it is
-  terminated through the supervisor and killed at the bound. With none of these the state is UNKNOWN (an owner blocked
-  inside a system callback is indistinguishable from a blocked startup by its answers alone): the agent keeps waiting
-  for the owner's word until the shared bound and then reports unproven with the owner UNTOUCHED, because a wait can
-  never authorise the loss of a cached result. Answers ={:ok, :stopped}= when teardown completed with every owned DOWN
+  regardless of the caller's wait. LIFECYCLE ARBITRATION: the owner's own word (=:retained= / =:stopping=) always wins
+  and is awaited for the whole shared bound (the request is sent once). Evidence gathered while the owner is silent,
+  (a) its =:sys= word (a suspended terminal owner still answers and is kept; any other reported phase is active/startup)
+  and (b) runtime evidence it cannot withhold, a live =Run.Supervisor= still LINKED to it (its =$initial_call=, set by
+  =proc_lib= before init, so a Writer blocked in acquire counts) proving the subtree is not torn down and nothing is
+  retained, NEVER authorises destruction before the bound: it only decides the fate of an owner STILL silent at the
+  bound, and a sampled phase can therefore never be acted upon after it became obsolete. At the bound the owner is
+  FROZEN (scheduler-level suspension, so it can neither answer nor transition while the decision is taken); a reply it
+  has already sent is honoured (the owner replies before it informs the caller, so no reply means the caller was told
+  nothing); the link evidence is re-read under the freeze; and only a still-linked, still-silent owner that the host's
+  supervisor confirmed as its child (bounded =which_children=) is killed, reported unproven. Everything else is resumed
+  UNTOUCHED and reported unproven (an owner blocked inside a system callback is indistinguishable from a blocked
+  startup by its answers alone; a wait can never authorise the loss of a cached result). Answers ={:ok, :stopped}= when teardown completed with every owned DOWN
   observed, ={:error, %{clause: "run_executor_teardown_incomplete", survivors: n}}= when a join was not observed,
   ={:error, %{clause: "run_host_stop_unproven"}}= when the bound expired without a proven stop (an owner proven active
   was killed by the supervisor; an owner without evidence was left as it was; no descendant/disk evidence is claimed:
@@ -214,9 +218,11 @@ caller, one shared deadline across legs with the owner kept in unknown results, 
 foreground registration with the injected arbiter. Adopted from the 40a8d546 review: S1 a mounted timeout kills and
 joins its owned discovery worker (linked to the caller, call bounded by the deadline, late reply drained); S2 a listing
 receives only its own workers' monitors and replies, never an unrelated caller DOWN; S3 a delayed active confirmation
-cannot resurrect a completed retained owner, and an ELIGIBLE confirmed reply naming a different live owner never
-displaces the registered one (the older different-owner row is narrowed to eligibility only); S4 a stop cannot destroy
-a terminal owner whose state inspection is blocked, and the lifecycle evidence row pins the link fact the proof rests on.
+cannot resurrect a completed retained owner even after an unrelated unregister (invalidation is monotone), and an
+ELIGIBLE confirmed reply naming a different live owner never displaces the registered one (the older different-owner
+row is narrowed to eligibility only); S4 a stop cannot destroy a terminal owner whose state inspection is blocked, the
+lifecycle evidence row pins the link fact the arbitration rests on, and sampled active evidence cannot kill a result
+retained before a delayed fallback executes (the supervisor request is held by a forwarding proxy).
 RED (=host_mount_red_test.exs=): MR-1 layout and descendants; MR-2 start-ack vs ready (two mounts, one stalled;
 =ready_timeout= leaves the tree untouched); MR-3 ready follows the barrier result (synchronization witness); MR-4
 helper identity and registry owner (visibility awaited with a bounded witness, never assumed); MR-5 parent shutdown at

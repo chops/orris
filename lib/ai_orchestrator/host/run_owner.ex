@@ -225,9 +225,12 @@ defmodule AiOrchestrator.Host.RunOwner do
   # keeps its retention. An active owner records the stopper (caller monitor + deadline), answers :stopping
   # and arms its OWN teardown as the next internal event: the obligation is in this process, independent of
   # whether the caller keeps waiting. The completed outcome reaches every live recorded stopper.
+  # the reply reaches the stop agent BEFORE the caller is informed: an agent that sees no reply under its freeze
+  # knows the caller has not been told :retained either (docs/contracts/host-mounted-runs.org, stop arbitration)
   def handle_event({:call, from}, {:stop_request, {pid, ref, _deadline_ms}}, :terminal, _data) do
+    :ok = :gen_statem.reply(from, {:ack, :retained})
     send(pid, {:stop_outcome, ref, :retained})
-    {:keep_state_and_data, [{:reply, from, {:ack, :retained}}]}
+    :keep_state_and_data
   end
 
   def handle_event({:call, from}, {:stop_request, {pid, ref, deadline_ms}}, _state, data) do
