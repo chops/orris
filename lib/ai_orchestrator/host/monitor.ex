@@ -230,20 +230,22 @@ defmodule AiOrchestrator.Host.Monitor do
 
   defp apply_census(state, record, true) do
     case complete(record) do
-      {:ok, %{run_dir: run_dir, owner: owner, generation: generation} = record} ->
-        case Map.get(state.by_dir, run_dir) do
-          %{owner: other} when other != owner and is_pid(other) ->
-            if Process.alive?(other), do: state, else: state |> drop(run_dir) |> index(record, Process.monitor(owner))
-
-          %{generation: existing} when existing > generation ->
-            state
-
-          _ ->
-            if Process.alive?(owner), do: state |> drop(run_dir) |> index(record, Process.monitor(owner)), else: state
-        end
+      {:ok, record} ->
+        if census_admissible?(state, record),
+          do: state |> drop(record.run_dir) |> index(record, Process.monitor(record.owner)),
+          else: state
 
       :error ->
         state
+    end
+  end
+
+  # a live different owner or a higher generation is never displaced; a dead owner is never indexed
+  defp census_admissible?(state, %{run_dir: run_dir, owner: owner, generation: generation}) do
+    case Map.get(state.by_dir, run_dir) do
+      %{owner: other} when other != owner and is_pid(other) -> not Process.alive?(other) and Process.alive?(owner)
+      %{generation: existing} when existing > generation -> false
+      _ -> Process.alive?(owner)
     end
   end
 

@@ -428,7 +428,8 @@ defmodule AiOrchestrator.Host.MountReviewControlsTest do
   # ================================================================= R5: foreground executor + injected arbiter
   test "R5 the foreground Host.Executor registers with the injected arbiter", %{dir: dir} do
     h = start_host!()
-    {command, ctx} = command_ctx(dir, holding(self(), :subtree_started), ownership: [server: h.arb], host_monitor: h.mon)
+    seams = [ownership: [server: h.arb], host_monitor: h.mon]
+    {command, ctx} = command_ctx(dir, holding(self(), :subtree_started), seams)
     task = Task.async(fn -> Host.Executor.execute(command, ctx) end)
     {ref, payload, owner} = await_held!(:subtree_started)
     assert {:ok, %{writer: writer}} = Ownership.status(dir, server: h.arb)

@@ -233,19 +233,25 @@ defmodule AiOrchestrator.Host do
         enforce_bound(owner, mon, remaining)
 
       :no_ack ->
-        phase =
-          try do
-            RunOwner.inspect(owner, min(200, max(remaining.(), 1))).phase
-          catch
-            :exit, _ -> :unknown
-          end
+        stop_unacknowledged(owner, supervisor, caller, ref, mon, remaining)
+    end
+  end
 
-        if phase == :terminal do
-          send(caller, {:stop_outcome, ref, :retained})
-        else
-          spawn(fn -> DynamicSupervisor.terminate_child(supervisor, owner) end)
-          enforce_bound(owner, mon, remaining)
-        end
+  # no acknowledgment: a suspended terminal owner still answers the :sys seam and is kept; anything else is
+  # terminated through its supervisor and held to the shared bound
+  defp stop_unacknowledged(owner, supervisor, caller, ref, mon, remaining) do
+    phase =
+      try do
+        RunOwner.inspect(owner, min(200, max(remaining.(), 1))).phase
+      catch
+        :exit, _ -> :unknown
+      end
+
+    if phase == :terminal do
+      send(caller, {:stop_outcome, ref, :retained})
+    else
+      spawn(fn -> DynamicSupervisor.terminate_child(supervisor, owner) end)
+      enforce_bound(owner, mon, remaining)
     end
   end
 
@@ -298,17 +304,15 @@ defmodule AiOrchestrator.Host do
     if budget == 0 do
       Enum.map(chunk, &unknown/1)
     else
-      me = self()
       tag = make_ref()
-
-      workers =
-        for owner <- chunk, into: %{} do
-          {pid, mon} = spawn_monitor(fn -> send(me, {tag, owner, phase_of(owner, budget)}) end)
-          {owner, {pid, mon}}
-        end
-
+      workers = Map.new(chunk, &{&1, query_worker(&1, tag, budget)})
       collect_views(workers, tag, remaining, %{})
     end
+  end
+
+  defp query_worker(owner, tag, budget) do
+    me = self()
+    spawn_monitor(fn -> send(me, {tag, owner, phase_of(owner, budget)}) end)
   end
 
   defp collect_views(workers, _tag, _remaining, views) when map_size(workers) == 0, do: Map.values(views)
