@@ -3,7 +3,9 @@ defmodule AiOrchestrator.Query do
   The PUBLIC read seam (docs/contracts/public-console-seam.org): projection-derived views over a run handle under
   a server-configured root. Every read uses the journal's verified prefix through `AiOrchestrator.Journal.Reader`,
   exposes `pending_repair` as data and never writes; host observations run under ONE finite budget applied after
-  filesystem resolution and the verified read, and every fact the host cannot answer is `:unknown`, never inferred.
+  filesystem resolution and the verified read (the budget bounds the host calls only; resolution, the verified read
+  and the physical confinement of registered directories are filesystem work without a hard wall bound), and every
+  fact the host cannot answer is `:unknown`, never inferred.
   Views carry no pids, references or other directories' paths.
   """
 
@@ -138,15 +140,18 @@ defmodule AiOrchestrator.Query do
 
   defp lookup_leg(nil, journal_error, _run_dir, _root, _host_opts, _remaining), do: {:unknown, [journal_error]}
 
+  # the count applies the SAME physical confinement as the resolver to every registered directory (a registered
+  # escaping symlink is not counted) and excludes this directory by its canonical form; that comparison is
+  # filesystem work outside the host budget, as the module doc states
   defp lookup_leg(run_id, _journal_error, run_dir, root, host_opts, remaining) do
-    own = Path.expand(run_dir)
+    own = canonical_or_expanded(run_dir)
 
     case Host.lookup_run_id(run_id, Keyword.put(host_opts, :timeout, remaining.())) do
       {:ok, entries} ->
         count =
           Enum.count(entries, fn entry ->
-            dir = Path.expand(entry.run_dir)
-            dir != own and String.starts_with?(dir <> "/", root <> "/")
+            is_binary(entry.run_dir) and canonical_or_expanded(entry.run_dir) != own and
+              Scope.inside?(entry.run_dir, root)
           end)
 
         {count, []}
@@ -169,6 +174,13 @@ defmodule AiOrchestrator.Query do
 
       {:error, %{clause: clause}} ->
         {:unknown, [%{leg: :mounted, clause: clause}]}
+    end
+  end
+
+  defp canonical_or_expanded(path) do
+    case Scope.canonical(Path.expand(path)) do
+      {:ok, canonical} -> canonical
+      :error -> Path.expand(path)
     end
   end
 

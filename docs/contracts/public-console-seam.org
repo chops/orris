@@ -25,8 +25,14 @@ The CLI keeps its directory-based path, its error maps, exit codes, projection f
   root-filtered =Host.lookup_run_id= entries excluding this directory; unavailable lookup -> =:unknown=; no pids/paths/handles)
 - =Query.resolve(run_ref, server_opts)= :: ={:ok, run_dir} | {:error, %{clause: run_ref_invalid | run_ref_outside_root | runs_root_missing | run_directory_missing | run_directory_invalid}}=
 - rejection :: =%{clause: String.t(), detail: map() | nil}=; closed clause set: the resolver clauses above, run_inputs_missing,
-  run_inputs_invalid, journal_missing, journal_empty, journal_invalid, pane_claim_refused, pane_release_failed, and every
-  existing command/journal clause passed through; =detail= carries the trusted tier's original reason map unchanged.
+  run_inputs_invalid, journal_missing, journal_empty, journal_invalid, pane_claim_refused, pane_release_failed,
+  runs_root_unreadable (the root exists but cannot be listed), invalid_prepared (=invoke/3= given something that is not
+  a =Prepared=), and every existing command/journal clause passed through; =detail= carries the trusted tier's original
+  reason map unchanged. =Prepare.Prepared.t()= is an =@opaque= type: consumers never build or expand it.
+- Physical confinement (GREEN rev2, review R1/R2): the resolver walks components in filesystem order, resolving each
+  symlink before applying a later "..", so =root/run -> bridge/../actual= with =bridge= pointing outside is refused;
+  root "/" is an accepted configured root; the host count applies the same confinement to registered directories.
+  This is stationary-filesystem correctness; the concurrent-rename race stays outside the design as stated.
 - server_opts (server-only, never from a request): =root=, =budget_ms= (default 1_000; bounds the host observation legs
   after resolution and the verified read, A4), plus the CLI's seam keys (fs, id, clock, dispatch, gate, pane registry, operator).
 - Private tier =Prepare.Trusted= (not exported by the top): directory-based =validate/1=, =start/2=, =resume/2=, =cancel/2=,
@@ -55,6 +61,12 @@ Controls, =test/contracts/public_console_seam_controls_test.exs= (hold at 2c33d7
   started with start_supervised! and the dead one is reaped before use; A4)
 - "C-9 a per-leg budget reset witness fails the single-budget elapsed bound" (DisposablePerLegReset takes >= 600 ms for
   budget 300 against a suspended Monitor; suspend/resume in try/after)
+- "C-10 scope: a symlink followed by a parent component is traversed in filesystem order" (reviewer probe, R1)
+- "C-11 scope: the filesystem root is an accepted configured root" (reviewer probe, R1)
+- "C-12 count: a registered symlink escaping the physical root is excluded" (reviewer probe with a real Monitor, R2)
+- "C-13 a compound link escape is neither read nor discovered" (summary refused) and "C-13b the listing skips and counts
+  both escaping links independently of the summary row" (the listing assertion in its OWN row)
+- "C-14 the CLI extraction preserves the formerly ignored cancel_reason option" (reviewer probe, R3)
 Feature rows, =test/contracts/public_console_seam_red_test.exs= (RED at 2c33d78; every row fails on the undefined
 =AiOrchestrator.Prepare= / =AiOrchestrator.Query=; F-1/F-1b through the external consumer's compile):
 - "F-1 the public seam compiles for a consumer that references only exported modules"

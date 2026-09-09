@@ -45,14 +45,21 @@ defmodule AiOrchestrator.Prepare.Scope do
     end
   end
 
-  @doc "Whether `path`'s canonical form lies strictly inside the canonical `root`."
+  @doc "Whether `path`'s canonical (physically traversed) form lies strictly inside the canonical `root`."
   @spec inside?(Path.t(), Path.t()) :: boolean()
   def inside?(path, root) do
     case canonical(Path.expand(path)) do
-      {:ok, canonical} -> String.starts_with?(canonical, root <> "/")
+      {:ok, canonical} -> contained?(canonical, root)
       :error -> false
     end
   end
+
+  @doc "The canonical form of an absolute path: every symlink resolved in traversal order, `..` applied to the RESOLVED parent."
+  @spec canonical(Path.t()) :: {:ok, Path.t()} | :error
+  def canonical(path), do: walk(Path.split(path), "/", @max_links)
+
+  defp contained?(_path, "/"), do: true
+  defp contained?(path, root), do: String.starts_with?(path, root <> "/")
 
   defp valid_ref(ref) when is_binary(ref) do
     cond do
@@ -83,23 +90,28 @@ defmodule AiOrchestrator.Prepare.Scope do
     end
   end
 
-  # symlink-resolving canonical path, component by component, bounded in link depth; :error when unresolvable
-  defp canonical(path), do: canonical(Path.split(path), "/", @max_links)
+  # Physical traversal: each component is joined to the RESOLVED accumulator; a symlink's target components are
+  # pushed back onto the queue (never collapsed lexically) so a later ".." applies to the resolved parent, exactly as
+  # the operating system walks the path. Bounded in link depth; unresolvable paths answer :error.
+  defp walk(_parts, _acc, 0), do: :error
+  defp walk([], acc, _links), do: {:ok, acc}
+  defp walk(["/" | rest], _acc, links), do: walk(rest, "/", links)
+  defp walk(["." | rest], acc, links), do: walk(rest, acc, links)
+  defp walk([".." | rest], acc, links), do: walk(rest, parent(acc), links)
 
-  defp canonical(_parts, _acc, 0), do: :error
-  defp canonical([], acc, _links), do: {:ok, acc}
-  defp canonical(["/" | rest], _acc, links), do: canonical(rest, "/", links)
-
-  defp canonical([part | rest], acc, links) do
+  defp walk([part | rest], acc, links) do
     candidate = Path.join(acc, part)
 
     case File.read_link(candidate) do
       {:ok, link} ->
-        resolved = if String.starts_with?(link, "/"), do: link, else: Path.join(acc, link)
-        canonical(Path.split(Path.expand(resolved)) ++ rest, "/", links - 1)
+        base = if String.starts_with?(link, "/"), do: "/", else: acc
+        walk(Enum.reject(Path.split(link), &(&1 == "/")) ++ rest, base, links - 1)
 
       {:error, _not_a_link_or_absent} ->
-        canonical(rest, candidate, links)
+        walk(rest, candidate, links)
     end
   end
+
+  defp parent("/"), do: "/"
+  defp parent(path), do: Path.dirname(path)
 end

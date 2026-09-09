@@ -124,7 +124,6 @@ defmodule AiOrchestrator.Prepare.Trusted do
           :plan_path,
           :project,
           :recovery_reason,
-          :cancel_reason,
           :review_reader,
           :run_id,
           :run_lock_path,

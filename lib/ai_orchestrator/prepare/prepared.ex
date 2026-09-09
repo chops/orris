@@ -5,15 +5,15 @@ defmodule AiOrchestrator.Prepare.Prepared do
   invocation. Opaque to consumers: they never build or expand it (docs/contracts/public-console-seam.org).
   """
 
-  @type t :: %__MODULE__{
-          verb: String.t(),
-          args: map(),
-          run_id: String.t(),
-          run_dir: Path.t(),
-          context: keyword(),
-          claims: :none | {:panes, map()},
-          inputs: %{spec_hash: String.t(), plan_hash: String.t()} | nil
-        }
+  @opaque t :: %__MODULE__{
+            verb: String.t(),
+            args: map(),
+            run_id: String.t(),
+            run_dir: Path.t(),
+            context: keyword(),
+            claims: :none | {:panes, map()},
+            inputs: %{spec_hash: String.t(), plan_hash: String.t()} | nil
+          }
 
   @enforce_keys [:verb, :args, :run_id, :run_dir, :context, :claims]
   defstruct verb: nil, args: %{}, run_id: nil, run_dir: nil, context: [], claims: :none, inputs: nil

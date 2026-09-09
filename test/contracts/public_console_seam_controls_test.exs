@@ -10,6 +10,7 @@ defmodule AiOrchestrator.Contracts.PublicConsoleSeamControlsTest do
   alias AiOrchestrator.Contracts.FixtureHelper, as: F
   alias AiOrchestrator.Journal.Reader
   alias AiOrchestrator.PaneRegistry.FileRegistry
+  alias AiOrchestrator.Prepare.Scope
   alias AiOrchestrator.Test.ConsoleConsumerHarness, as: Harness
   alias AiOrchestrator.Test.ConsoleSeamDoubles, as: Doubles
   alias AiOrchestrator.Test.ConsoleSeamRows, as: Rows
@@ -170,6 +171,7 @@ defmodule AiOrchestrator.Contracts.PublicConsoleSeamControlsTest do
     try do
       started = System.monotonic_time(:millisecond)
 
+      # ---- adopted from the 0ebffdf review (logs/console-seam-red-2c33d78/codex): R1 traversal, R2 confinement, R3 drift ----
       assert {:ok, %{errors: errors}} =
                Doubles.DisposablePerLegReset.host_view(ref, root: root, monitor: mon, budget_ms: 300)
 
@@ -180,5 +182,78 @@ defmodule AiOrchestrator.Contracts.PublicConsoleSeamControlsTest do
     after
       :ok = :sys.resume(mon)
     end
+  end
+
+  defp escape_fixture do
+    base = Rows.fresh("scope_review")
+    root = Path.join(base, "root")
+    outside = Path.join(base, "outside")
+    File.mkdir_p!(Path.join(root, "actual"))
+    File.mkdir_p!(Path.join(outside, "deep"))
+    File.mkdir_p!(Path.join(outside, "actual"))
+    File.write!(Path.join(root, "actual/marker"), "inside")
+    File.write!(Path.join(outside, "actual/marker"), "outside")
+    {root, outside}
+  end
+
+  test "C-10 scope: a symlink followed by a parent component is traversed in filesystem order" do
+    {root, outside} = escape_fixture()
+    assert {:ok, path} = Scope.resolve("actual", root: root)
+    assert File.read!(Path.join(path, "marker")) == "inside"
+    File.ln_s!(Path.join(outside, "deep"), Path.join(root, "bridge"))
+    File.ln_s!("bridge/../actual", Path.join(root, "run"))
+    assert File.read!(Path.join(root, "run/marker")) == "outside"
+    assert match?({:error, %{clause: "run_ref_outside_root"}}, Scope.resolve("run", root: root))
+  end
+
+  test "C-11 scope: the filesystem root is an accepted configured root" do
+    ref = if File.dir?("/private"), do: "private", else: "tmp"
+    assert match?({:ok, _}, Scope.resolve(ref, root: "/"))
+  end
+
+  test "C-12 count: a registered symlink escaping the physical root is excluded" do
+    root = Rows.fresh("count_root")
+    dir = Path.join(root, "own")
+    File.mkdir_p!(dir)
+    File.write!(Path.join(dir, "events.jsonl"), Rows.kill9("events_pre_dispatch.jsonl"))
+    run_id = Rows.run_id(dir)
+    peer = Path.join(root, "peer")
+    File.mkdir_p!(peer)
+    escape = Path.join(root, "escape")
+    File.ln_s!(Rows.fresh("count_external"), escape)
+    assert match?({:error, %{clause: "run_ref_outside_root"}}, AiOrchestrator.Query.resolve("escape", root: root))
+    mon = Rows.monitor!(:escaping)
+    for path <- [peer, escape], do: Rows.registered!(mon, Rows.record(path, run_id))
+    assert {:ok, %{other_registered_directories: count}} = AiOrchestrator.Query.host_view("own", root: root, monitor: mon)
+    assert count == 1, "escaping registration counted: #{inspect(count)}"
+  end
+
+  test "C-13 a compound link escape is neither read nor discovered" do
+    {root, outside} = escape_fixture()
+    File.write!(Path.join(outside, "actual/events.jsonl"), Rows.kill9("events_pre_dispatch.jsonl"))
+    File.ln_s!(Path.join(outside, "deep"), Path.join(root, "bridge"))
+    File.ln_s!("bridge/../actual", Path.join(root, "escape"))
+    assert match?({:error, %{clause: "run_ref_outside_root"}}, AiOrchestrator.Query.run_summary("escape", root: root))
+  end
+
+  test "C-13b the listing skips and counts both escaping links independently of the summary row" do
+    {root, outside} = escape_fixture()
+    File.ln_s!(Path.join(outside, "deep"), Path.join(root, "bridge"))
+    File.ln_s!("bridge/../actual", Path.join(root, "escape"))
+    assert {:ok, listing} = AiOrchestrator.Query.list_runs(root: root)
+    assert Enum.map(listing.runs, & &1.run_ref) == ["actual"]
+    assert listing.skipped_outside_root == 2
+  end
+
+  test "C-14 the CLI extraction preserves the formerly ignored cancel_reason option" do
+    dir = Rows.fresh("cancel_option")
+    File.write!(Path.join(dir, "events.jsonl"), Rows.kill9("events_pre_dispatch.jsonl"))
+    assert %{status: 0} = CLI.run(["cancel", dir], cancel_reason: "custom_reason_canary")
+
+    events =
+      dir |> Path.join("events.jsonl") |> File.read!() |> String.split("\n", trim: true) |> Enum.map(&Jason.decode!/1)
+
+    event = Enum.find(events, &(&1["type"] == "run_cancel_requested"))
+    assert event["data"]["reason"] == "operator_cancel"
   end
 end
