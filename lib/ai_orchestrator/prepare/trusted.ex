@@ -78,7 +78,8 @@ defmodule AiOrchestrator.Prepare.Trusted do
          {:ok, prior_lines} <- read_journal_lines(run_dir),
          {:ok, fsm_opts} <- resume_identity(prior_lines, fsm_opts) do
       args = %{"reason" => Keyword.get(fsm_opts, :cancel_reason, "operator_cancel")}
-      {:ok, %{prepared("cancel", args, run_dir, fsm_opts, nil) | claims: :none}}
+      # nil inputs already builds the term without pane claims; the opaque term is never updated outside its module
+      {:ok, prepared("cancel", args, run_dir, fsm_opts, nil)}
     end
   end
 
