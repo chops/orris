@@ -1,6 +1,6 @@
 #+title: Public console seam contract (Prepare, Query, top-level exports)
 #+date: 2026-09-09
-#+status: RED written at 2c33d78 (TEST/DOC only); map: logs/liveview-console-map/claude/B3-PUBLIC-CONSOLE-API-MAP.org rev3 (A1-A4 folded)
+#+status: RED rev2 (review R1-R5 folded) at 2c33d78 (TEST/DOC only); map: logs/liveview-console-map/claude/B3-PUBLIC-CONSOLE-API-MAP.org rev3 (A1-A4 folded)
 
 * Obligation
 An external application (the console) reaches the core ONLY through modules the top boundary exports:
@@ -32,42 +32,59 @@ The CLI keeps its directory-based path, its error maps, exit codes, projection f
 - Private tier =Prepare.Trusted= (not exported by the top): directory-based =validate/1=, =start/2=, =resume/2=, =cancel/2=,
   =invoke(actor, prepared, executor, outcome, fsm_opts)= where =outcome= runs while the claim is held (A2).
 
-* Rows
-Controls (hold at 2c33d78 and must keep holding), =test/contracts/public_console_seam_controls_test.exs=:
-- C-0 harness validity: a disposable consumer (test support, labelled, path dep on this repository, Boundary compiler,
-  =deps: [AiOrchestrator]=) referencing only =AiOrchestrator.version/0= compiles with =--warnings-as-errors= exit 0.
-- C-1/C-2/C-3: the consumer referencing =Journal.Writer.start_link/1=, =Run.Executor.prepare/2=, =Host.stop/2= -> WAE exit 1
-  with the specific "forbidden reference to AiOrchestrator.<...>" diagnostic (retained).
-- C-4 Policy: the =console= actor class is admitted for start/resume/cancel; an =agent= actor is refused.
-- C-5 Reader: a torn-tail journal loads with =pending_repair= set and unchanged bytes; a hard-invalid journal fails closed.
-- C-6 CLI preservation: validate/status/list/cancel with absolute and relative run directories give the exact outputs.
-- C-7 claim lifetime: the outcome (projection files) exists BEFORE release runs; a release failure after a successful
-  outcome yields the legacy exit 70 with the projections already written; release runs exactly once on the failure path.
-Feature rows (RED at 2c33d78), =test/contracts/public_console_seam_red_test.exs=:
-- F-1 exports + modules: consumer calling the public seam -> WAE exit 0. RED at 2c33d78: exit 1 because
-  =AiOrchestrator.Prepare= / =AiOrchestrator.Query= are undefined under =--warnings-as-errors= (measured); Boundary's
-  "forbidden reference to AiOrchestrator.Commands" is not reached until those modules exist, so it becomes the next RED
-  stage during the GREEN (the top export is still absent then). C-0..C-3 prove the harness itself is valid.
-- F-1b public execution: the consumer performs =Prepare.cancel= + =Prepare.invoke= with public exports only against a
-  fixture copy under a configured root and observes events + =events.head=.
-- F-2 cancel parity: =Prepare.cancel= + =invoke= on a kill9_resume copy yields the same event kinds and =Fold.summary= as the
-  CLI =cancel=, and =events.head= exists.
-- F-3 start/resume parity and input failures: identical hashes and first events; REAL missing =spec.json= and unreadable
-  =plan.json= give =run_inputs_missing= / =run_inputs_invalid= with the CLI reason map in =detail=, before any Writer decision.
-- F-5 resolver: separator, "..", ".", empty, absolute, >255 bytes, non-binary -> =run_ref_invalid=; missing root ->
-  =runs_root_missing=; absent target -> =run_directory_missing=; file target -> =run_directory_invalid=; symlink escaping the
-  root -> =run_ref_outside_root=; symlinked root accepted; nothing on disk touched.
-- F-6 discovery scope: =list_runs= returns runs under the root, counts escaping symlinks in =skipped_outside_root=, skips files.
-- F-7 unknown states: no Monitor entry -> registered false; unavailable monitor -> =:unknown= fields and =errors= entries.
-- F-8 counting and leakage: =other_registered_directories= excludes this directory (own entry present -> 0; absent -> the
-  others' count, nothing subtracted); cross-root entries not counted; the view contains no pid/reference/path.
-- F-9 pending_repair exposure: torn tail -> verified-prefix summary with =pending_repair=, bytes unchanged; hard-invalid -> =journal_invalid=.
-- F-10 projection rebuild/loss: deleting =run-summary.org=/=run-context.org= changes no Query result; Query writes nothing.
-- F-11 unsupported verbs: =Prepare.verb= for the Policy-only verbs -> =command_verb_unsupported=; =supported_verbs/0= exact.
-- F-12 public request boundary: non-binary =run_ref= -> =run_ref_invalid=; the public functions take exactly (run_ref, server_opts).
-Preservation (unchanged): the CLI test set and the verifier's escript probe; host mount and review controls; production
-escript 8/8 with the same 18 applications (no dependency added); Boundary spec in dev and test; Policy table; =Run.Executor=
-verbs; contracts suite; Reader tests.
+* Rows (literal inventory: exact test names; RED rev2 successor of 71c2ff2 for review R1-R5)
+Controls, =test/contracts/public_console_seam_controls_test.exs= (hold at 2c33d78, must keep holding):
+- "C-0 the consumer harness is valid: a public-only reference compiles under WAE"
+- "C-1 a private reference to AiOrchestrator.Journal.Writer is rejected under WAE with the forbidden-reference diagnostic"
+- "C-2 a private reference to AiOrchestrator.Run.Executor is rejected under WAE with the forbidden-reference diagnostic"
+- "C-3 a private reference to AiOrchestrator.Host is rejected under WAE with the forbidden-reference diagnostic"
+- "C-4 the console actor class is admitted for the three verbs; an agent actor is refused"
+- "C-5 Reader: a torn tail loads with a truncate plan and unchanged bytes; a hard-invalid journal fails closed"
+  (pins =pending_repair.action == :truncate_tail=, =truncate_bytes == 18=)
+- "C-6 CLI preservation: validate, status, cancel and list with absolute and relative directories"
+  (validate abs+rel, status --json abs+rel == expected.json, list --json via =cwd:= project root, cancel rel, status 66)
+- "C-7 claim lifetime: the outcome precedes release; a release failure keeps the legacy exit 70 with projections written"
+  (ObservingRegistry reports whether run-summary.org exists at release; release observed exactly once; A2)
+- "C-8a/b/c the counting rows reject the disposable witness <DisposableFixedZero | DisposableUnconditionalSubtract | DisposableUnfiltered>"
+  (the shared counting rows in =test/support/console_seam_rows.ex= raise ExUnit.AssertionError for each wrong implementation; A4)
+Feature rows, =test/contracts/public_console_seam_red_test.exs= (RED at 2c33d78; every row fails on the undefined
+=AiOrchestrator.Prepare= / =AiOrchestrator.Query=; F-1/F-1b through the external consumer's compile):
+- "F-1 the public seam compiles for a consumer that references only exported modules"
+- "F-1b an EXTERNAL consumer process executes a real cancel with public exports only"
+  (=mix run= inside the disposable consumer starts its own core dependency application, calls only ConsoleConsumer.Probe
+  functions, prints one JSON line; the test asserts exit 0, run_cancelled among the kinds and events.head; A1/R1)
+- "F-2 cancel parity with the CLI writer probe" (event kinds, Fold.summary and events.head equal the CLI cancel)
+- "F-3 start parity with the CLI on equivalent fixtures, input bytes hashed independently"
+  (FixedId/FixedClock reset before each side, the CLI test's doubles as server seams; Prepared.args equal the sha256 of the
+  bytes computed by the test; first event run_created carries that spec_hash; event kinds equal the CLI run; R2)
+- "F-3b resume parity, input drift and the explicit empty-journal restart" (provenance re-anchored fixture; verb "resume";
+  kinds equal the CLI resume; drifted plan bytes -> the CLI's provenance reason in =detail=; empty journal -> verb "start",
+  =restart_empty: true=)
+- "F-3c a refused pane claim is reported before the Writer decides, as the CLI reports it" (RefusingRegistry; no events.jsonl)
+- "F-3d real input failures map to the CLI reasons" (missing spec.json -> run_inputs_missing/file_not_found; chmod 000 plan.json -> run_inputs_invalid/file_read_failed)
+- "F-5 the resolver is closed" (run_ref_invalid x9, runs_root_missing, run_directory_missing, run_directory_invalid,
+  run_ref_outside_root via symlink, symlinked root accepted; nothing written outside)
+- "F-6 discovery applies the scope filter" (runs under root; escaping symlink counted in skipped_outside_root; file skipped)
+- "F-7 unknown states under ONE total budget with blocking host legs" (no entry -> registered false; a suspended Monitor
+  -> registered and count :unknown, errors for :status and :lookup, elapsed < 550 ms for budget 300 (per-leg would be >= 600);
+  run_id still from the verified journal; A4/R3)
+- "F-8 counting excludes this directory, ignores other roots, reports unknown lookups and leaks no identity"
+  (real Monitor records with live pids: own + same-root peer + outside-root canary -> 1; own absent + two peers -> 2;
+  dead Monitor -> :unknown with a :lookup error; no #PID/#Reference/canary path in the view; R3)
+- "F-9 pending_repair is exposed exactly as the Reader plans it; missing and empty journals map to their clauses"
+  (=pending_repair == Reader.load(...).pending_repair= with action :truncate_tail; summary of the verified prefix; bytes
+  unchanged; not-json -> journal_invalid; "" -> journal_empty; absent -> journal_missing; R4)
+- "F-10 projection files are outputs, never inputs: canaries deleted, summary AND context unchanged, nothing recreated"
+  (seeded canary run-summary.org/run-context.org; expected rendered summary/context computed independently from the
+  verified fixture; File.rm!; both Query results unchanged; files not recreated; R4)
+- "F-11 unsupported verbs are refused with the existing clause"
+- "F-12 the public request is a verb and a handle only"
+Preservation (unchanged, must stay green): the CLI test set and the verifier's escript probe; host mount and review controls;
+production escript 8/8 with the same 18 applications (no dependency added); Boundary spec in dev and test; Policy table;
+=Run.Executor= verbs; contracts suite; Reader tests.
+Fixtures (R5): every test tree is created by =ConsoleSeamRows.fresh/1= (exclusive mkdir, random name under the project
+build directory, cleanup registered per tree); permission fixtures restore their mode on exit; the consumer harness
+removes its project on exit.
 
 * Bounded amendments beyond extraction (explicit)
 Top export list; boundaries =Prepare= (deps + Run for the built-in executor) and =Query= (leaf); =Scope.resolve= and its five

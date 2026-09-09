@@ -56,6 +56,34 @@ defmodule AiOrchestrator.Test.ConsoleConsumerHarness do
     {exit, out}
   end
 
+  @doc """
+  Runs `mix run -e expression` INSIDE the external consumer project (its own BEAM; `mix run` starts the consumer
+  application and its dependencies, including the core), returning {exit, stdout}. The probe module is expected to
+  print exactly one line of JSON; the caller decodes it. Nothing private is referenced: the expression calls only
+  `ConsoleConsumer.Probe` functions.
+  """
+  @spec run(Path.t(), String.t()) :: {non_neg_integer(), String.t()}
+  def run(dir, expression) do
+    {out, exit} =
+      System.cmd("mix", ["run", "-e", expression], cd: dir, env: isolated_env(dir), stderr_to_stdout: true)
+
+    {exit, out}
+  end
+
+  @doc "The last line of `out` that decodes as JSON, or nil."
+  @spec json_line(String.t()) :: map() | nil
+  def json_line(out) do
+    out
+    |> String.split("\n", trim: true)
+    |> Enum.reverse()
+    |> Enum.find_value(fn line ->
+      case Jason.decode(line) do
+        {:ok, %{} = map} -> map
+        _ -> nil
+      end
+    end)
+  end
+
   # the consumer owns its build and deps directories; the flake's cwd-derived paths of the repository are not inherited
   defp isolated_env(dir) do
     [
