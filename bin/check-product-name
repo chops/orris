@@ -18,7 +18,7 @@ pattern='(^|[^[:alnum:]_])ai[._ -]?orchestrator[._ -]*v2([^[:alnum:]_]|$)|(^|[^[
 
 set +e
 raw_hits="$(rg -n -i --hidden "$pattern" . \
-  --glob '!docs/history.md' \
+  --glob '!docs/history.org' \
   --glob '!.git/**' \
   --glob '!deps/**' \
   --glob '!_build/**')"

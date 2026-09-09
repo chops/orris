@@ -30,6 +30,9 @@ fi
 printf 'verification profile: %s (Elixir %s / OTP %s)\n' \
   "adopted" "$actual_elixir" "$actual_otp"
 
+bin/check-documentation-format
+bash test/documentation_format_test.sh
+
 mix deps.get --check-locked
 # Hex and mix_audit use distinct advisory sources. Run both so a clean result
 # from one cannot silently mask an advisory published by the other.
@@ -116,9 +119,9 @@ mix deps.audit
 bin/dialyzer-check
 
 legacy_word="legacy""-bash"
-legacy_hits="$(bin/capture-rg 'legacy archive vocabulary' -n "$legacy_word" --glob '!docs/history.md' --glob '!deps/**' --glob '!_build/**' .)"
+legacy_hits="$(bin/capture-rg 'legacy archive vocabulary' -n "$legacy_word" --glob '!docs/history.org' --glob '!deps/**' --glob '!_build/**' .)"
 if [[ -n "$legacy_hits" ]]; then
-  printf 'forbidden legacy archive references outside docs/history.md:\n%s\n' "$legacy_hits" >&2
+  printf 'forbidden legacy archive references outside docs/history.org:\n%s\n' "$legacy_hits" >&2
   exit 1
 fi
 

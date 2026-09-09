@@ -5,7 +5,7 @@
 Delivered: =AiOrchestrator.Commands= (=lib/ai_orchestrator/commands.ex=) with =Commands.Arguments=
 (ARGS-CANON-1 encoding and validation), =Commands.CommandId=, =Commands.Executor=, =Commands.Idempotency=
 (=compare/2=) and =Commands.Policy= under =lib/ai_orchestrator/commands/=; exercised by
-=test/commands/commands_test.exs=. The design rationale is =docs/adr/0001-actor-aware-command-contract.md=.
+=test/commands/commands_test.exs=. The design rationale is =docs/adr/0001-actor-aware-command-contract.org=.
 The run-host obligations named below (durable command-id lookup, accepted-but-incomplete recovery, result
 replay, open-assignment verification) belong to =Run.Server= and are specified in
 =command-executor-migration.org=.

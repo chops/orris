@@ -46,13 +46,13 @@ defmodule AiOrchestrator.Contracts.ProductNameGateTest do
   end
 
   test "the archived history exemption remains narrow", %{root: root} do
-    write!(root, "docs/history.md", "ai-orchestrator " <> "v2\n")
+    write!(root, "docs/history.org", "ai-orchestrator " <> "v2\n")
     assert {"", 0} = System.cmd(@gate, [root], stderr_to_stdout: true)
 
-    write!(root, "docs/current.md", "ai-orchestrator " <> "v2\n")
+    write!(root, "docs/current.org", "ai-orchestrator " <> "v2\n")
     assert {output, 1} = System.cmd(@gate, [root], stderr_to_stdout: true)
-    assert output =~ "docs/current.md"
-    refute output =~ "docs/history.md"
+    assert output =~ "docs/current.org"
+    refute output =~ "docs/history.org"
   end
 
   test "a scanner failure is a gate failure", %{root: root} do

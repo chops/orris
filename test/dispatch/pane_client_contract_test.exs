@@ -98,8 +98,8 @@ defmodule AiOrchestrator.Dispatch.PaneClientContractTest do
   end
 
   test "the state and queue_reason vocabularies are documented in the vendored contract" do
-    doc = File.read!(Path.expand("../../docs/contracts/ipc-v1.md", __DIR__))
-    for state <- @states, do: assert(String.contains?(doc, "`#{state}`"), "#{state} missing from ipc-v1.md")
-    for reason <- @queue_reasons, do: assert(String.contains?(doc, "`#{reason}`"), "#{reason} missing from ipc-v1.md")
+    doc = File.read!(Path.expand("../../docs/contracts/ipc-v1.org", __DIR__))
+    for state <- @states, do: assert(String.contains?(doc, "~#{state}~"), "#{state} missing from ipc-v1.org")
+    for reason <- @queue_reasons, do: assert(String.contains?(doc, "~#{reason}~"), "#{reason} missing from ipc-v1.org")
   end
 end

@@ -1,0 +1,21 @@
+#+title: Documentation format
+
+* Default
+Write ordinary documentation in Org: README, contribution policy, dependency
+inventories, ADRs, contracts, design notes and operator reports. Public-facing
+status and familiarity with Markdown are not exceptions.
+
+* Consumer exceptions
+Use Markdown only when a specific consuming tool requires it. Every checked-in
+Markdown file must have an exact path and consumer reason in
+[[file:markdown-exceptions.tsv][the exception list]]. Keep this list small; do not add directory globs.
+Agent-required files such as AGENTS.md, CLAUDE.md and SKILL.md, and templates
+that produce them, qualify when actually used. Ordinary documentation does not.
+LICENSE retains the standard unmodified license text. Source-code docstrings
+retain the language documentation format. JSON, YAML, TSV and other data or
+configuration files retain the formats required by their consumers.
+
+* Verification
+=bin/check-documentation-format= checks tracked and non-ignored untracked files.
+=bin/verify= runs this check and its negative controls. When converting a document,
+update links, package resources and any tests that read or parse it together.

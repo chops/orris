@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+exceptions="docs/markdown-exceptions.tsv"
+allowed=()
+while IFS=$'\t' read -r path reason || [[ -n "$path" ]]; do
+  [[ -z "$path" || "$path" == \#* ]] && continue
+  if [[ -z "${reason//[[:space:]]/}" || ! -f "$path" ]]; then
+    printf 'invalid Markdown exception (needs an existing path and consumer reason): %s\n' "$path" >&2
+    exit 1
+  fi
+  allowed+=("$path")
+done < "$exceptions"
+
+status=0
+while IFS= read -r -d '' path; do
+  [[ -f "$path" ]] || continue
+  case "$path" in
+    *.[mM][dD]|*.[mM][aA][rR][kK][dD][oO][wW][nN]|*.[mM][dD][oO][wW][nN]|*.[mM][kK][dD]) ;;
+    *) continue ;;
+  esac
+  found=0
+  for entry in "${allowed[@]+"${allowed[@]}"}"; do
+    [[ "$path" == "$entry" ]] && found=1
+  done
+  if [[ "$found" == 0 ]]; then
+    printf 'use Org for documentation; Markdown needs a specific consumer exception: %s\n' "$path" >&2
+    status=1
+  fi
+done < <(git ls-files --cached --others --exclude-standard -z)
+exit "$status"

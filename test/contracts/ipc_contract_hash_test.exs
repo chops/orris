@@ -2,7 +2,7 @@ defmodule AiOrchestrator.Contracts.IPCContractHashTest do
   @moduledoc """
   IPC v1 reply fixtures shared with the coordination runtime. This repository pins
   the fixture bytes and CONTRACT_HASH. The hash rule is the one
-  documented in docs/contracts/ipc-v1.md: lowercase SHA-256 over, for each *.json file in
+  documented in docs/contracts/ipc-v1.org: lowercase SHA-256 over, for each *.json file in
   byte-sorted filename order, filename NUL bytes NUL.
   """
 
