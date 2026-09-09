@@ -782,7 +782,22 @@ defmodule AiOrchestrator.Host.MountRedTest do
       assert {:ok, %{census: :pending}} = host().census(monitor: h.mon)
 
       capture = fn owner ->
-        [{:census, ref, ^mon}] = Enum.filter(elem(Process.info(owner, :messages), 1), &match?({:census, _, _}, &1))
+        observer = self()
+        tag = make_ref()
+
+        # Hold the actual request, not a copy. Otherwise resuming the owner
+        # answers it automatically and consumes eligibility before the race.
+        :sys.replace_state(owner, fn state ->
+          receive do
+            {:census, ref, ^mon} -> send(observer, {tag, ref})
+          after
+            0 -> flunk("eligible census request missing from suspended owner")
+          end
+
+          state
+        end)
+
+        assert_receive {^tag, ref}, @deadline
         ref
       end
 

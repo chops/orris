@@ -108,14 +108,7 @@ live cancellation of a mounted run, projection index and packaging stay outside.
   =Supervisor.stop= (stop budget); kill every still-live owned pid; join each (join budget); then the late-identity
   sweep: because the Server (the only producer of =run_worker_registered=) is dead after the orderly stop/kill, one
   mailbox sweep after the joins is complete and finite; a swept identity is killed and joined the same way. Neither
-  =Run.Server= nor =Run.Worker= traps exits, so a producer that is stopped can never send a later identity. The two
-  REAL cut points the rows acknowledge: (a) identity never produced: the Work supervisor is suspended from its own
-  start trace before the Server's birth can start a worker, the owner reports phase =:handoff= with no =:worker= role,
-  and a stop joins the producer's DOWN with no identity ever existing; (b) identity produced but unconsumed: the owner
-  is suspended immediately after mount (its suspension is queued ahead of any handoff message because the Server's
-  discovery completes only after =Run.Supervisor.start_link= returns), the real identity sits in its mailbox, and a
-  parent shutdown runs =terminate/3= from the suspend loop whose sweep kills and joins that real worker after the
-  producer's DOWN. With =Run= untouched the producer cannot be gated before birth; the rows therefore gate at the
+  =Run.Server= nor =Run.Worker= traps exits, so a producer that is stopped can never send a later identity. With =Run= untouched the producer cannot be gated before birth; the rows therefore gate at the
   emission boundary through the =:handoff_relay= seam: never DELIVERED (the relay holds the real emission, the owner
   acknowledges =:handoff= with no =:worker=, stop joins the producer's DOWN, a later release is inert) and produced but
   unconsumed (owner suspended, relay released, shutdown sweeps the real worker). An identity message carrying the owner's handoff reference that arrives in any state other than
