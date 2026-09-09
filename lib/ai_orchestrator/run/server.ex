@@ -702,13 +702,15 @@ defmodule AiOrchestrator.Run.Server do
 
   # ---- discovery (D-2): the parent's started children, the exact Writer sibling, live ownership ----
 
-  defp discover(%{run_dir: run_dir}, parent) do
+  defp discover(%{run_dir: run_dir} = config, parent) do
     writer_id = {Writer, Path.expand(run_dir)}
     children = Supervisor.which_children(parent)
+    # the arbiter the Writer registered with (the host option `ownership`, default the Application arbiter)
+    ownership_opts = config |> Map.get(:opts, []) |> Keyword.get(:ownership, [])
 
     with {:ok, writer} <- sibling(children, writer_id),
          {:ok, work} <- sibling(children, Work.Supervisor),
-         {:ok, %{writer: ^writer, state: :live}} = ownership <- Ownership.status(run_dir) do
+         {:ok, %{writer: ^writer, state: :live}} = ownership <- Ownership.status(run_dir, ownership_opts) do
       {:ok, %{writer: writer, work: work, ownership: ownership}}
     else
       _ -> {:error, %{clause: "run_discovery_failed"}}

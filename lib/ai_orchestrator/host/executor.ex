@@ -78,12 +78,19 @@ defmodule AiOrchestrator.Host.Executor do
   defp register(_monitor, _command, _run_dir, _owned, _caller, _token), do: :ok
 
   defp record(run_dir, run_id, owned, generation) do
+    case registration(run_dir, run_id, owned, generation) do
+      nil -> :error
+      record -> {:ok, record}
+    end
+  end
+
+  @doc "The complete identity record for an owned map, or nil when an identity is missing (shared with the mounted owner)."
+  @spec registration(Path.t(), String.t(), map(), pos_integer()) :: map() | nil
+  def registration(run_dir, run_id, owned, generation) do
     identities = Map.take(owned, [:owner, :supervisor, :server, :writer, :worker])
 
     if map_size(identities) == 5 and Enum.all?(Map.values(identities), &is_pid/1) do
-      {:ok, Map.merge(identities, %{run_dir: run_dir, run_id: run_id, generation: generation})}
-    else
-      :error
+      Map.merge(identities, %{run_dir: run_dir, run_id: run_id, generation: generation})
     end
   end
 

@@ -170,17 +170,9 @@ defmodule AiOrchestrator.Host.MountBaselineTest do
     assert :none == Ownership.status(dir)
   end
 
-  @tag :historical
-  test "MB-6b (historical; retired by the approved passthrough refactor) today an injected ownership option is ignored by Run.Supervisor",
-       %{dir: dir} do
-    Process.flag(:trap_exit, true)
-    arb = start_supervised!({Ownership, name: nil})
-    {:ok, sup} = Run.Supervisor.start_link(run_config(dir, ownership: [server: arb]))
-    assert :none == Ownership.status(dir, server: arb)
-    assert {:ok, %{state: :live}} = Ownership.status(dir)
-    :ok = Supervisor.stop(sup, :shutdown, @deadline)
-    assert :none == Ownership.status(dir)
-  end
+  # MB-6b (historical: "an injected ownership option is ignored by Run.Supervisor") was RETIRED explicitly by the
+  # passthrough delivered with the mounted-runs slice (docs/contracts/host-mounted-runs.org section 6); its
+  # requirement now lives in host_mount_red_test.exs RP-1/RP-2. MB-6a above remains the permanent preservation row.
 
   defp lock_opts,
     do: [supervisor_instance: "sup_0001", pid: "41001", pid_start: "start_41001", owner_status: fn _ -> :live end]

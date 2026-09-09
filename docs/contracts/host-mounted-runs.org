@@ -1,12 +1,21 @@
 #+TITLE: Host-mounted runs (slice 1b): one responsive owner per mounted run tree
-#+PROPERTY: status interface contract (RED; no implementation yet); supersedes every contradicting statement of the private MOUNT-MAP revisions
+#+PROPERTY: status implemented in-VM slice 1b (GREEN candidate); supersedes every contradicting statement of the private MOUNT-MAP revisions
 #+PROPERTY: base f86f1f4ffab54827f4284d241dc308e370ce3f80
 
 * Implementation status
-Not implemented. This document, =test/host/host_mount_baseline_test.exs= (facts that hold on the current source) and
-=test/host/host_mount_red_test.exs= (acceptance rows that fail on the missing interface or on the missing arbiter
-passthrough, each attributed) define the slice. Nothing under =lib/= changes in this unit. The four Run paths named
-in section 6 are within standing authority (ratified NS-04/NS-05) once this contract and its RED are reviewed.
+Implemented (mounted in-VM slice): =lib/ai_orchestrator/host/supervisor.ex= (=Host.Supervisor=),
+=lib/ai_orchestrator/host/run_owner.ex= (=Host.RunOwner=), =lib/ai_orchestrator/host.ex= (=mount/3=, =ready/2=,
+=await/2=, =stop/2=, =mounted/3=, =census/1=), =lib/ai_orchestrator/host/monitor.ex= (census with per-reference
+eligibility and owner confirmation), =lib/ai_orchestrator/host/executor.ex= (shared =registration/4=), and the
+Application root =[Journal.Ownership, Host.Supervisor, Host.Monitor]=. The four bounded Run paths of section 6 are
+delivered: =run/executor.ex= =prepare/2= (=execute/2= = prepare + owner), =run/executor/owner.ex= exported shared
+helpers (=start_subtree/1=, =facts/1=, =observed_close/2=, =teardown/3= with budget and join seams, =owner_failure/2=,
+=call_barrier/3=, =joined?/3=) used inline by the unchanged foreground owner, =run/supervisor.ex= and =run/server.ex=
+arbiter passthrough (=opts[:ownership]= reaches the Writer and the Server's discovery). The =Run= boundary exports
+=Executor.Owner=; the =Host= boundary exports =[Executor, Monitor, RunOwner, Supervisor]=. Baseline MB-6b was retired
+explicitly by the passthrough; MB-6a remains. Not delivered, by design: CLI routing through the host (held), any
+endpoint, daemon mode, restart policy, live mounted cancellation, gating the producer before worker birth (needs a
+Run seam), and installed-runtime changes.
 
 * Scope
 One BEAM. A mounted run is a run subtree that is an Application-root descendant, owned by ONE responsive process,
@@ -191,7 +200,7 @@ arbiter passthrough: Writer, Server discovery, Host registration/status all on t
 arbiter-kill cascade with a HELD mounted run then a real reacquire; MR-17 privacy canaries in the raised reason and the
 run directory against the owner's =format_status= and the helper escape report; MR-18 slice-1 shapes unchanged.
 Runnable witnesses (outside git, =logs/shared-host-mount-red-f86f1f4/claude/probes/=): a minimal faithful adapter (the
-spike owner plus a census-capable Monitor stub and a Host facade) is run against this RED file in five variants and the
+spike owner plus a census-capable Monitor stub and a Host facade) is run against this RED file in its retained variants and the
 MEASURED partition is recorded with each packet, row by row: which rows the faithful adapter passes, and which single
 row each naive variant (lazy waiter expiry, owner-alive census, fresh budget per discovery leg, an omitted barrier
 identity) fails that the faithful adapter passes. A variant with no differential row is reported as an undemonstrated

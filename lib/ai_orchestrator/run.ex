@@ -17,5 +17,15 @@ defmodule AiOrchestrator.Run do
       AiOrchestrator.Lifecycle,
       AiOrchestrator.Spec
     ],
-    exports: [DeadlineFence, Executor, Recovery, Recovery.Exhaustion, Server, Supervisor, Work.Supervisor, Worker]
+    exports: [
+      DeadlineFence,
+      Executor,
+      Executor.Owner,
+      Recovery,
+      Recovery.Exhaustion,
+      Server,
+      Supervisor,
+      Work.Supervisor,
+      Worker
+    ]
 end

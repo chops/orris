@@ -86,7 +86,7 @@ defmodule AiOrchestrator.Run.Supervisor do
 
     writer_opts =
       config.opts
-      |> Keyword.take([:fs, :clock])
+      |> Keyword.take([:fs, :clock, :ownership])
       |> Keyword.put(:create, Map.get(config, :open, default_open(config.mode)) == :create)
       |> Keyword.put(:lock, supervisor_instance: Keyword.fetch!(config.opts, :supervisor_instance))
 

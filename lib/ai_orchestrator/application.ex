@@ -27,10 +27,12 @@ defmodule AiOrchestrator.Application do
   the restarted arbiter reconstructs its registrations as the run trees
   restart above their own locks.
 
-  `AiOrchestrator.Host.Monitor` mounts after the arbiter: it only observes the run
-  subtrees whose writers the arbiter admitted, so losing the arbiter must take the
-  observations with it. Run trees mount after both; none exist yet.
+  `AiOrchestrator.Host.Supervisor` mounts after the arbiter: its run trees hold
+  locks the arbiter recorded, so losing the arbiter must take them down through
+  their owners' teardown. `AiOrchestrator.Host.Monitor` mounts LAST: it only
+  observes, so its own restart must restart no run tree; it reconciles from the
+  tree instead (docs/contracts/host-mounted-runs.org).
   """
   @spec children() :: [Supervisor.child_spec() | {module(), term()} | module()]
-  def children, do: [AiOrchestrator.Journal.Ownership, AiOrchestrator.Host.Monitor]
+  def children, do: [AiOrchestrator.Journal.Ownership, AiOrchestrator.Host.Supervisor, AiOrchestrator.Host.Monitor]
 end

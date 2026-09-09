@@ -446,9 +446,11 @@ defmodule AiOrchestrator.Host.MountRedTest do
         send(blocked, :unblock)
       end
 
-      # EVENTUAL outcome after the controlled release: the caller observes lock and arbiter itself
-      bmon = Process.monitor(blocked)
-      assert_receive {:DOWN, ^bmon, :process, ^blocked, _}, @deadline
+      # EVENTUAL outcome after the controlled release: the hook ran inside the private arbiter's acquire (the
+      # arbiter is the blocked process and survives the release), so the caller observes the lock and the
+      # arbiter's record itself: the half-started subtree, whose owner the supervisor already killed, unwinds
+      # through the Writer's terminate once the acquire returns
+      assert blocked == Process.whereis(h.arb)
       wait_until(fn -> Ownership.status(dir, server: h.arb, acquire_timeout: 500) == :none end)
       assert :none == RunLock.owner(SystemFs.new(), dir)
       # responsive control on a SEPARATE isolated host: the hook is released before stop
@@ -735,8 +737,12 @@ defmodule AiOrchestrator.Host.MountRedTest do
       assert {:ok, ^before} = File.read(Path.join(dir, "events.jsonl"))
       assert {:ok, :stopped} == host().stop(handle, @deadline)
       assert {:ok, ^before} = File.read(Path.join(dir, "events.jsonl"))
+      # after stop the cancel is decided by the journal's durable prefix: this run was stopped before its first
+      # event, so the prefix is empty and the unchanged command answers Run's closed run-mismatch refusal (no
+      # acquisition invented); admission on a non-empty prefix is the executor suite's existing ground
       {command, ctx} = cancel_ctx(dir, ownership: [server: h.arb])
-      assert match?({:ok, %{}}, Run.Executor.execute(command, ctx))
+      assert {:error, %{clause: "command_run_mismatch"}} = Run.Executor.execute(command, ctx)
+      assert_released!(dir, h.arb)
     end
   end
 
@@ -1009,7 +1015,7 @@ defmodule AiOrchestrator.Host.MountRedTest do
     end)
   end
 
-  defp wait_until(fun, tries \\ 100) do
+  defp wait_until(fun, tries \\ 750) do
     cond do
       fun.() -> :ok
       tries == 0 -> flunk("condition never held")

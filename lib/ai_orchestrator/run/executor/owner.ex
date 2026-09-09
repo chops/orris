@@ -29,6 +29,16 @@ defmodule AiOrchestrator.Run.Executor.Owner do
   @stop_timeout 15_000
   @join_timeout 5_000
   @owner_completion_timeout 60_000
+  @close_timeout 15_000
+
+  @typedoc "Teardown budgets (ms); the foreground owner uses the module defaults, a hosted owner may inject seams."
+  @type budgets :: %{optional(:stop) => timeout(), optional(:join) => timeout(), optional(:close) => timeout()}
+  @typedoc "Join observation: whether `pid`'s DOWN (monitor `ref`) was observed within `timeout` ms."
+  @type join_fn :: (pid(), reference(), timeout() -> boolean())
+
+  @doc false
+  @spec default_budgets() :: budgets()
+  def default_budgets, do: %{stop: @stop_timeout, join: @join_timeout, close: @close_timeout}
 
   @spec run(map(), (atom(), map() -> :ok) | nil) :: {:ok, map()} | {:error, map()}
   def run(config, barrier) do
@@ -73,6 +83,10 @@ defmodule AiOrchestrator.Run.Executor.Owner do
 
     :ok
   end
+
+  @doc false
+  @spec start_subtree(map()) :: {:ok, pid()} | {:error, map()}
+  def start_subtree(config), do: start(config)
 
   defp start(%{mode: :run} = config) do
     case Run.Supervisor.start_link(config) do
@@ -159,7 +173,7 @@ defmodule AiOrchestrator.Run.Executor.Owner do
   # already gone, one that does not answer within the bound, or one that dies during the call has NOT proven
   # anything: that is a closed close-unproven failure, never :ok, even though teardown will kill the process.
   defp close_writer(%{writer: writer}, {:ok, %{} = result}) when is_pid(writer) do
-    case observed_close(writer) do
+    case observed_close(writer, @close_timeout) do
       :ok -> {:ok, result}
       {:error, rejection} -> {:ok, Map.put(result, :close, {:error, rejection})}
     end
@@ -167,12 +181,12 @@ defmodule AiOrchestrator.Run.Executor.Owner do
 
   defp close_writer(_owned, result), do: result
 
-  @close_timeout 15_000
-
-  defp observed_close(writer) do
+  @doc false
+  @spec observed_close(pid(), timeout()) :: :ok | {:error, map()}
+  def observed_close(writer, timeout) do
     if Process.alive?(writer) do
       try do
-        GenServer.call(writer, :close, @close_timeout)
+        GenServer.call(writer, :close, timeout)
       catch
         :exit, {:timeout, _} -> {:error, %{clause: "close_unproven", cause: "timeout"}}
         :exit, {:noproc, _} -> {:error, %{clause: "close_unproven", cause: "writer_gone"}}
@@ -183,12 +197,16 @@ defmodule AiOrchestrator.Run.Executor.Owner do
     end
   end
 
-  defp owner_failure(kind, reason) do
+  @doc false
+  @spec owner_failure(atom(), term()) :: map()
+  def owner_failure(kind, reason) do
     %{"digest" => digest} = Diagnostic.describe(reason)
     %{clause: "run_executor_down", kind: kind, class: Diagnostic.result_class(reason), digest: digest}
   end
 
-  defp facts(sup) do
+  @doc false
+  @spec facts(pid()) :: {:ok, %{server: pid(), work: pid(), writer: pid()}} | :error
+  def facts(sup) do
     children = Supervisor.which_children(sup)
 
     with {:ok, server} <- child(children, Run.Server),
@@ -242,16 +260,20 @@ defmodule AiOrchestrator.Run.Executor.Owner do
   # orderly first: a bounded Supervisor.stop (children shut down in reverse order); then every owned process
   # still alive - the root or any descendant - is killed directly and joined under a bound; a survivor is
   # reported, never equated with success. Root death is never taken as subtree closure.
-  defp teardown(owned) do
-    pids = owned |> Map.values() |> Enum.filter(&is_pid/1) |> Enum.uniq()
+  defp teardown(owned), do: teardown(owned, default_budgets(), &joined?/3)
+
+  @doc false
+  @spec teardown(map(), budgets(), join_fn()) :: :ok | {:error, map()}
+  def teardown(owned, budgets, join) do
+    pids = owned |> Map.values() |> List.flatten() |> Enum.filter(&is_pid/1) |> Enum.uniq()
     monitors = for pid <- pids, do: {pid, Process.monitor(pid)}
-    orderly_stop(owned.supervisor)
+    if is_pid(owned[:supervisor]), do: orderly_stop(owned.supervisor, Map.get(budgets, :stop, @stop_timeout))
 
     for {pid, _monitor} <- monitors, Process.alive?(pid), do: Process.exit(pid, :kill)
 
     survivors =
       for {pid, monitor} <- monitors,
-          not joined?(pid, monitor, @join_timeout),
+          not join.(pid, monitor, Map.get(budgets, :join, @join_timeout)),
           do: pid
 
     if survivors == [],
@@ -259,10 +281,10 @@ defmodule AiOrchestrator.Run.Executor.Owner do
       else: {:error, %{clause: "run_executor_teardown_incomplete", survivors: length(survivors)}}
   end
 
-  defp orderly_stop(sup) do
+  defp orderly_stop(sup, timeout) do
     if Process.alive?(sup) do
       try do
-        Supervisor.stop(sup, :shutdown, @stop_timeout)
+        Supervisor.stop(sup, :shutdown, timeout)
       catch
         :exit, _ -> :ok
       end
@@ -271,7 +293,9 @@ defmodule AiOrchestrator.Run.Executor.Owner do
     :ok
   end
 
-  defp joined?(pid, monitor, timeout) do
+  @doc false
+  @spec joined?(pid(), reference(), timeout()) :: boolean()
+  def joined?(pid, monitor, timeout) do
     receive do
       {:DOWN, ^monitor, :process, ^pid, _} -> true
     after
@@ -285,9 +309,11 @@ defmodule AiOrchestrator.Run.Executor.Owner do
   # missing clause included - is an owner failure under the closed boundary; nothing here infers "absence" from
   # compiler names, stack frames or exception shapes (WG-M2 ruling).
   # only an exact :ok releases the owner; any other result is an owner-local failure under the closed boundary
-  defp call_barrier(nil, _name, _facts), do: :ok
+  @doc false
+  @spec call_barrier((atom(), map() -> term()) | nil, atom(), map()) :: :ok
+  def call_barrier(nil, _name, _facts), do: :ok
 
-  defp call_barrier(barrier, name, facts) when is_function(barrier, 2) do
+  def call_barrier(barrier, name, facts) when is_function(barrier, 2) do
     case barrier.(name, facts) do
       :ok -> :ok
       other -> exit({:barrier_result_invalid, other})
