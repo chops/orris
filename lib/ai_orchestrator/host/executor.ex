@@ -30,13 +30,22 @@ defmodule AiOrchestrator.Host.Executor do
   @spec execute(Command.t(), keyword()) :: {:ok, map()} | {:error, map()}
   def execute(%Command{} = command, context) when is_list(context) do
     {monitor, context} = Keyword.pop(context, :host_monitor, Monitor)
-    caller = self()
-    token = make_ref()
-    user_barrier = Keyword.get(context, :barrier)
-    composed = compose(user_barrier, monitor, command, context[:run_dir], caller, token)
-    result = RunExecutor.execute(command, Keyword.put(context, :barrier, composed))
-    unregister_registered(monitor, token)
-    result
+
+    case Keyword.get(context, :barrier) do
+      user_barrier when is_nil(user_barrier) or is_function(user_barrier, 2) ->
+        caller = self()
+        token = make_ref()
+        composed = compose(user_barrier, monitor, command, context[:run_dir], caller, token)
+        result = RunExecutor.execute(command, Keyword.put(context, :barrier, composed))
+        unregister_registered(monitor, token)
+        result
+
+      # any other barrier value is the caller's error: it reaches Run.Executor's context validation
+      # unchanged (only the Host seam was removed), so the refusal, its field and its precedence over
+      # every effect are exactly the direct route's
+      _invalid ->
+        RunExecutor.execute(command, context)
+    end
   end
 
   def execute(command, context), do: RunExecutor.execute(command, context)

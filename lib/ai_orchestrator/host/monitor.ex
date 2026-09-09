@@ -61,10 +61,23 @@ defmodule AiOrchestrator.Host.Monitor do
   end
 
   @impl true
+  # the incoming registration is judged in full (complete record AND live owner) BEFORE the current
+  # entry is touched: a rejected registration, including a late one from an owner that has since
+  # died, mutates neither the current entry nor its monitor reference
   def handle_cast({:register, record}, state) do
     case complete(record) do
-      {:ok, record} -> {:noreply, state |> drop(record.run_dir) |> put(record)}
-      :error -> {:noreply, state}
+      {:ok, %{owner: owner} = record} ->
+        ref = Process.monitor(owner)
+
+        if Process.alive?(owner) do
+          {:noreply, state |> drop(record.run_dir) |> index(record, ref)}
+        else
+          Process.demonitor(ref, [:flush])
+          {:noreply, state}
+        end
+
+      :error ->
+        {:noreply, state}
     end
   end
 
@@ -100,19 +113,6 @@ defmodule AiOrchestrator.Host.Monitor do
       {:ok, record |> Map.take(@record_keys) |> Map.put(:run_dir, Path.expand(record.run_dir))}
     else
       _ -> :error
-    end
-  end
-
-  # an owner that is already dead is never indexed: its DOWN would arrive after any lookup already
-  # queued behind the registration, so the entry is refused here instead of persisting for that window
-  defp put(state, %{owner: owner} = record) do
-    ref = Process.monitor(owner)
-
-    if Process.alive?(owner) do
-      index(state, record, ref)
-    else
-      Process.demonitor(ref, [:flush])
-      state
     end
   end
 

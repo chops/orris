@@ -280,6 +280,28 @@ defmodule AiOrchestrator.Host.RegistryRedTest do
     end
   end
 
+  describe "registration rejection never touches the current entry (R2 review control)" do
+    test "H-1e a late registration from an owner that has since died never displaces the live replacement",
+         %{dir: dir} do
+      {monitor, _} = start_monitor!()
+      old = holder!()
+      new = holder!()
+      :ok = monitor_mod().register(monitor, full_record(dir, old, 1))
+      :ok = monitor_mod().register(monitor, full_record(dir, new, 2))
+      assert {:ok, [%{owner: ^new, generation: 2}]} = host().lookup_run_id("run_host_0001", monitor: monitor)
+      kill_join!(old)
+      # the old owner's registration arrives late, after its death: rejected without side effects
+      :ok = monitor_mod().register(monitor, full_record(dir, old, 1))
+      assert {:ok, [%{owner: ^new, generation: 2}]} = host().lookup_run_id("run_host_0001", monitor: monitor)
+      # an incomplete record is rejected the same way
+      :ok = monitor_mod().register(monitor, dir |> full_record(new, 3) |> Map.delete(:worker))
+      assert {:ok, [%{owner: ^new, generation: 2}]} = host().lookup_run_id("run_host_0001", monitor: monitor)
+      # the replacement's own DOWN still cleans up
+      kill_join!(new)
+      assert {:ok, []} = host().lookup_run_id("run_host_0001", monitor: monitor)
+    end
+  end
+
   describe "the monitor is a hint, never an admission authority (R4/R7, F1)" do
     test "H-2 duplicate start/resume/cancel against a held live run: Host route == Run.Executor route", %{dir: dir} do
       {monitor, _} = start_monitor!()
@@ -423,6 +445,47 @@ defmodule AiOrchestrator.Host.RegistryRedTest do
       assert elapsed < @budget + @slack, "monitor plus ownership exceeded the single budget: #{elapsed} ms"
       assert {:ok, %{state: :live, generation: 1}} = Ownership.status(dir), "the global arbiter kept answering"
       :ok = Writer.close(writer)
+    end
+
+    test "H-6f an invalid caller barrier is refused before any effect, with the direct route's clause and precedence",
+         %{dir: dir} do
+      {monitor, _} = start_monitor!()
+
+      # invalid barrier values (an atom, a wrong-arity function) and an invalid context that precedes the
+      # barrier in Run.Executor's validation order; each on a fresh directory, both routes, no journal
+      cases = [
+        {"atom", :invalid_barrier, [], %{clause: "command_context_invalid", field: "barrier"}},
+        {"arity1", fn _label -> :ok end, [], %{clause: "command_context_invalid", field: "barrier"}},
+        # a reserved key precedes the barrier in Run.Executor's fixed check order: its field must win
+        {"reserved_first", :invalid_barrier, [await_timeout: 5],
+         %{clause: "command_context_invalid", field: "await_timeout"}}
+      ]
+
+      for {tag, barrier, extra, expected} <- cases do
+        d = dir <> "_" <> tag
+        File.mkdir_p!(d)
+        on_exit(fn -> File.rm_rf!(d) end)
+        H.reset_seams()
+        direct = invoke("start", d, RunExecutor, barrier, extra)
+        assert direct == {:error, expected}, "#{tag}: direct refusal differs from the pinned clause/field"
+        refute File.exists?(Path.join(d, "events.jsonl")), "#{tag}: the direct route journaled before refusing"
+        H.reset_seams()
+        wrapped = invoke("start", d, host_executor(), barrier, [host_monitor: monitor] ++ extra)
+        assert wrapped == direct, "#{tag}: host route diverged from the direct refusal"
+        refute File.exists?(Path.join(d, "events.jsonl")), "#{tag}: the host route journaled before refusing"
+        assert {:ok, %{registered: false}} = host().status(d, monitor: monitor)
+      end
+
+      # valid controls: no barrier at all, and a 2-arity barrier, agree route for route (result and journal)
+      for {tag, barrier} <- [{"nil", nil}, {"arity2", fn _, _ -> :ok end}] do
+        d = dir <> "_" <> tag
+        on_exit(fn -> File.rm_rf!(d) end)
+        {direct, journal_direct} = escape_route(d, RunExecutor, barrier, [])
+        {wrapped, journal_wrapped} = escape_route(d, host_executor(), barrier, host_monitor: monitor)
+        assert match?({:ok, %{}}, direct), "#{tag}: the valid control did not complete"
+        assert wrapped == direct, "#{tag}: valid barrier control diverged"
+        assert journal_direct == journal_wrapped, "#{tag}: valid barrier control journals differ"
+      end
     end
 
     test "H-6b/H-6c the user barrier keeps its return and escape semantics on both routes: result, journal, invocations",
