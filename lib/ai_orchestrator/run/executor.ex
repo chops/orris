@@ -33,17 +33,32 @@ defmodule AiOrchestrator.Run.Executor do
 
   @type context :: keyword()
 
-  @impl AiOrchestrator.Commands.Executor
-  @spec execute(Command.t(), context()) :: {:ok, map()} | {:error, map()}
-  def execute(%Command{} = command, context) when is_list(context) do
+  @doc """
+  Everything `execute/2` decides BEFORE any Writer, file or effect activity, without starting: verb scope,
+  stamp revalidation, context validation in the fixed order, and the start inputs. Answers the owner config
+  and the caller's barrier, or exactly the refusal `execute/2` would answer. The host's mounted route shares
+  this validation instead of duplicating it.
+  """
+  @spec prepare(Command.t(), context()) ::
+          {:ok, %{config: map(), barrier: (atom(), map() -> :ok) | nil}} | {:error, map()}
+  def prepare(%Command{} = command, context) when is_list(context) do
     with {:ok, mode} <- verb(command),
          :ok <- revalidate(command),
          {:ok, ctx} <- validate_context(mode, command, context) do
-      Owner.run(config(mode, command, ctx), ctx[:barrier])
+      {:ok, %{config: config(mode, command, ctx), barrier: ctx[:barrier]}}
     end
   end
 
-  def execute(_command, _context), do: {:error, %{clause: "command_stamp_invalid"}}
+  def prepare(_command, _context), do: {:error, %{clause: "command_stamp_invalid"}}
+
+  @impl AiOrchestrator.Commands.Executor
+  @spec execute(Command.t(), context()) :: {:ok, map()} | {:error, map()}
+  def execute(command, context) do
+    case prepare(command, context) do
+      {:ok, %{config: config, barrier: barrier}} -> Owner.run(config, barrier)
+      {:error, _} = refusal -> refusal
+    end
+  end
 
   # verb precedence applies to a structured stamp; a stamp that is not even a map is a malformed stamp
   defp verb(%Command{requested_by: %{"verb" => verb}}) when is_map_key(@verbs, verb), do: {:ok, Map.fetch!(@verbs, verb)}
