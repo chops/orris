@@ -22,7 +22,7 @@ packages absent from the lockfile are not included in this snapshot.
 | Package                                                                           | Version | Dependency role         | Declared license |
 |-----------------------------------------------------------------------------------+---------+-------------------------+------------------|
 | [[https://hex.pm/packages/acceptor_pool/1.0.1][acceptor_pool]]                    | 1.0.1   | Transitive              | Apache-2.0       |
-| [[https://hex.pm/packages/boundary/0.10.4][boundary]]                             | 0.10.4  | Direct development/test | MIT              |
+| [[https://hex.pm/packages/boundary/0.10.4][boundary]]                             | 0.10.4  | Direct compile-time tool (all build environments, =runtime: false=; packaged in the escript as a build-only exception, not a started application) | MIT              |
 | [[https://hex.pm/packages/bunt/1.0.0][bunt]]                                      | 1.0.0   | Transitive              | MIT              |
 | [[https://hex.pm/packages/ts_chatterbox/0.16.0][ts_chatterbox]]                   | 0.16.0  | Transitive              | MIT              |
 | [[https://hex.pm/packages/credo/1.7.19][credo]]                                   | 1.7.19  | Direct development/test | MIT              |

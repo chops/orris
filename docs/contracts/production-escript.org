@@ -1,6 +1,6 @@
 #+title: Production escript packaging contract
 #+date: 2026-09-09
-#+status: RED rev2 (corrected per review R1-R3) at public b693ef5; GREEN pending
+#+status: GREEN (Boundary available in every build environment, runtime: false); RED rev2 3ad621d retained
 
 * Obligation
 The operator's CLI is delivered as an escript. A PRODUCTION build of that escript (=MIX_ENV=prod mix escript.build=)
@@ -13,15 +13,16 @@ is never packaged.
 * Build-time versus runtime (R1)
 22 production modules use Boundary macros, so =Boundary= must be available at COMPILE time in every environment,
 production included; the compiler stays unconditional. Boundary is NOT a runtime application: the packaged
-=ai_orchestrator.app= does not list it, so it is never started. Mix's escript builder packages every cached dependency
-including =runtime: false= ones (Mix 1.20.4 =Escript.Build.deps_files=), so Boundary's 17 beam entries (65,122
-compressed bytes, measured) are present in the artifact as a BUILD-ONLY EXCEPTION, accepted explicitly here. The
-mechanism for the GREEN is the reviewer-measured narrow one: keep the compiler, remove =only: [:dev, :test]= from the
-existing Boundary dependency, keep =runtime: false=, keep every version and the lock. This adopts no new dependency and
-changes no portable-core web dependency budget; the public dependency inventory wording ("Direct development/test")
-is updated with the GREEN. Boundary's own checks stay enabled in dev AND test.
+=ai_orchestrator.app= does not list it in =applications=, so that startup list never requests it. Mix's escript
+builder packages every cached dependency including =runtime: false= ones (Mix 1.20.4 =Escript.Build.deps_files=), so
+Boundary's 17 archive entries (65,122 compressed bytes, reviewer-measured) are present in the artifact as a
+BUILD-ONLY EXCEPTION, accepted explicitly here. The GREEN mechanism is the reviewer-measured narrow one, now applied:
+the compiler is kept, =only: [:dev, :test]= is removed from the existing Boundary dependency, =runtime: false= and
+every version and the lock are kept. This adopts no new dependency and changes no portable-core web dependency
+budget; =DEPENDENCIES.org= now lists Boundary as a compile-time tool. Boundary's own checks stay enabled in dev AND
+test.
 
-* Measured defect at b693ef5 (the RED)
+* Measured defect at b693ef5 (the RED, retained at 3ad621d)
 =mix.exs= registers =compilers: [:boundary] ++ Mix.compilers()= while =:boundary= is declared =only: [:dev, :test]=.
 In =MIX_ENV=prod= the build stops with "The task compile.boundary could not be found", so no production escript can be
 produced at all; the canonical verifier's escript stage builds a DEV escript that packages 43 applications

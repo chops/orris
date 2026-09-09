@@ -70,7 +70,9 @@ defmodule AiOrchestrator.MixProject do
       {:opentelemetry_api, "~> 1.5"},
       {:opentelemetry, "~> 1.7"},
       {:opentelemetry_exporter, "~> 1.10"},
-      {:boundary, "~> 0.10.4", only: [:dev, :test], runtime: false},
+      # available in every build environment: production modules use Boundary macros at compile time;
+      # runtime: false keeps it out of the application startup list (docs/contracts/production-escript.org)
+      {:boundary, "~> 0.10.4", runtime: false},
       {:usage_rules, "~> 1.2", only: [:dev, :test], runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:mix_audit, "~> 2.1", only: [:dev, :test], runtime: false},
