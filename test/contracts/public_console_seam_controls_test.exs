@@ -285,4 +285,16 @@ defmodule AiOrchestrator.Contracts.PublicConsoleSeamControlsTest do
     assert {:ok, canonical} = Scope.canonical(root)
     refute Scope.inside?(canonical, canonical)
   end
+
+  test "C-18 root: a regular file before a parent component is refused as runs_root_missing" do
+    {root, _outside} = escape_fixture()
+    File.write!(Path.join(root, "plain_file"), "not a directory")
+    configured = Path.join(root, "plain_file/..")
+    refute File.dir?(configured)
+
+    assert match?(
+             {:error, %{clause: "runs_root_missing"}},
+             Scope.resolve("actual", root: configured)
+           )
+  end
 end

@@ -101,7 +101,8 @@ defmodule AiOrchestrator.Prepare.Scope do
     end
   end
 
-  # Physical traversal: each component is joined to the RESOLVED accumulator and must exist; a symlink's target
+  # Physical traversal: each component is joined to the RESOLVED accumulator and must exist (only a directory may
+  # precede further components; a regular final leaf is canonicalisable); a symlink's target
   # components are pushed back onto the queue (never collapsed lexically) so a later ".." applies to the resolved
   # parent, exactly as the operating system walks the path. Bounded in link depth; unwalkable paths answer :error.
   defp walk(_parts, _acc, 0), do: :error
@@ -115,7 +116,9 @@ defmodule AiOrchestrator.Prepare.Scope do
 
     case File.lstat(candidate) do
       {:ok, %File.Stat{type: :symlink}} -> follow(candidate, rest, acc, links)
-      {:ok, _present} -> walk(rest, candidate, links)
+      {:ok, %File.Stat{type: :directory}} -> walk(rest, candidate, links)
+      {:ok, _present} when rest == [] -> {:ok, candidate}
+      {:ok, _not_a_directory} -> :error
       {:error, _absent_or_unreadable} -> :error
     end
   end
