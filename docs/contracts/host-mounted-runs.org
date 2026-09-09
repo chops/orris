@@ -61,9 +61,14 @@ live cancellation of a mounted run, projection index and packaging stay outside.
   descendant/disk evidence is claimed: the caller observes =RunLock.owner= and =Ownership.status= itself). After an
   active stop the owner is GONE: a second active-stop call answers =run_host_owner_down=. Stop on a retained
   =:terminal= owner is idempotent =:ok= and preserves the cached result. Stop journals nothing.
-- =Host.mounted(host, timeout)= — ALL blocking work (the =which_children= discovery and every per-owner status) runs inside
-  one monotonic overall deadline in a task the caller monitors; owners that do not answer are listed with
-  =phase: :unknown=; a supervisor that does not answer yields ={:error, %{clause: "host_supervisor_unavailable"}}=.
+- =Host.mounted(host, timeout, batch: n)= — ALL blocking work (the =which_children= discovery and every per-owner status)
+  runs inside ONE monotonic overall deadline in a task the caller monitors. Owners are queried in batches of =n=
+  (default: all at once); within a batch the queries are CONCURRENT and each is bounded by what REMAINS of the
+  deadline, never by a fresh per-query or per-batch budget, so a responsive owner is reported regardless of the
+  supervisor's child order and stalled owners cost only the remaining time. Partial results are the contract:
+  owners that did not answer in time are listed with =phase: :unknown=; the listing element is
+  =%{run_dir, run_id, owner, phase}=; a supervisor that does not answer within the deadline yields
+  ={:error, %{clause: "host_supervisor_unavailable"}}=.
 - =Host.census(opts) :: {:ok, %{census: :pending | :complete, skipped: n}}= — a NEW function; every slice-1 status,
   lookup and collision shape is unchanged (parity preserved, no additive field on them). Like status/lookup it is a
   bounded call (=timeout:=, default 1_000) that never blocks the Monitor.
@@ -93,9 +98,17 @@ live cancellation of a mounted run, projection index and packaging stay outside.
   =Supervisor.stop= (stop budget); kill every still-live owned pid; join each (join budget); then the late-identity
   sweep: because the Server (the only producer of =run_worker_registered=) is dead after the orderly stop/kill, one
   mailbox sweep after the joins is complete and finite; a swept identity is killed and joined the same way. Neither
-  =Run.Server= nor =Run.Worker= traps exits, so a producer that is stopped can never send a later identity: the
-  reachable real path is "producer DOWN joined before the sweep, no identity arrives"; the sweep itself is proven with a
-  synthetic identity carrying the real handoff reference (labelled synthetic in the row).
+  =Run.Server= nor =Run.Worker= traps exits, so a producer that is stopped can never send a later identity. The two
+  REAL cut points the rows acknowledge: (a) identity never produced: the Work supervisor is suspended from its own
+  start trace before the Server's birth can start a worker, the owner reports phase =:handoff= with no =:worker= role,
+  and a stop joins the producer's DOWN with no identity ever existing; (b) identity produced but unconsumed: the owner
+  is suspended immediately after mount (its suspension is queued ahead of any handoff message because the Server's
+  discovery completes only after =Run.Supervisor.start_link= returns), the real identity sits in its mailbox, and a
+  parent shutdown runs =terminate/3= from the suspend loop whose sweep kills and joins that real worker after the
+  producer's DOWN. An identity message carrying the owner's handoff reference that arrives in any state other than
+  =:handoff= is RETAINED by the owner (reported as the =:late= role by =inspect=, never dropped and never acted on) and
+  is killed and joined by the teardown sweep; the synthetic-identity injection while a run is held is the separately
+  labelled witness of that rule.
   Survivors -> =run_executor_teardown_incomplete=; an unanswered Writer close for an ok result -> =close_unproven=.
 - Budgets (seams with production defaults): close 15_000, stop 15_000, join 5_000 per pid, handoff 5_000, helper join
   1_000; post-phase teardown worst case = 15 + 15 + 5 x 5 + 1 = 56 s; =child_shutdown_ms= 60_000. Whole-stop deadline =
@@ -110,9 +123,13 @@ live cancellation of a mounted run, projection index and packaging stay outside.
   sends asynchronous census requests in batches of 64; the whole census (discovery included) is bounded by
   =census_timeout= (1_000 ms) measured from init; at the deadline the Task is killed and =census= is =:complete= with
   =skipped= = owners not answered. Partial knowledge stays partial: absence remains unknown (R7).
-- Census replies are applied as registrations under the registration rules AND a terminal rule: a reply naming a run
-  directory whose owner reports =:terminal= (the tree already torn down) is dropped, so a retained terminal owner never
-  resurrects an unregistered entry; a live different owner or a higher generation is never displaced.
+- Census replies are applied as registrations under the registration rules AND a terminal rule: before applying any
+  reply the Monitor confirms the owner's phase with a bounded =inspect=; a reply whose owner does not confirm, or reports
+  =:terminal= (the tree already torn down), is dropped, so a retained terminal owner never resurrects an unregistered
+  entry even when the reply is a genuinely correlated fact captured while the owner was active; a live different owner
+  or a higher generation is never displaced. The rows exercise exactly that: the real census request queued at a
+  suspended live owner is captured from its mailbox, the reply is built from the trusted role map, and terminal
+  (completion + unregister with retention) or replacement (stop + remount) is staged between capture and application.
 - Owners never wait on the Monitor (registration is a cast).
 
 * 6. Injected arbiter (the passthrough that does not exist yet; contract + RED now, code after review)
@@ -165,7 +182,9 @@ MR-15 =Host.mounted= total budget with a suspended supervisor and with a stalled
 arbiter passthrough: Writer, Server discovery, Host registration/status all on the private arbiter, global =:none=;
 arbiter-kill cascade with a HELD mounted run then a real reacquire; MR-17 privacy canaries in the raised reason and the
 run directory against the owner's =format_status= and the helper escape report; MR-18 slice-1 shapes unchanged.
-Runnable witnesses (outside git, =logs/shared-host-mount-red-f86f1f4/claude/probes/=): a minimal faithful adapter
-(the spike owner plus census/mounted/stop) passes the preservation rows it covers, and its naive variants (lazy waiter
-expiry, owner-alive census, fresh budget per discovery leg, an omitted barrier identity) are each rejected by the
-row that targets them; the partition is recorded with the packet.
+Runnable witnesses (outside git, =logs/shared-host-mount-red-f86f1f4/claude/probes/=): a minimal faithful adapter (the
+spike owner plus a census-capable Monitor stub and a Host facade) is run against this RED file in five variants and the
+MEASURED partition is recorded with each packet, row by row: which rows the faithful adapter passes, and which single
+row each naive variant (lazy waiter expiry, owner-alive census, fresh budget per discovery leg, an omitted barrier
+identity) fails that the faithful adapter passes. A variant with no differential row is reported as an undemonstrated
+witness, never as a rejection; no claim in this document exceeds that partition.

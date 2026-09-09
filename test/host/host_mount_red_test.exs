@@ -496,42 +496,68 @@ defmodule AiOrchestrator.Host.MountRedTest do
       assert_released!(d, h.arb)
     end
 
-    test "MR-9 late identity: the producer (Run.Server) is joined before the sweep; a synthetic identity with the real ref is swept",
+    test "MR-9 late identity: acknowledged real cut points (identity never produced; produced but unconsumed) and the labelled synthetic sweep",
          %{dir: dir} do
-      # (a) REAL producer cut point: the Server is suspended the moment it starts (trace from Run.Supervisor's init),
-      # so the owner sits in :handoff with no identity; stop tears down; the Server's DOWN is joined; no identity ever
-      # reaches the owner (Server and Worker do not trap exits, so a stopped producer cannot send later)
       h = start_host!()
+      # (a) NEVER PRODUCED: the Work supervisor is suspended from its own start trace, before the Server's birth can
+      # start a worker, so no identity can be produced; the owner acknowledges the cut point (phase :handoff, no
+      # :worker role); stop tears down; the Server (producer) DOWN is joined; the worker never existed
       handle = mount!(h, dir, nil)
-      assert_receive {:run_child_started, sup, :server, server}, @deadline
-      :ok = :sys.suspend(server)
+      assert_receive {:run_child_started, _sup, :work, work}, @deadline
+      :ok = :sys.suspend(work)
+      assert_receive {:run_child_started, _sup2, :server, server}, @deadline
+      wait_until(fn -> match?(%{phase: :handoff}, run_owner().inspect(handle.owner)) end)
+      refute :worker in run_owner().inspect(handle.owner).owned, "cut point acknowledged: no identity produced"
       smon = Process.monitor(server)
-      wait_until(fn -> run_owner().inspect(handle.owner).phase == :handoff end)
       assert {:ok, :stopped} == host().stop(handle, @deadline)
       assert_receive {:DOWN, ^smon, :process, ^server, _}, @deadline
-      refute Process.alive?(sup)
       assert_released!(dir, h.arb)
-      # (b) SYNTHETIC witness (labelled): the sweep after the joins kills an identity carrying the REAL handoff ref
-      d2 = dir <> "_synthetic"
+      # (b) PRODUCED BUT UNCONSUMED: the owner is suspended right after mount (its suspension is queued ahead of
+      # any handoff message because discovery completes only after start_link returns), so the real identity sits
+      # unconsumed in its mailbox; a parent shutdown then runs terminate/3 from the suspend loop and the sweep
+      # kills and joins that real worker after the producer's DOWN
+      d2 = dir <> "_unconsumed"
       File.mkdir_p!(d2)
       on_exit(fn -> File.rm_rf!(d2) end)
+      handle2 = mount!(h, d2, nil)
+      :ok = :sys.suspend(handle2.owner)
+      assert_receive {:run_child_started, sup2, :work, _work2}, @deadline
 
-      slow = fn pid, mon, timeout ->
-        Process.sleep(150)
-        receive(do: ({:DOWN, ^mon, :process, ^pid, _} -> true), after: (timeout -> false))
-      end
+      wait_until(fn ->
+        match?([_ | _], Supervisor.which_children(sup2)) and length(Supervisor.which_children(sup2)) == 3
+      end)
 
-      handle2 = mount!(h, d2, holding(self(), :subtree_started), join: slow)
-      {_ref, payload, _helper} = await_held!(:subtree_started)
-      %{handoff_ref: href} = run_owner().inspect(handle2.owner)
+      trusted = trusted_map!(sup2)
+
+      wait_until(fn ->
+        Enum.any?(elem(Process.info(handle2.owner, :messages), 1), &match?({:run_worker_registered, _, _, _}, &1))
+      end)
+
+      mons = trusted |> Map.values() |> monitor_all()
+      omon = Process.monitor(handle2.owner)
+      :ok = Supervisor.terminate_child(h.root, host_sup())
+      assert_receive {:DOWN, ^omon, :process, _, _}, @deadline
+      assert_all_down!(mons)
+      assert_released!(d2, h.arb)
+      # (c) SYNTHETIC witness (labelled): an identity carrying the REAL handoff ref that arrives outside the
+      # handoff state is retained (never dropped) and killed+joined by the teardown sweep before stop returns
+      h3 = start_host!()
+      d3 = dir <> "_synthetic"
+      File.mkdir_p!(d3)
+      on_exit(fn -> File.rm_rf!(d3) end)
+      handle3 = mount!(h3, d3, holding(self(), :subtree_started))
+      {ref3, payload, helper3} = await_held!(:subtree_started)
+      %{handoff_ref: href} = run_owner().inspect(handle3.owner)
       stray = spawn(fn -> receive(do: (:never -> :ok)) end)
       on_exit(fn -> Process.exit(stray, :kill) end)
-      smon2 = Process.monitor(stray)
-      stopper = Task.async(fn -> host().stop(handle2, @deadline) end)
-      wait_until(fn -> run_owner().inspect(handle2.owner).phase == :tearing_down end)
-      send(handle2.owner, {:run_worker_registered, href, stray, payload.server})
-      assert_receive {:DOWN, ^smon2, :process, ^stray, :killed}, @deadline
-      assert {:ok, :stopped} == Task.await(stopper, @deadline)
+      smon3 = Process.monitor(stray)
+      send(handle3.owner, {:run_worker_registered, href, stray, payload.server})
+      wait_until(fn -> :late in run_owner().inspect(handle3.owner).owned end)
+      assert Process.alive?(stray), "a late identity is retained, not acted on, before teardown"
+      assert {:ok, :stopped} == host().stop(handle3, @deadline)
+      assert_receive {:DOWN, ^smon3, :process, ^stray, :killed}, @deadline
+      refute Process.alive?(helper3)
+      send(helper3, {:release, ref3})
     end
   end
 
@@ -672,71 +698,84 @@ defmodule AiOrchestrator.Host.MountRedTest do
   end
 
   describe "census, discovery, arbiter passthrough, privacy, parity" do
-    test "MR-14 census: live held mounts rebuilt, stalled owner skipped, concurrent mount, late reply vs replacement, terminal not resurrected, stalled supervisor",
+    test "MR-14 census: live mounts rebuilt, stalled owner skipped, concurrent mount, captured active fact vs terminal and vs replacement, stalled supervisor",
          %{dir: dir} do
       h = start_host!()
-      dirs = for tag <- ~w(two done during), do: dir <> "_" <> tag
+      dirs = for tag <- ~w(two during repl), do: dir <> "_" <> tag
       Enum.each(dirs, &File.mkdir_p!/1)
       on_exit(fn -> Enum.each(dirs, &File.rm_rf!/1) end)
-      [d2, d_done, d_during] = dirs
+      [d2, d_during, d_repl] = dirs
       a = mount!(h, dir, holding(self(), :subtree_started))
       {ra, pa, ha} = await_held!(:subtree_started)
       b = mount!(h, d2, holding(self(), :subtree_started))
-      {_rb, _pb, _hb} = await_held!(:subtree_started)
-      # a completed run whose owner is RETAINED (terminal) and already unregistered
-      H.reset_seams()
-      {command, ctx} = command_ctx(d_done, fn _, _ -> :ok end, [])
-      {:ok, c} = host().mount(command, ctx, host: h.host, budgets: @budgets, retention_ms: 30_000)
-      assert {:ok, %{}} = host().await(c, @deadline)
-      assert match?({:ok, %{registered: false}}, host().status(d_done, monitor: h.mon, ownership: h.arb))
-      assert match?(%{phase: :terminal}, run_owner().inspect(c.owner))
+      {rb, pb, hb} = await_held!(:subtree_started)
+      r = mount!(h, d_repl, holding(self(), :subtree_started))
+      {rr, pr, hr} = await_held!(:subtree_started)
+      # both b and r are live and registered (registry-only oracle; no arbiter passthrough needed here)
+      wait_until(fn -> Enum.count(entries!(h), &(&1.run_dir in [Path.expand(d2), Path.expand(d_repl)])) == 2 end)
+      # suspend b and r: the Monitor's REAL census requests will queue in their mailboxes
       :ok = :sys.suspend(b.owner)
+      :ok = :sys.suspend(r.owner)
       kill_join!(Process.whereis(h.mon))
       # concurrent activity DURING the census: a new mount registers through the live path
       e = mount!(h, d_during, holding(self(), :subtree_started))
       {re, _pe, he} = await_held!(:subtree_started)
-      assert {:ok, %{census: :complete, skipped: 1}} = await_census!(h)
+      assert {:ok, %{census: :complete, skipped: 2}} = await_census!(h)
 
-      assert {:ok, %{registered: true, owner: owner_a, supervisor: sup_a}} =
-               host().status(dir, monitor: h.mon, ownership: h.arb)
+      assert Enum.any?(
+               entries!(h),
+               &(&1.run_dir == Path.expand(dir) and &1.owner == a.owner and &1.supervisor == pa.supervisor)
+             )
 
-      assert sup_a == pa.supervisor and owner_a == a.owner
-      assert {:ok, %{registered: true, owner: owner_e}} = host().status(d_during, monitor: h.mon, ownership: h.arb)
-      assert owner_e == e.owner
+      assert Enum.any?(entries!(h), &(&1.run_dir == Path.expand(d_during) and &1.owner == e.owner))
 
-      assert match?({:ok, %{registered: false}}, host().status(d2, monitor: h.mon, ownership: h.arb)),
-             "a skipped owner is partial knowledge"
+      refute Enum.any?(entries!(h), &(&1.run_dir in [Path.expand(d2), Path.expand(d_repl)])),
+             "skipped owners are partial knowledge"
 
-      assert match?({:ok, %{registered: false}}, host().status(d_done, monitor: h.mon, ownership: h.arb)),
-             "a retained terminal owner must not be resurrected"
-
-      # a synthetic census reply naming the terminal owner (alive) is confirmed with the owner and dropped
-      send(Process.whereis(h.mon), {:census_reply, make_ref(), full_record(d_done, c.owner, 1), :awaiting})
-      Process.sleep(200)
-      assert match?({:ok, %{registered: false}}, host().status(d_done, monitor: h.mon, ownership: h.arb))
-
-      # late reply versus replacement: stop b (owner gone), mount b2 on the same directory,
-      # then a late reply for the old owner
+      # capture the REAL correlated census requests from the suspended owners' mailboxes
+      mon = Process.whereis(h.mon)
+      {:messages, msgs_b} = Process.info(b.owner, :messages)
+      {:messages, msgs_r} = Process.info(r.owner, :messages)
+      assert [{:census, ref_b, ^mon}] = Enum.filter(msgs_b, &match?({:census, _, _}, &1))
+      assert [{:census, ref_r, ^mon}] = Enum.filter(msgs_r, &match?({:census, _, _}, &1))
+      fact_b = {:census_reply, ref_b, trusted_record(d2, pb, b.owner, 1), :awaiting}
+      fact_r = {:census_reply, ref_r, trusted_record(d_repl, pr, r.owner, 1), :awaiting}
+      # TERMINAL between capture and application: b completes (unregisters; retention keeps its owner alive)
       :ok = :sys.resume(b.owner)
-      old_owner = b.owner
-      assert {:ok, :stopped} == host().stop(b, @deadline)
-      b2 = mount!(h, d2, holding(self(), :subtree_started))
-      {rb2, _pb2, hb2} = await_held!(:subtree_started)
-      assert {:ok, %{registered: true, owner: owner_b2}} = await_registered!(h, d2)
-      assert owner_b2 == b2.owner
-      send(Process.whereis(h.mon), {:census_reply, make_ref(), full_record(d2, old_owner, 1), :awaiting})
+      send(hb, {:release, rb})
+      assert match?({:ok, %{}}, host().await(b, @deadline))
+      wait_until(fn -> not Enum.any?(entries!(h), &(&1.run_dir == Path.expand(d2))) end)
+      assert match?(%{phase: :terminal}, run_owner().inspect(b.owner))
+      send(mon, fact_b)
       Process.sleep(200)
-      assert {:ok, %{registered: true, owner: ^owner_b2}} = host().status(d2, monitor: h.mon, ownership: h.arb)
+
+      refute Enum.any?(entries!(h), &(&1.run_dir == Path.expand(d2))),
+             "a captured active fact must not resurrect a terminal owner"
+
+      # REPLACEMENT between capture and application: r is stopped and r2 mounted on the same directory
+      :ok = :sys.resume(r.owner)
+      old_owner = r.owner
+      assert {:ok, :stopped} == host().stop(r, @deadline)
+      r2 = mount!(h, d_repl, holding(self(), :subtree_started))
+      {rr2, _pr2, hr2} = await_held!(:subtree_started)
+      wait_until(fn -> Enum.any?(entries!(h), &(&1.run_dir == Path.expand(d_repl) and &1.owner == r2.owner)) end)
+      send(mon, fact_r)
+      Process.sleep(200)
+      r2_owner = r2.owner
+      assert [%{owner: ^r2_owner}] = Enum.filter(entries!(h), &(&1.run_dir == Path.expand(d_repl)))
+      refute old_owner == r2_owner
+      _ = hr
+      _ = rr
       # stalled host supervisor: the census completes with nothing learned
       :ok = :sys.suspend(Process.whereis(h.hsup))
       kill_join!(Process.whereis(h.mon))
       assert {:ok, %{census: :complete}} = await_census!(h)
       :ok = :sys.resume(Process.whereis(h.hsup))
-      for {r, hp} <- [{ra, ha}, {re, he}, {rb2, hb2}], do: send(hp, {:release, r})
-      for x <- [a, e, b2], do: assert(match?({:ok, %{}}, host().await(x, @deadline)))
+      for {rf, hp} <- [{ra, ha}, {re, he}, {rr2, hr2}], do: send(hp, {:release, rf})
+      for x <- [a, e, r2], do: assert(match?({:ok, %{}}, host().await(x, @deadline)))
     end
 
-    test "MR-15 Host.mounted: delayed discovery then stalled owners under ONE total budget (batch seam rejects per-leg resets)",
+    test "MR-15 Host.mounted: delayed discovery then stalled owners under ONE deadline; concurrent per-batch queries give partial results; a fresh budget per leg is rejected",
          %{dir: dir} do
       h = start_host!()
       dirs = for tag <- ~w(one two three), do: dir <> "_" <> tag
@@ -744,16 +783,18 @@ defmodule AiOrchestrator.Host.MountRedTest do
       on_exit(fn -> Enum.each(dirs, &File.rm_rf!/1) end)
       handles = for d <- dirs, do: mount!(h, d, holding(self(), :subtree_started))
       held = for _ <- dirs, do: await_held!(:subtree_started)
-      [h1, h2, _h3] = handles
+      [h1, h2, h3] = handles
       :ok = :sys.suspend(h1.owner)
       :ok = :sys.suspend(h2.owner)
-      # discovery answers only after 200 ms (a forwarding proxy in front of the host supervisor)
-      proxy = start_supervised!({DelayingProxy, target: Process.whereis(h.hsup), delay: 200})
-      {result, elapsed} = timed(fn -> host().mounted(%{h.host | supervisor: proxy}, 600, batch: 1) end)
+      # discovery answers only after 300 ms; the two stalled owners consume the rest of the 600 ms deadline;
+      # the responsive owner is queried CONCURRENTLY with them, so it is known regardless of child order.
+      # A fresh 600 ms per leg would need 300 + 600 = 900 ms and is rejected by the 750 ms bound.
+      proxy = start_supervised!({DelayingProxy, target: Process.whereis(h.hsup), delay: 300})
+      {result, elapsed} = timed(fn -> host().mounted(%{h.host | supervisor: proxy}, 600) end)
       assert {:ok, listed} = result
-      assert Enum.count(listed, &(&1.phase == :unknown)) == 2
-      # a fresh budget per discovery leg / per batch would need 200 + 2 x 600: rejected by the single budget
-      assert elapsed < 600 + @slack, "mounted took #{elapsed} ms"
+      assert Enum.count(listed, &(&1.phase == :unknown)) == 2, inspect(listed)
+      assert Enum.any?(listed, &(&1.owner == h3.owner and &1.phase != :unknown)), "the responsive owner is known"
+      assert elapsed < 600 + 150, "mounted took #{elapsed} ms (a fresh budget per leg would take ~900)"
       :ok = :sys.suspend(Process.whereis(h.hsup))
       {result, elapsed} = timed(fn -> host().mounted(h.host, 300) end)
       assert {:error, %{clause: "host_supervisor_unavailable"}} == result
@@ -761,7 +802,7 @@ defmodule AiOrchestrator.Host.MountRedTest do
       :ok = :sys.resume(Process.whereis(h.hsup))
       :ok = :sys.resume(h1.owner)
       :ok = :sys.resume(h2.owner)
-      for {r, _p, hp} <- held, do: send(hp, {:release, r})
+      for {rf, _p, hp} <- held, do: send(hp, {:release, rf})
       for x <- handles, do: assert(match?({:ok, %{}}, host().await(x, @deadline)))
     end
 
@@ -878,17 +919,18 @@ defmodule AiOrchestrator.Host.MountRedTest do
     end
   end
 
-  defp full_record(dir, owner, generation) do
-    %{
-      run_dir: Path.expand(dir),
-      run_id: "run_mount_0001",
-      owner: owner,
-      supervisor: owner,
-      server: owner,
-      writer: owner,
-      worker: owner,
-      generation: generation
-    }
+  # registry-only view (no arbiter consulted): every entry the monitor holds for the run id
+  defp entries!(h) do
+    {:ok, entries} = host().lookup_run_id("run_mount_0001", monitor: h.mon)
+    entries
+  end
+
+  # a census reply record built from the TRUSTED role map of a held run (never owner-for-every-role)
+  defp trusted_record(dir, payload, owner, generation) do
+    payload.supervisor
+    |> trusted_map!()
+    |> Map.take([:supervisor, :server, :writer, :worker])
+    |> Map.merge(%{run_dir: Path.expand(dir), run_id: "run_mount_0001", owner: owner, generation: generation})
   end
 
   defp timed(fun) do
