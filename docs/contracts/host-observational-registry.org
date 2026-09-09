@@ -87,11 +87,14 @@ older owner never erases the replacement; H-2 duplicate start/resume/cancel agai
 absence proves nothing; H-5 two HELD concurrent runs under one monitor: two entries, exact identities,
 collision diagnosed; H-7 complete record with a disagreeing generation -> inconsistent, matching generation ->
 live; H-6a/H-6d absent and stalled monitors: result term, journal bytes and the per-label FULL barrier payload
-(every identity validated at the callback boundary against the owner's trace and the supervision tree, then
-normalized to roles) identical to =Run.Executor=, every owned process's DOWN joined after the command, status
-bounded by the requested budget with the 1_000 ms default and timeout validity pinned; H-6e a valid
-registered record with a stalled ownership lookup: closed =host_ownership_unavailable= within the single
-budget, responsive control live, the global arbiter untouched; H-6b/H-6c non-=:ok= return, raise, throw and
+(the test reads the run tree from the TRUSTED traced supervisor while the owner is blocked and requires the
+payload to equal the exact role -> pid map, same key set, same pid per role: a swap of two live pids is a
+corrupted payload) identical to =Run.Executor=, every owned process's DOWN joined after the command, status
+bounded by the requested budget with the 1_000 ms default and timeout validity pinned; H-6e ONE total budget: a
+monitor leg that consumes a measured ~700 ms of a 1_000 ms budget (test-owned forwarding proxy in front of
+the monitor; the monitor answers ordinary GenServer calls, so such a proxy is a valid monitor) followed by a
+stalled ownership lookup closes with =host_ownership_unavailable= within 1_000 ms plus <= 200 ms slack, which
+a fresh-timeout-per-leg implementation cannot meet; responsive control live; the global arbiter untouched; H-6b/H-6c non-=:ok= return, raise, throw and
 exit of the user barrier: identical result, identical journal bytes and identical invocation sequence
 (exactly one =:handoff_received= call, the escape ends the run) on both routes; H-9a the monitor proven registered then killed (DOWN joined) mid-run: the run
 completes; H-9c the Server killed mid-run: closed =run_server_down= unchanged and the entry removed on the

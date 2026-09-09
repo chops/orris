@@ -1,3 +1,44 @@
+# A test-owned monitor stand-in: holds every call until the test releases it, then forwards it verbatim
+# to the real monitor and replies with the real answer; casts and other messages are forwarded at once.
+# It lets a row measure a slow monitor leg without touching any global state or assuming the lookup
+# message shape.
+defmodule AiOrchestrator.Host.RegistryRedTest.ForwardingProxy do
+  @moduledoc false
+  use GenServer
+
+  def start_link(opts), do: GenServer.start_link(__MODULE__, Map.new(opts))
+
+  @impl true
+  def init(state), do: {:ok, state}
+
+  @impl true
+  def handle_call(request, from, %{target: target, notify: notify} = state) do
+    ref = make_ref()
+    send(notify, {:proxy_held, self(), ref})
+
+    receive do
+      {:proxy_release, ^ref} -> :ok
+    after
+      15_000 -> exit({:proxy_never_released, ref})
+    end
+
+    GenServer.reply(from, GenServer.call(target, request, 15_000))
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_cast(request, %{target: target} = state) do
+    GenServer.cast(target, request)
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info(message, %{target: target} = state) do
+    send(target, message)
+    {:noreply, state}
+  end
+end
+
 defmodule AiOrchestrator.Host.RegistryRedTest do
   @moduledoc """
   RED rows for the in-VM observational host slice (docs/contracts/host-observational-registry.org).
@@ -23,6 +64,7 @@ defmodule AiOrchestrator.Host.RegistryRedTest do
 
   alias AiOrchestrator.Commands
   alias AiOrchestrator.Contract.Moment
+  alias AiOrchestrator.Host.RegistryRedTest.ForwardingProxy
   alias AiOrchestrator.Journal.Fs.SystemFs
   alias AiOrchestrator.Journal.Ownership
   alias AiOrchestrator.Journal.Writer
@@ -33,8 +75,11 @@ defmodule AiOrchestrator.Host.RegistryRedTest do
   @now %Moment{wall_ts: "2026-09-09T06:00:00Z", unix: 1_788_933_600}
   @owned [:event_sink, :run_dir, :run_lock_path, :tail_repair, :requested_by, :cancel_reason, :recovery_reason]
   @deadline 15_000
-  # scheduler slack allowed on top of a requested status budget
-  @slack 500
+  # scheduler slack allowed on top of a requested status budget (small enough that a fresh timeout per
+  # leg cannot hide inside it: @monitor_delay + @budget > @budget + @slack)
+  @slack 200
+  @budget 1_000
+  @monitor_delay 700
 
   # ---- late-bound receivers: the interface is absent on the unchanged source ----
   defp host, do: Module.concat(["AiOrchestrator", "Host"])
@@ -153,6 +198,8 @@ defmodule AiOrchestrator.Host.RegistryRedTest do
     invoke_ctx(verb, command_ctx(dir, barrier, extra), executor, command_id)
   end
 
+  # ---- rows ----
+
   # the context is built in the test process (the harness registers on_exit cleanups), never in a task
   defp invoke_ctx(verb, ctx, executor, command_id) do
     args =
@@ -181,8 +228,6 @@ defmodule AiOrchestrator.Host.RegistryRedTest do
   defp finish!(task), do: Task.await(task, @deadline)
 
   defp hash(term), do: "sha256:" <> (:sha256 |> :crypto.hash(Jason.encode!(term)) |> Base.encode16(case: :lower))
-
-  # ---- rows ----
 
   describe "registration lifecycle (R5, F1)" do
     test "H-1 a held run is registered with its exact identities and generation; the entry is gone after completion",
@@ -342,25 +387,38 @@ defmodule AiOrchestrator.Host.RegistryRedTest do
       end
     end
 
-    test "H-6e stalled ownership lookup behind a valid registered record: one total budget, closed unavailable",
+    test "H-6e one TOTAL status budget: a slow monitor leg then a stalled ownership leg must close within it",
          %{dir: dir} do
       {monitor, _} = start_monitor!()
       seed_journal!(dir)
       {:ok, writer, _} = open(dir)
       holder = holder!()
       :ok = monitor_mod().register(monitor, full_record(dir, holder, 1, writer))
-      # responsive control: the Application arbiter answers and the record is confirmed live
-      assert {{:ok, %{registered: true, live: true, generation: 1}}, elapsed} =
-               timed(fn -> host().status(dir, monitor: monitor, ownership: Ownership, timeout: 300) end)
+      # a test-owned forwarding proxy stands in front of the real monitor: every call is held until the
+      # test releases it (so the delay is measured while status is actually waiting on the monitor leg),
+      # then forwarded verbatim, so the lookup message shape is irrelevant
+      proxy = start_supervised!({ForwardingProxy, target: monitor, notify: self()})
 
-      assert elapsed < 300 + @slack
-      # the ownership leg stalls (a private process that never answers; the global arbiter is untouched)
+      # responsive control (released immediately): the record is confirmed live within the budget
+      task = Task.async(fn -> host().status(dir, monitor: proxy, ownership: Ownership, timeout: @budget) end)
+      assert_receive {:proxy_held, ^proxy, hold_ref}, @deadline
+      send(proxy, {:proxy_release, hold_ref})
+      assert {:ok, %{registered: true, live: true, generation: 1}} = Task.await(task, @budget + @deadline)
+
+      # the witness: the monitor leg consumes ~@monitor_delay of the budget, then the ownership leg
+      # stalls (a private process that never answers; the global arbiter is untouched); a closed
+      # host_ownership_unavailable must arrive within the SINGLE budget plus scheduler slack, which a
+      # fresh-per-leg implementation (~@monitor_delay + @budget) cannot meet
       stalled = holder!()
-
-      assert {{:error, %{clause: "host_ownership_unavailable"}}, elapsed} =
-               timed(fn -> host().status(dir, monitor: monitor, ownership: stalled, timeout: 300) end)
-
-      assert elapsed < 300 + @slack, "monitor plus ownership exceeded the single budget: #{elapsed} ms"
+      started = System.monotonic_time(:millisecond)
+      task = Task.async(fn -> host().status(dir, monitor: proxy, ownership: stalled, timeout: @budget) end)
+      assert_receive {:proxy_held, ^proxy, hold_ref}, @deadline
+      Process.sleep(@monitor_delay - (System.monotonic_time(:millisecond) - started))
+      send(proxy, {:proxy_release, hold_ref})
+      assert {:error, %{clause: "host_ownership_unavailable"}} = Task.await(task, @budget + @deadline)
+      elapsed = System.monotonic_time(:millisecond) - started
+      assert elapsed >= @monitor_delay, "the monitor leg did not consume the measured delay"
+      assert elapsed < @budget + @slack, "monitor plus ownership exceeded the single budget: #{elapsed} ms"
       assert {:ok, %{state: :live, generation: 1}} = Ownership.status(dir), "the global arbiter kept answering"
       :ok = Writer.close(writer)
     end
@@ -461,8 +519,7 @@ defmodule AiOrchestrator.Host.RegistryRedTest do
 
     capture = fn label, owned ->
       ref = make_ref()
-      descendants = descendants(owned[:supervisor])
-      send(test_pid, {:cap, tag, label, owned, %{caller: self(), descendants: descendants, ref: ref}})
+      send(test_pid, {:cap, tag, label, owned, %{caller: self(), ref: ref}})
 
       receive do
         {:cap_ack, ^ref} -> :ok
@@ -484,24 +541,23 @@ defmodule AiOrchestrator.Host.RegistryRedTest do
     %{result: result, journal: journal(dir), payloads: payloads}
   end
 
-  # one expected label, in order: the payload is validated value by value against independent evidence
-  # (the owner's trace, the calling process, the supervision tree) and normalized to roles for the
-  # cross-route comparison; every owned pid is monitored so its DOWN can be joined after the command
+  # one expected label, in order: while the owner is blocked in the callback, the test reads the run tree
+  # from the TRUSTED supervisor (the pid the owner traced in :run_executor_started, never the payload's
+  # own supervisor value), builds the ROLE -> PID map by child id (Journal.Writer, Run.Server,
+  # Run.Work.Supervisor and its single worker) and requires the payload to equal that map exactly: same
+  # key set, same pid per role (a swap of two live pids is a corrupted payload); every owned pid is then
+  # monitored so its DOWN can be joined after the command; the cross-route value is the label with the
+  # verified role set (pids legitimately differ between runs)
   defp capture!(tag, label, owner, supervisor, monitored) do
     assert_receive {:cap, ^tag, ^label, owned, evidence}, @deadline
     assert evidence.caller == owner, "#{label}: the barrier must run in the owner"
-    assert owned[:owner] == owner, "#{label}: owner identity corrupted"
-    assert owned[:supervisor] == supervisor, "#{label}: supervisor identity corrupted"
+    expected = Map.put(role_map!(supervisor), :owner, owner)
+    assert Enum.sort(Map.keys(owned)) == Enum.sort(Map.keys(expected)), "#{label}: payload key set differs"
 
-    for role <- [:server, :writer, :worker] do
-      pid = owned[role]
-
-      assert is_pid(pid) and pid in evidence.descendants,
-             "#{label}: #{role} is not a live descendant of the run supervisor"
+    for {role, pid} <- expected do
+      assert owned[role] == pid,
+             "#{label}: #{role} identity corrupted (payload #{inspect(owned[role])}, tree #{inspect(pid)})"
     end
-
-    dead = for {role, value} <- owned, not (is_pid(value) and Process.alive?(value)), do: {role, value}
-    assert dead == [], "#{label}: payload values are not live pids: #{inspect(dead)}"
 
     send(evidence.caller, {:cap_ack, evidence.ref})
 
@@ -510,27 +566,21 @@ defmodule AiOrchestrator.Host.RegistryRedTest do
         Map.put_new_lazy(acc, pid, fn -> Process.monitor(pid) end)
       end)
 
-    {{label, owned |> Map.keys() |> Enum.sort() |> Map.new(&{&1, :verified_pid})}, monitored}
+    {{label, expected |> Map.keys() |> Enum.sort() |> Map.new(&{&1, :verified_role})}, monitored}
   end
 
-  # pids of every process under the run supervisor (the Run.Supervisor children and, one level down, the
-  # Work.Supervisor's worker), read at the callback boundary; only supervisor-typed children are walked,
-  # because an unexpected which_children call would crash a worker gen_statem and with it the tree
-  defp descendants(sup) when is_pid(sup) do
-    children = Supervisor.which_children(sup)
-    direct = for {_, pid, _, _} <- children, is_pid(pid), do: pid
-
-    nested =
-      for {_, pid, :supervisor, _} <- children,
-          is_pid(pid),
-          {_, child, _, _} <- Supervisor.which_children(pid),
-          is_pid(child),
-          do: child
-
-    direct ++ nested
+  # the exact identities under the trusted run supervisor, by child id; only the Work.Supervisor (a
+  # supervisor-typed child) is walked further, so no worker gen_statem receives an unexpected call
+  defp role_map!(supervisor) do
+    children = Supervisor.which_children(supervisor)
+    {_, server, _, _} = List.keyfind(children, AiOrchestrator.Run.Server, 0)
+    {_, work, :supervisor, _} = List.keyfind(children, AiOrchestrator.Run.Work.Supervisor, 0)
+    {_, writer, _, _} = Enum.find(children, &match?({{Writer, _}, pid, _, _} when is_pid(pid), &1))
+    [{_, worker, _, _}] = Supervisor.which_children(work)
+    map = %{supervisor: supervisor, server: server, writer: writer, work: work, worker: worker}
+    assert Enum.all?(Map.values(map), &(is_pid(&1) and Process.alive?(&1))), "trusted tree not fully live"
+    map
   end
-
-  defp descendants(_), do: []
 
   # an escape row runs one route at the path (recreated empty) and returns the result with the journal bytes
   defp escape_route(dir, executor, barrier, extra) do
