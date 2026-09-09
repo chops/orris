@@ -333,6 +333,15 @@ defmodule C1.Harness do
       }
     }
 
+    # U1 (docs/contracts/console-mutations.org, H-14 amendment): the seven closed mutation limits travel in "limits"
+    # when the configuration carries them; the trusted seams (mutation_opts/witness/gates/invoke) never do
+    mutation_limits =
+      ~w(mutation_capacity intent_ttl_ms mutation_wait_ms mutation_retention_ms mutation_shutdown_ms mutation_start_ms mutation_read_ms)a
+      |> Enum.filter(&Keyword.has_key?(config, &1))
+      |> Map.new(&{Atom.to_string(&1), config[&1]})
+
+    data = update_in(data, ["limits"], &Map.merge(&1, mutation_limits))
+
     File.write!(path, Jason.encode!(data))
     path
   end

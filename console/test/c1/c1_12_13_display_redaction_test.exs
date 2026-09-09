@@ -57,7 +57,9 @@ defmodule C1.DisplayRedactionTest do
     assert stale =~ "last successful read: #{C1.Clock.now(clock) - 5_000}"
   end
 
-  test "C1-12c the router has exactly the read-only routes and pages carry no control except logout" do
+  # C1-12c (U1 amendment) the router has exactly the five read-only routes plus the two cancel routes; the index carries only logout; the detail of an allowed non-terminal run carries logout and the cancel form
+
+  test "C1-12c (U1 amendment) exactly the five read-only routes plus the two cancel routes; the index carries only logout; the detail of an allowed non-terminal run carries logout and the cancel form" do
     %{config: c, secret: s} = app!()
     routes = OrrisConsole.Router.__routes__() |> Enum.map(&{&1.verb, &1.path}) |> Enum.sort()
 
@@ -67,25 +69,67 @@ defmodule C1.DisplayRedactionTest do
                {:get, "/runs/:root_id/:run_ref"},
                {:get, "/login"},
                {:post, "/login"},
-               {:post, "/logout"}
-             ])
+               {:post, "/logout"},
+               {:post, "/runs/:root_id/:run_ref/cancel"},
+               {:post, "/runs/:root_id/:run_ref/cancel/confirm"}
+             ]),
+           "RED (U1 amendment C1-12c): routes #{inspect(routes)}"
 
     cookie = Harness.login!(c, s)
 
-    for path <- ["/", "/runs/alpha/a"] do
+    for {path, expected_forms, expected_buttons} <- [
+          {"/", ["/logout"], ["Log out"]},
+          {"/runs/alpha/a", ["/logout", "/runs/alpha/a/cancel"], ["Log out", "Cancel run"]}
+        ] do
       {:ok, view, _shell} = live(Harness.conn(c, :get, path, [{"cookie", cookie}]))
       html = Harness.await_read(view)
       forms = Regex.scan(~r/<form[^>]*action="([^"]+)"/, html) |> Enum.map(&List.last/1)
-      assert forms == ["/logout"], "#{path}: forms #{inspect(forms)}"
+      assert forms == expected_forms, "#{path}: forms #{inspect(forms)}"
       buttons = Regex.scan(~r/<button[^>]*>([^<]*)</, html) |> Enum.map(&List.last/1)
-      assert buttons == ["Log out"], "#{path}: controls #{inspect(buttons)}"
+      assert buttons == expected_buttons, "#{path}: controls #{inspect(buttons)}"
       refute html =~ ~r/phx-click="(?!select_root)/
     end
   end
 
-  test "C1-13a the observed request's own bearer material (its cookie value and the raw session id decoded from it), the secret, the root path" do
+  test "C1-13a (U1 amendment: run_dir canary + the unauthorized cancel path) the observed request's own bearer material (its cookie value and the raw session id decoded from it), the secret, the root path" do
     %{config: c, secret: s, root: root} = app!()
     hex = Base.encode16(s, case: :lower)
+    run_dir = Path.join(root, "a")
+
+    # a pre-login cookie carries its own CSRF token but no session; a logged-in page carries a session-bound token
+    prelogin_cancel = fn ->
+      get = Harness.conn(c, :get, "/login")
+      token = Harness.csrf_token(get.resp_body)
+
+      Harness.conn(
+        c,
+        :post,
+        "/runs/alpha/a/cancel",
+        [
+          {"origin", Harness.origin(c)},
+          {"cookie", Harness.cookie(get)},
+          {"content-type", "application/x-www-form-urlencoded"}
+        ],
+        URI.encode_query(%{"_csrf_token" => token})
+      )
+    end
+
+    scoped_cancel = fn session_cookie ->
+      page = Harness.conn(c, :get, "/", [{"cookie", session_cookie}])
+      token = Harness.csrf_token(page.resp_body)
+
+      Harness.conn(
+        c,
+        :post,
+        "/runs/beta/a/cancel",
+        [
+          {"origin", Harness.origin(c)},
+          {"cookie", session_cookie},
+          {"content-type", "application/x-www-form-urlencoded"}
+        ],
+        URI.encode_query(%{"_csrf_token" => token})
+      )
+    end
 
     {{unauthorized, authorized, cookie}, logs} =
       Harness.capture_logs(fn ->
@@ -96,7 +140,19 @@ defmodule C1.DisplayRedactionTest do
           Harness.conn(c, :get, "/runs/alpha/../a"),
           Harness.conn(c, :get, "/", [{"cookie", "_orris_console_key=garbage"}]),
           Harness.conn(c, :get, "/runs/alpha/missing", [{"cookie", cookie}]),
-          Harness.conn(c, :get, "/nonexistent", [{"cookie", cookie}])
+          Harness.conn(c, :get, "/nonexistent", [{"cookie", cookie}]),
+          # U1 (review R5): the :browser pipeline's CSRF protection runs BEFORE :authenticated, so a tokenless POST is
+          # 403 with or without a session; a valid session-bound token then reaches the session/scope checks
+          Harness.conn(c, :post, "/runs/alpha/a/cancel", [{"origin", Harness.origin(c)}], ""),
+          Harness.conn(
+            c,
+            :post,
+            "/runs/beta/a/cancel/confirm",
+            [{"origin", Harness.origin(c)}, {"cookie", cookie}],
+            ""
+          ),
+          prelogin_cancel.(),
+          scoped_cancel.(cookie)
         ]
 
         {:ok, view, _} = live(Harness.conn(c, :get, "/runs/alpha/a", [{"cookie", cookie}]))
@@ -109,17 +165,33 @@ defmodule C1.DisplayRedactionTest do
            "the decoded id is not the session of the observed request"
 
     for conn <- unauthorized,
-        canary <- [hex, root, "CTX_CANARY_7f3a", raw_id, cookie_value],
+        canary <- [hex, root, run_dir, "CTX_CANARY_7f3a", raw_id, cookie_value],
         do: refute(conn.resp_body =~ canary, "leak of #{canary} in #{conn.request_path}")
 
     assert authorized =~ "CTX_CANARY_7f3a"
 
-    for canary <- [hex, root, raw_id, cookie_value, "CTX_CANARY_7f3a"],
+    for canary <- [hex, root, run_dir, raw_id, cookie_value, "CTX_CANARY_7f3a"],
         do: refute(logs =~ canary, "log leak of #{canary}")
+
+    # CSRF-before-auth is measured TODAY on an existing protected route (never weakened): a tokenless POST is 403
+    # with and without the session cookie
+    tokenless = [
+      Harness.conn(c, :post, "/logout", [{"origin", Harness.origin(c)}], ""),
+      Harness.conn(c, :post, "/logout", [{"origin", Harness.origin(c)}, {"cookie", cookie}], "")
+    ]
+
+    assert Enum.map(tokenless, & &1.status) == [403, 403], "CSRF-before-auth weakened on /logout"
+    # the cancel routes must behave the same once they exist: tokenless 403/403; a pre-login token without a
+    # session 302 to /login; a session-bound token on a cross-root selector the generic 404
+    cancel_statuses = unauthorized |> Enum.drop(5) |> Enum.map(& &1.status)
+
+    assert cancel_statuses == [403, 403, 302, 404],
+           "RED (U1 amendment C1-13a): cancel routes answered #{inspect(cancel_statuses)}"
   end
 
-  test "C1-13b the credential digest is present by value in the Store state at the cut point, and neither it (hex, base64, inspect form), the session id digest, the raw id" do
+  test "C1-13b (U1 amendment: run_dir canary) the credential digest is present by value in the Store state at the cut point, and neither it (hex, base64, inspect form), the session id digest, the raw id" do
     %{config: c, secret: s, root: root} = app!()
+    run_dir = Path.join(root, "a")
     digest = :crypto.hash(:sha256, s)
     store = OrrisConsole.SessionStore
     {:ok, raw_id} = OrrisConsole.SessionStore.login(store, s)
@@ -146,9 +218,17 @@ defmodule C1.DisplayRedactionTest do
         Process.sleep(200)
       end)
 
-    for canary <- Harness.renderings(digest) ++ Harness.renderings(id_digest) ++ [raw_id, root, "exception_canary"],
+    for canary <-
+          Harness.renderings(digest) ++ Harness.renderings(id_digest) ++ [raw_id, root, run_dir, "exception_canary"],
         do: refute(logs =~ canary, "crash log leak of #{canary}")
 
     assert logs =~ "crash_canary_exit" or logs =~ "SessionStore"
+    # U1 amendment: the Store's formatted status carries no mutation record content (op refs, intents, paths)
+    assert Harness.term_contains?(:sys.get_state(store), digest)
+    status = inspect(:sys.get_status(store), limit: :infinity, printable_limit: :infinity)
+    refute status =~ run_dir
+
+    assert status =~ "sessions",
+           "RED (U1 amendment C1-13b): format_status changed shape: #{String.slice(status, 0, 200)}"
   end
 end

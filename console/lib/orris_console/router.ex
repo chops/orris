@@ -1,5 +1,5 @@
 defmodule OrrisConsole.Router do
-  @moduledoc "Exactly the read-only routes (C1-12c): index, run detail, login (GET/POST) and logout (POST)."
+  @moduledoc "Exactly seven routes (C1-12c as amended by U1): index, run detail, login (GET/POST), logout (POST), cancel intent (POST) and cancel confirm (POST)."
   use Phoenix.Router
   import Phoenix.LiveView.Router
 
@@ -28,6 +28,9 @@ defmodule OrrisConsole.Router do
 
   scope "/", OrrisConsole do
     pipe_through [:browser, :authenticated]
+
+    post "/runs/:root_id/:run_ref/cancel", MutationController, :intent
+    post "/runs/:root_id/:run_ref/cancel/confirm", MutationController, :confirm
 
     live_session :console, on_mount: OrrisConsole.AuthHook, layout: {OrrisConsole.Layouts, :app} do
       live "/", RunIndexLive

@@ -1,14 +1,27 @@
 defmodule OrrisConsole.Config do
   @moduledoc """
-  Trusted server configuration (docs/contracts/console-readonly.org, C1-00). Loaded once at application start from
-  the in-VM keyword (dev/test) or the closed JSON file (release); never from a request. `load/1` validates every
-  clause and derives the exact lowercase authority and origin; `current/0` answers the running configuration.
+  Trusted server configuration (docs/contracts/console-readonly.org C1-00; docs/contracts/console-mutations.org
+  M-16). Loaded once at application start from the in-VM keyword (dev/test) or the closed JSON file (release);
+  never from a request. `load/1` validates every clause and derives the exact lowercase authority and origin;
+  `current/0` answers the running configuration. The operator id must match the Commands actor grammar; the seven
+  mutation limits are bounded and refused out of range; the mutation seams exist only in the keyword form.
   """
 
   @max_idle_ms 1_800_000
   @max_absolute_ms 43_200_000
+  @actor_id ~r/^[A-Za-z0-9_.-]{1,64}$/
   @file_keys ~w(bind port host scheme socket_mounts credential_path operator roots limits)
-  @limit_keys ~w(idle_ms absolute_ms login_capacity login_refill_ms session_capacity views_per_session read_deadline_ms retry_ms worker_capacity controller_capacity max_login_body)
+  @limit_keys ~w(idle_ms absolute_ms login_capacity login_refill_ms session_capacity views_per_session read_deadline_ms retry_ms worker_capacity controller_capacity max_login_body mutation_capacity intent_ttl_ms mutation_wait_ms mutation_retention_ms mutation_shutdown_ms mutation_start_ms mutation_read_ms)
+  # {key, default, upper bound} — a value outside 1..bound (or not an integer) is refused, never defaulted
+  @mutation_limits [
+    {:mutation_capacity, 4, 64},
+    {:intent_ttl_ms, 60_000, 600_000},
+    {:mutation_wait_ms, 5_000, 60_000},
+    {:mutation_retention_ms, 300_000, 3_600_000},
+    {:mutation_shutdown_ms, 60_000, 300_000},
+    {:mutation_start_ms, 1_000, 60_000},
+    {:mutation_read_ms, 1_000, 60_000}
+  ]
 
   defstruct bind: {127, 0, 0, 1},
             port: nil,
@@ -36,7 +49,20 @@ defmodule OrrisConsole.Config do
             query_opts: [],
             read_gate: nil,
             read_witness: nil,
-            clock: nil
+            clock: nil,
+            mutation_capacity: 4,
+            intent_ttl_ms: 60_000,
+            mutation_wait_ms: 5_000,
+            mutation_retention_ms: 300_000,
+            mutation_shutdown_ms: 60_000,
+            mutation_start_ms: 1_000,
+            mutation_read_ms: 1_000,
+            mutation_opts: [],
+            mutation_witness: nil,
+            operation_gate: nil,
+            operation_finish_gate: nil,
+            starter_gate: nil,
+            mutation_invoke: nil
 
   @type t :: %__MODULE__{}
   @type rejection :: %{clause: String.t(), detail: map() | nil}
@@ -59,38 +85,49 @@ defmodule OrrisConsole.Config do
          {:ok, credential_path} <- credential_path(Keyword.get(input, :credential_path)),
          {:ok, idle, absolute} <-
            expiry(Keyword.get(input, :idle_ms, @max_idle_ms), Keyword.get(input, :absolute_ms, @max_absolute_ms)),
-         {:ok, mounts} <- mounts(Keyword.get(input, :socket_mounts, ["/live"])) do
+         {:ok, mounts} <- mounts(Keyword.get(input, :socket_mounts, ["/live"])),
+         {:ok, limits} <- mutation_limits(input) do
       {:ok,
-       %__MODULE__{
-         bind: bind,
-         port: port,
-         host: host,
-         scheme: :http,
-         authority: "#{host}:#{port}",
-         origin: "http://#{host}:#{port}",
-         socket_mounts: mounts,
-         credential_path: credential_path,
-         operator: operator,
-         roots: roots,
-         idle_ms: idle,
-         absolute_ms: absolute,
-         login_capacity: positive(input, :login_capacity, 5),
-         login_refill_ms: positive(input, :login_refill_ms, 6_000),
-         session_capacity: positive(input, :session_capacity, 128),
-         views_per_session: positive(input, :views_per_session, 8),
-         read_deadline_ms: positive(input, :read_deadline_ms, 2_000),
-         retry_ms: positive(input, :retry_ms, 1_000),
-         worker_capacity: positive(input, :worker_capacity, 128),
-         controller_capacity: positive(input, :controller_capacity, 128),
-         max_login_body: positive(input, :max_login_body, 4_096),
-         sweep_ms: positive(input, :sweep_ms, 1_000),
-         server: Keyword.get(input, :server, false) == true,
-         query_opts:
-           Keyword.get(input, :query_opts, []) |> List.wrap() |> Keyword.take([:monitor, :budget_ms, :ownership]),
-         read_gate: seam(Keyword.get(input, :read_gate)),
-         read_witness: seam(Keyword.get(input, :read_witness)),
-         clock: Keyword.get(input, :clock)
-       }}
+       struct!(
+         %__MODULE__{
+           bind: bind,
+           port: port,
+           host: host,
+           scheme: :http,
+           authority: "#{host}:#{port}",
+           origin: "http://#{host}:#{port}",
+           socket_mounts: mounts,
+           credential_path: credential_path,
+           operator: operator,
+           roots: roots,
+           idle_ms: idle,
+           absolute_ms: absolute,
+           login_capacity: positive(input, :login_capacity, 5),
+           login_refill_ms: positive(input, :login_refill_ms, 6_000),
+           session_capacity: positive(input, :session_capacity, 128),
+           views_per_session: positive(input, :views_per_session, 8),
+           read_deadline_ms: positive(input, :read_deadline_ms, 2_000),
+           retry_ms: positive(input, :retry_ms, 1_000),
+           worker_capacity: positive(input, :worker_capacity, 128),
+           controller_capacity: positive(input, :controller_capacity, 128),
+           max_login_body: positive(input, :max_login_body, 4_096),
+           sweep_ms: positive(input, :sweep_ms, 1_000),
+           server: Keyword.get(input, :server, false) == true,
+           query_opts:
+             Keyword.get(input, :query_opts, []) |> List.wrap() |> Keyword.take([:monitor, :budget_ms, :ownership]),
+           read_gate: seam(Keyword.get(input, :read_gate)),
+           read_witness: seam(Keyword.get(input, :read_witness)),
+           clock: Keyword.get(input, :clock),
+           # server-only mutation seams (keyword form only; the file schema refuses them)
+           mutation_opts: Keyword.get(input, :mutation_opts, []) |> List.wrap() |> Keyword.take([:fs, :clock, :id]),
+           mutation_witness: seam(Keyword.get(input, :mutation_witness)),
+           operation_gate: seam(Keyword.get(input, :operation_gate)),
+           operation_finish_gate: seam(Keyword.get(input, :operation_finish_gate)),
+           starter_gate: seam(Keyword.get(input, :starter_gate)),
+           mutation_invoke: invoke_seam(Keyword.get(input, :mutation_invoke))
+         },
+         limits
+       )}
     end
   end
 
@@ -202,9 +239,11 @@ defmodule OrrisConsole.Config do
 
   defp roots(_), do: {:error, %{clause: "config_roots_invalid", detail: nil}}
 
-  # every operator root id must be a configured root; with no roots configured the operator simply has none
-  defp operator(%{id: id, root_ids: ids}, roots) when is_binary(id) and id != "" and is_list(ids) do
+  # the operator id is the console's Commands actor id: it must match the actor grammar (fail closed); every
+  # operator root id must be a configured root; with no roots configured the operator simply has none
+  defp operator(%{id: id, root_ids: ids}, roots) when is_binary(id) and is_list(ids) do
     cond do
+      not Regex.match?(@actor_id, id) -> {:error, %{clause: "config_operator_invalid", detail: nil}}
       roots == %{} -> {:ok, %{id: id, root_ids: []}}
       ids != [] and Enum.all?(ids, &(is_binary(&1) and Map.has_key?(roots, &1))) -> {:ok, %{id: id, root_ids: ids}}
       true -> {:error, %{clause: "config_operator_invalid", detail: nil}}
@@ -236,6 +275,16 @@ defmodule OrrisConsole.Config do
 
   defp mounts(_), do: {:error, %{clause: "config_socket_mounts_invalid", detail: nil}}
 
+  # every mutation limit is an integer within 1..bound; anything else is refused with one closed clause
+  defp mutation_limits(input) do
+    Enum.reduce_while(@mutation_limits, {:ok, []}, fn {key, default, bound}, {:ok, acc} ->
+      case Keyword.get(input, key, default) do
+        n when is_integer(n) and n >= 1 and n <= bound -> {:cont, {:ok, [{key, n} | acc]}}
+        _ -> {:halt, {:error, %{clause: "config_mutation_limits_invalid", detail: %{key: key}}}}
+      end
+    end)
+  end
+
   defp positive(input, key, default) do
     case Keyword.get(input, key, default) do
       n when is_integer(n) and n > 0 -> n
@@ -245,4 +294,7 @@ defmodule OrrisConsole.Config do
 
   defp seam(pid) when is_pid(pid), do: pid
   defp seam(_), do: nil
+
+  defp invoke_seam(fun) when is_function(fun, 3), do: fun
+  defp invoke_seam(_), do: nil
 end

@@ -1,5 +1,26 @@
 body { font-family: system-ui, sans-serif; margin: 0; color: #1c1b18; background: #fcfbf8; }
 .bar { display: flex; justify-content: space-between; align-items: center; padding: 0.5rem 1rem; border-bottom: 1px solid #e2ded6; }
 main { padding: 1rem; }
-table { border-collapse: collapse; } td { padding: 0.25rem 0.75rem; border-bottom: 1px solid #e2ded6; }
+table { border-collapse: collapse; } th, td { padding: 0.25rem 0.75rem; border-bottom: 1px solid #e2ded6; text-align: left; }
 .status { color: #5f5b53; } .notice { color: #9c3d22; } pre { background: #f5f3ee; padding: 0.75rem; overflow-x: auto; }
+
+.back-link { display: inline-block; margin-bottom: .6rem; }
+.detail { max-width: 72rem; margin: 0 auto; }
+.detail h1 { overflow-wrap: anywhere; }
+.run-overview, .demo-guide { padding: 1.2rem 1.4rem; margin: 1.2rem 0; border: 1px solid #d9d5ca; border-radius: .5rem; background: #fff; }
+.run-overview { border-left: 4px solid #41634c; }
+.demo-guide { background: #f3f5ee; }
+.eyebrow { color: #50634a; font-size: .85rem; font-weight: 650; margin: 0 0 .5rem; }
+.run-overview h2, .demo-guide h2 { margin-top: 0; }
+.detail p { max-width: 80ch; line-height: 1.55; }
+.checkpoint-nav { list-style: none; padding-left: 0; line-height: 1.8; }
+.run-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 1rem; }
+.run-facts > div { background: #fff; border: 1px solid #e2ded6; padding: 1rem; border-radius: .35rem; }
+.run-facts dt, .context-key dt { font-weight: 650; margin-bottom: .4rem; }
+.run-facts dd { margin: 0 0 .5rem; overflow-wrap: anywhere; }
+.fact-help, .context-key dd { color: #5f5b53; line-height: 1.5; font-size: .95rem; }
+.projection-guide { margin-top: 2rem; }
+.context-key { display: grid; grid-template-columns: minmax(8rem, 11rem) 1fr; gap: .6rem 1rem; max-width: 80ch; }
+.context-key dd { margin: 0; }
+details { margin: 1rem 0; } summary { cursor: pointer; font-weight: 600; padding: .5rem 0; }
+@media (max-width: 560px) { .context-key { display: block; } .context-key dd { margin-bottom: .8rem; } .run-overview, .demo-guide { padding: 1rem; } }

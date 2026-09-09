@@ -2,7 +2,8 @@ defmodule OrrisConsole.Application do
   @moduledoc """
   Fail-closed startup (C1-01): the trusted configuration is loaded and installed, the endpoint's runtime settings
   (loopback bind, port, fresh signing secret, server flag) are set, then the supervision tree starts in this order:
-  SessionStore (loads the credential; no implicit generation), QueryRegistry, QueryControllers, QueryWorkers, Endpoint.
+  Mutations (MutationRegistry → MutationWorkers → SessionStore under rest_for_one; the Store loads the credential,
+  no implicit generation), QueryRegistry, QueryControllers, QueryWorkers, Endpoint.
   """
   use Application
   alias OrrisConsole.{Config, Redaction}
@@ -15,7 +16,7 @@ defmodule OrrisConsole.Application do
       configure_endpoint(config)
 
       children = [
-        {OrrisConsole.SessionStore, config},
+        {OrrisConsole.Mutations, config},
         Supervisor.child_spec({Registry, keys: :unique, name: OrrisConsole.QueryRegistry},
           id: OrrisConsole.QueryRegistry
         ),

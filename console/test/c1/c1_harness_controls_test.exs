@@ -299,7 +299,7 @@ defmodule C1.HarnessControlsTest do
     assert {:failed, :forged_job} = Oracles.outcome(fn -> Oracles.delivery(&Doubles.Delivery.ignores_identity/2) end)
   end
 
-  test "H-14 the closed configuration file is plain JSON data without secrets or serialized terms" do
+  test "H-14 (U1 amendment) the closed configuration file is plain JSON data without secrets, serialized terms or seams; the seven mutation limits travel in limits when configured" do
     config = Harness.config(roots: %{"alpha" => "/tmp/x"})
     path = Harness.config_file!(config)
     data = path |> File.read!() |> Jason.decode!()
@@ -309,5 +309,35 @@ defmodule C1.HarnessControlsTest do
              Map.has_key?(data, "query_opts")
 
     refute File.read!(path) =~ "credential\":\"" && File.read!(path) =~ Base.encode16(<<0::256>>)
+    refute Map.has_key?(data["limits"], "mutation_capacity"), "a plain C1 configuration wrote U1 limits"
+    # with the U1 keys configured (C1.Mutations.config/1) the seven limits are written and the seams never are
+    with_mutations =
+      C1.Mutations.config(
+        roots: %{"alpha" => "/tmp/x"},
+        mutation_witness: self(),
+        operation_gate: self(),
+        mutation_invoke: fn _, _, _ -> :ok end
+      )
+
+    data = with_mutations |> Harness.config_file!() |> File.read!() |> Jason.decode!()
+
+    assert Map.take(
+             data["limits"],
+             ~w(mutation_capacity intent_ttl_ms mutation_wait_ms mutation_retention_ms mutation_shutdown_ms mutation_start_ms mutation_read_ms)
+           ) ==
+             %{
+               "mutation_capacity" => 4,
+               "intent_ttl_ms" => 60_000,
+               "mutation_wait_ms" => 5_000,
+               "mutation_retention_ms" => 300_000,
+               "mutation_shutdown_ms" => 60_000,
+               "mutation_start_ms" => 1_000,
+               "mutation_read_ms" => 1_000
+             }
+
+    text = Jason.encode!(data)
+
+    for seam <- ~w(mutation_opts mutation_witness operation_gate operation_finish_gate starter_gate mutation_invoke),
+        do: refute(text =~ seam, "seam #{seam} in the file")
   end
 end

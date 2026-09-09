@@ -1,7 +1,7 @@
 defmodule OrrisConsole.RunIndexLive do
   @moduledoc "The run index of one allowed root: real listing through ReadModel, stale/unavailable states, no controls but logout."
   use Phoenix.LiveView
-  alias OrrisConsole.{Config, ReadModel, Reader}
+  alias OrrisConsole.{Config, ReadModel, Reader, RunExplanation}
 
   @impl true
   def mount(_params, _session, socket) do
@@ -57,7 +57,10 @@ defmodule OrrisConsole.RunIndexLive do
 
   @impl true
   def render(assigns) do
-    assigns = assign(assigns, listing: Reader.value(assigns.state))
+    listing = Reader.value(assigns.state)
+    demo? = listing != nil and RunExplanation.demo_runs?(listing.runs)
+    listing = if listing, do: %{listing | runs: RunExplanation.ordered(listing.runs)}
+    assigns = assign(assigns, listing: listing, demo?: demo?)
 
     ~H"""
     <main data-c1-read={if @listing, do: "complete", else: "pending"} class="index">
@@ -68,14 +71,31 @@ defmodule OrrisConsole.RunIndexLive do
         <span :if={@state.last_success_ms}> last successful read: {@state.last_success_ms}</span>
       </p>
       <p :if={@listing == nil and not @state.delayed?} class="status">loading</p>
-      <table :if={@listing}>
-        <tr :for={run <- @listing.runs}>
-          <td><a href={"/runs/#{@root_id}/#{run.run_ref}"}>{run.run_ref}</a></td>
-          <td>{run.run_id}</td>
-          <td>{run.status}</td>
-          <td>{run.last_seq}</td>
-          <td>{if run.error, do: "unavailable", else: ""}</td>
-        </tr>
+      <p :if={@listing} id="run-table-help">
+        <span :if={@demo?}>Supplied demo checkpoints, ordered by journal position: prepare work → observe output → check acceptance. Each row is a saved checkpoint of the same example run.</span>
+        <span :if={not @demo?}>Needs attention first, finished runs last; alphabetical by directory within each group.</span>
+        Last event sequence identifies the latest verified journal event.
+        Recorded status comes from the journal; it does not establish whether an agent is currently running.
+      </p>
+      <table :if={@listing} aria-describedby="run-table-help">
+        <thead>
+          <tr>
+            <th scope="col">Run directory</th>
+            <th scope="col">Run ID</th>
+            <th scope="col">Recorded status</th>
+            <th scope="col">Last event sequence</th>
+            <th scope="col">Read status</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr :for={run <- @listing.runs}>
+            <td><a href={"/runs/#{@root_id}/#{run.run_ref}"}>{run.run_ref}</a></td>
+            <td>{run.run_id}</td>
+            <td>{run.status}</td>
+            <td>{run.last_seq}</td>
+            <td>{if run.error, do: "unavailable", else: ""}</td>
+          </tr>
+        </tbody>
       </table>
       <p :if={@listing && @listing.skipped > 0} class="status">{@listing.skipped} entries outside the root were skipped</p>
       <ul :if={length(@console_session.root_ids) > 1} class="roots">

@@ -1,0 +1,336 @@
+#+title: Session-bound console mutations contract (U1: cancel an unowned persisted run)
+#+date: 2026-09-09
+#+status: CONTRACT + RED (TEST/DOC only) on public a59d945; authority = logs/console-mutations-map/claude/MAP.org rev8 GO (sha256 d48ace07b90149a9f73224e468d5103fc5355ba0f0c7991efb4d59cb93b1fcf2) with REVIEW-rev8-GO.org (sha256 d0a38b70…) folded; no product implementation in this unit
+
+* Authority and entry condition
+NS-38 and host-only MC-3 are RATIFIED: a separate LiveView console with authenticated,
+policy-controlled Commands; the portable core stays independent. NS-43 makes
+Commands.invoke the sole lifecycle entry. The console identity ruling binds the
+authenticated session as the actor: no reachable surface accepts an actor class, id or
+scope from a caller. The C1 contract (console-readonly.org) forbade every mutation route
+and inert control and named policy-bound mounted Commands as the next unit; this
+contract is that unit's first slice. The mutations MAP rev8 GO is the design authority;
+this document pins its protocol as executable obligations. Holds unchanged: installed
+daemon/runtime, real credentials, harness auth/model/permission/binary, Ash, destructive
+cleanup; publication follows the standing push-ready directive after preflight.
+
+U1 delivers exactly ONE verb: cancel an UNOWNED PERSISTED run (a directory under an
+allowed root with no live Writer) from the run detail page. It is not control of a
+running CLI or agent run; start/resume (U2) need a core seam and the pane runtime.
+
+* Useful delivered behavior (after GREEN)
+An authenticated operator opens a non-terminal run, presses "Cancel run", confirms on
+a no-JS confirmation page, and the console cancels the run through the public core seam
+as the session-bound console actor. The detail page then reports one closed outcome
+sentence derived from a separate journal read ("Run is cancelled (verified journal at
+seq N)"). Refusals before any write, uncertain outcomes and unavailable reads are
+reported as such; the console never claims to have appended anything itself.
+
+* Measured facts this contract rests on (MAP §2, verbatim consequences)
+- Prepare.invoke answers the FULL committed history; the events list identifies neither
+  "this invocation appended" nor "no-op". The console never attributes appends to itself.
+- Trusted.options/2 drops :cancel_reason; the journaled reason is always
+  "operator_cancel". Origin is distinguished only by run_cancel_requested.data.requested_by
+  (class "console", id = config.operator.id).
+- Lease releases add rows between run_cancel_requested and run_cancelled.
+- Foreground Prepare.invoke runs register with neither Journal.Ownership nor Host.Monitor;
+  a second live Writer in the same BEAM is refused by the Writer itself
+  (second_live_writer, pre-write); another OS process holding the run's lock is refused
+  through the RunLock clause "run_locked" (measured in RED, M-10b).
+- Query has no wall bound; the post-write read runs under mutation_read_ms inside the
+  operation's lifetime.
+
+* Module map (console/lib/orris_console; GREEN scope, nothing else)
+| Module | Responsibility and pinned interface |
+| Mutations | Supervisor, rest_for_one, default intensity; children in order MutationRegistry (start wrapper), MutationWorkers, SessionStore; a one_for_one child of OrrisConsole.Supervisor placed FIRST |
+| MutationRegistry | Start wrapper: waits ≤ 2 000 ms for a stale unique partition of the previous generation, then Registry.start_link(keys: :unique, name: OrrisConsole.MutationRegistry); child type :supervisor |
+| MutationWorkers | DynamicSupervisor, max_children = mutation_capacity, child spec shutdown :infinity |
+| MutationOperation | GenServer, restart :temporary, shutdown mutation_shutdown_ms, traps exits; one per accepted operation |
+| SessionStore (extended) | THE authority: sessions, intents, acceptance, reservations, operation records, retained outcomes, waiters; every decision inside its serialized callbacks |
+| MutationController | POST intent and POST confirm; CSRF by form; awaits ≤ mutation_wait_ms; renders the confirmation page and redirects to the detail page |
+| Router (amended) | exactly 7 routes: the 5 read-only routes plus POST /runs/:root_id/:run_ref/cancel and POST /runs/:root_id/:run_ref/cancel/confirm under :browser + :authenticated |
+| RunDetailLive (amended) | the "Cancel run" form on an allowed NON-TERMINAL run only; the session's retained outcome sentence on every refresh |
+| Config (amended) | operator.id validated against the Commands actor grammar; seven closed limit keys; server-only seams in the in-VM keyword form only |
+
+No new dependency, no core change (core lib/lock/bin untouched: stage 11 plus the
+committed-path comparison against a59d945), no Ash, no executor other than the core's
+foreground Run.Executor chosen inside Prepare.
+
+* Configuration (M-16; amendments C1-00e/00f, H-14)
+- operator.id must match ~r/^[A-Za-z0-9_.-]{1,64}$/ (the Commands actor grammar);
+  otherwise config_operator_invalid at load (fail closed at startup).
+- Closed limit keys with defaults and bounds; a value outside its bound is refused with
+  clause config_mutation_limits_invalid (never silently defaulted):
+  | key | default | bound |
+  | mutation_capacity | 4 | 1..64 |
+  | intent_ttl_ms | 60 000 | 1..600 000 |
+  | mutation_wait_ms | 5 000 | 1..60 000 |
+  | mutation_retention_ms | 300 000 | 1..3 600 000 |
+  | mutation_shutdown_ms | 60 000 | 1..300 000 |
+  | mutation_start_ms | 1 000 | 1..60 000 |
+  | mutation_read_ms | 1 000 | 1..60 000 |
+- The closed JSON file accepts exactly these seven names inside "limits" in addition to
+  the C1 names; unknown keys stay refused (config_file_invalid).
+- Server-only seams exist ONLY in the in-VM keyword form (never in the file; H-14 refutes
+  them), trusted test seams exactly like query_opts / read_gate:
+  | mutation_opts | keyword; keys taken fs, clock, id; appended to Prepare.cancel/invoke server options |
+  | mutation_witness | pid; receives every witness below |
+  | operation_gate | pid; MutationOperation.init sends {:mutation, :operation_init, op_ref, self()} to it AFTER registering and waits for :proceed |
+  | operation_finish_gate | pid; after reporting {:finished, ...} the operation sends {:mutation, :operation_finish, op_ref, self()} and waits RESPONSIVELY (inside its GenServer loop, still handling messages) for :proceed before stopping |
+  | starter_gate | pid; the starter sends {:mutation, :starter_ready, op_ref, self()} and waits for :proceed BEFORE submitting |
+  | mutation_invoke | nil or a 3-arity fun (actor, run_ref, server_opts) run inside the invoker instead of the real seam (MAPPING rows only) |
+  Witnesses (all {:mutation, kind, op_ref, payload} or {:mutation, kind, op_ref} to
+  mutation_witness): :starter pid; :operation_init pid (also to the gate); :owned pid;
+  :granted; :invoker pid; :finished; :counted_late pid; :barrier_helper {attempt, pid};
+  :released; :refused_at_grant; :failed_to_start reason. The product's post-write read
+  honours read_gate exactly as the read workers do.
+
+* Transport and routes (M-01, M-03, M-05; amendment C1-12c)
+- POST /runs/:root_id/:run_ref/cancel = INTENT. Pipeline :browser (CSRF by form) +
+  :authenticated (RequireSession :observe, ScopeGuard). Body: _csrf_token only. Answer:
+  200 confirmation page whose only forms are /logout and .../cancel/confirm; the confirm
+  form carries _csrf_token and the hidden field "intent" (the opaque intent token).
+  Refusals: 302 /login (no session), 404 (scope), 409 "operation in progress" text page
+  (pending intent or non-terminal operation), 503 "not available" text page (fenced).
+- POST /runs/:root_id/:run_ref/cancel/confirm = CONFIRM. Same pipelines. Body:
+  _csrf_token + intent. The controller calls SessionStore.accept/5 (authorization),
+  then SessionStore.await/3 ≤ mutation_wait_ms, then 302 to /runs/:root_id/:run_ref.
+  Any request field named class, id, actor, reason, root, path, run_dir, executor or
+  operator is ignored: the actor and root come from config, never from the request.
+- Detail page (RunDetailLive) of an allowed run whose observed status is non-terminal:
+  forms exactly ["/logout", "/runs/<root_id>/<run_ref>/cancel"], buttons exactly
+  ["Log out", "Cancel run"]. Terminal (cancelled/completed/failed/budget_exhausted) or no
+  data: forms ["/logout"], buttons ["Log out"]. The index page never carries a control.
+- Vocabulary rendered on the detail page for the session's retained outcome, one line
+  with class "outcome": exactly the message table below; plus "Cancel pending" while the
+  operation is non-terminal.
+
+* SessionStore mutation API (pinned arities and closed results)
+- issue_intent(store, id, root_id, run_ref) :: {:ok, intent} | {:error, :invalid |
+  :expired | :in_progress | :fenced | :unavailable}. intent = 32 random bytes url-safe
+  base64 (no padding); the store keeps only sha256(intent) bound to
+  {session digest, root_id, run_ref, expires_at = now + intent_ttl_ms}. At most one
+  pending intent per session (a new intent replaces nothing: :in_progress while one is
+  pending or a non-terminal operation exists). Never renews idle (:observe validation).
+- accept(store, id, intent, root_id, run_ref) :: {:accepted, op_ref} | {:error, :invalid
+  | :expired | :intent_invalid | :intent_expired | :scope | :in_progress | :busy |
+  :fenced | :unavailable}. AUTHORIZATION happens inside this ONE serialized callback in
+  this order: session valid for :action (the only idle renewal on this path) → intent
+  digest present, bound to this session, root_id and run_ref, and unexpired at the clock
+  seam (:intent_invalid / :intent_expired) → scope authoritative now (root_id ∈
+  session.root_ids ∧ ∈ config.roots, else :scope) → no non-terminal operation for this
+  session (:in_progress) → not fenced (:fenced) → reservation available (:busy, capacity
+  = mutation_capacity counted as OCCUPANCY below) → intent consumed → record :starting →
+  spawn+monitor the STARTER helper → reply {:accepted, op_ref}; a start budget
+  mutation_start_ms is armed. Simultaneous confirms of one intent: one acceptance, one
+  :intent_invalid.
+- await(store, op_ref, timeout_ms) :: {:finished, outcome} | {:unknown, outcome} |
+  {:failed_to_start, reason} | {:refused_at_grant, :session_revoked} | :pending. At most
+  one waiter per operation, monitored, dropped on caller DOWN; every terminal transition
+  wakes the waiter; a waiter that is not woken answers :pending at its timeout.
+- outcome(store, id) :: {:ok, %{op_ref, state, outcome, root_id, run_ref}} | :none.
+  Nondestructive; the session's ONE retained record (replaced by the next acceptance,
+  dropped at mutation_retention_ms after the terminal transition or at session end).
+  Unreadable without the session. Retention is PRESENTATION state, separate from
+  occupancy: its origin is the FIRST terminal transition of any terminal state (never
+  extended by later reports, wakes or DOWNs); at expiry outcome/2 answers :none even
+  while the operation's slot is still occupied; the record is collected only after its
+  last owned DOWN (a live reservation is never released by retention); replacement and
+  session end likewise un-present a record and collect it at its last owned DOWN.
+- mutation_status(store) :: %{fenced: boolean, occupied: non_neg_integer, operations:
+  %{op_ref => state}} (diagnostic; no ids, no paths).
+- States: :starting | :running | :finished | :unknown | :failed_to_start |
+  :refused_at_grant. Terminal = every state but :starting and :running.
+
+* Start ownership, grant and barrier protocol (M-04, M-08, M-09; pinned messages)
+The messages below are the seam the RED exercises; an implementation may add fields but
+not change these shapes, senders or recipients.
+1. STARTER (spawned by the store with Process.spawn/2 [:monitor]; witness
+   {:mutation, :starter, op_ref, pid}): calls DynamicSupervisor.start_child(MutationWorkers,
+   {MutationOperation, args}) exactly once and exits :normal. It reports nothing.
+2. MutationOperation.start_link/1 runs INSIDE the DynamicSupervisor process: after
+   GenServer.start_link returns it sends {:child_start_attempt, op_ref, result} to the
+   authority (result = {:ok, pid} | {:error, term}) and returns the result unchanged. The
+   operation registers {:operation, op_ref} in MutationRegistry in init (before any wait).
+3. On {:child_start_attempt, op_ref, {:ok, pid}} while :starting the authority installs
+   pid + monitor IN THE SAME CALLBACK, revalidates the session (present, not revoked, valid
+   for :action) and the scope, records :running and sends {:grant, op_ref} to the child.
+   Revalidation failure → :refused_at_grant (outcome session_revoked), no grant; the child
+   exits on its own grant timeout (mutation_start_ms) without invoking. A report after the
+   visible start budget → no grant; the child is COUNTED until its DOWN (witness
+   {:mutation, :counted_late, op_ref, pid}). {:error, _} → :failed_to_start.
+4. Visible start timeout (mutation_start_ms) answers the waiter :failed_to_start and NEVER
+   releases the reservation; ownership ends only with a disposition.
+5. BARRIER: on the starter's DOWN without an attempt report the authority spawns+monitors
+   ONE barrier helper per attempt (attempt = make_ref(); witness {:mutation,
+   :barrier_helper, op_ref, {attempt, pid}}); the helper performs a synchronous call to
+   MutationWorkers (DynamicSupervisor.count_children/1) and relays {:barrier_result,
+   op_ref, attempt, :answered} to the authority. When the answer arrives with no attempt
+   report recorded, the reservation is released (:failed_to_start, reason
+   :no_start_request; witness {:mutation, :released, op_ref}). A helper DOWN without its
+   result retains the reservation and schedules a bounded retry (≤ 5 attempts, 100 ms
+   apart) owned by the authority; at most one live helper per operation; a result or DOWN
+   whose attempt is not the current one is ignored by identity. The authority never blocks.
+   Ordering basis (binding wording, REVIEW-rev8-GO): "The supervisor sends the attempt
+   report to the authority before replying to the barrier helper, which relays a
+   correlated result. This is a same-node causal-enqueue assumption exercised by the local
+   probes; the two messages do not share a recipient, so Erlang's pairwise signal-order
+   guarantee alone does not prove their order. No cross-node or general multi-sender
+   ordering guarantee is claimed." The RED exercises the actual ordering at this seam with
+   the supervisor suspended (M-09a/b, M-09d/e).
+6. Operation body after {:grant, op_ref}: spawns the INVOKER with Process.spawn(fun,
+   [:link, :monitor]); the invoker runs mutation_invoke.(actor, run_ref, server_opts) or,
+   by default, `with {:ok, p} <- Prepare.cancel(run_ref, server_opts), do:
+   Prepare.invoke(actor, p, server_opts)` with actor = %{"class" => "console", "id" =>
+   config.operator.id} and server_opts = [root: <configured directory of root_id>,
+   operator: config.operator.id] ++ mutation_opts. The invoker sends {:invoked, op_ref,
+   result}; its DOWN without a result is :unknown. The operation then reads
+   Query.run_summary(run_ref, root: dir) in an OWNED task bounded by mutation_read_ms
+   (honouring the read_gate seam when configured), sends {:finished, op_ref, outcome} to
+   the authority and stops :normal. The operation traps exits: the invoker's own EXIT is
+   consumed (its DOWN decides); ANY OTHER exit signal received while the operation is
+   responsive (its parent's :shutdown, or a foreign signal) is an ABORT: it kills the
+   invoker (caller death for the core Owner) and stops with the received reason, so the
+   crash report carries that reason and the operation's state (redaction scrubs the run
+   directory). A signal received while the operation is blocked inside init stays queued
+   until init returns (standard gen_server semantics: the init-held orphan of M-09h).
+   Operation DOWN is never equated with core-subtree closure.
+7. OCCUPANCY: a reservation is occupied while ANY monitored identity of the operation is
+   alive: the starter (until an attempt report or barrier disposition), the child (granted
+   or not), or a late child; never the user-visible state. Slots free only on observed
+   DOWN; a stale DOWN is ignored; a late {:finished, _} for an unknown op_ref is dropped
+   and logged.
+8. FENCES: on (re)start the authority takes the census from MutationRegistry (never
+   which_children), monitors every live operation as :orphan and fences admission until
+   each is DOWN. Registry loss = drain-then-restart under rest_for_one (successor census
+   truthfully empty). Workers loss: the supervisor restarts MutationWorkers then SessionStore;
+   a granted responsive operation stops on its parent's EXIT and its invoker dies by the
+   link; an init-held operation survives as an orphan, is fenced and reopened on DOWN.
+9. Revocation order = the store's processing order: before :accept → refused at
+   authorization; between :accept and grant → :refused_at_grant, no invoke; after grant →
+   the operation completes, its outcome unreadable without the session.
+
+* Outcome classes and the ONE message table (M-12)
+outcome = %{phase, invoke, observed, message}.
+- phase :pre_admission_refused: ONLY a rejection whose provenance proves that no journal write
+  was attempted. The operation records the provenance of every rejection: {:cancel, clause}
+  when Prepare.cancel/2 rejected (no Writer exists yet: Scope resolution, journal read and
+  fold, resumed identity), or {:invoke, clause} when Prepare.invoke/3 rejected. Pre-write by
+  provenance: every {:cancel, _} clause (run_ref_invalid, runs_root_missing,
+  run_directory_missing, run_directory_invalid, run_ref_outside_root, journal_missing,
+  journal_empty, run_inputs_missing, run_inputs_invalid and the journal_* read/fold
+  rejections carried by Prepare.cancel). Pre-write by an EXACT allowlist for {:invoke, _}:
+  second_live_writer, run_locked, ownership_unavailable, lock_unavailable, lock_unreadable
+  (the Writer's open path, before any append), pane_claim_refused (before Commands.invoke),
+  invalid_command_actor, unknown_actor_class, command_actor_fields, command_actor_id,
+  command_verb_unsupported (Policy authorize precedes build and execute). NOTHING ELSE is
+  pre-write: in particular journal_append_failed and any unqualified journal_unavailable
+  from invoke are UNCERTAIN (measured, review R1: a failed lease-release append leaves
+  run_cancel_requested and workspace_lease_release_requested durable and answers
+  journal_append_failed). Message "Cancel refused before any write (<class>)" with class:
+  "not available" for the {:cancel, _} clauses; "busy" for second_live_writer, run_locked,
+  ownership_unavailable, lock_unavailable, lock_unreadable; "refused" for pane_claim_refused
+  and the Policy/verb clauses. run_locked is reported as itself, never as a generic busy
+  substitute. invoke = {:error, clause}, observed = nil, no read follows.
+- phase :invoked, invoke :ok ({:ok, %{close: :ok}}) → the table.
+- phase :invoked, invoke {:close_failed, clause} → the table + "; the journal close
+  reported an error (attention)".
+- phase :invoked, invoke {:error, clause} not in the allowlist above (journal_append_failed,
+  journal_unavailable, ownership_lost, run_executor_teardown_incomplete, run_executor_down,
+  run_server_down, command_superseded, any other clause) → "Cancel outcome uncertain
+  (<clause>): " + the table from the SEPARATE bounded read (which observes the durable rows,
+  e.g. in_flight at seq N+2 after the measured partial append).
+- phase :unknown (invoker DOWN without a result) → invoke :unknown, "Cancel outcome
+  uncertain (unknown): " + table.
+- observed = %{status, last_seq} from the bounded read, or %{unavailable: clause}
+  (read_timeout, or the closed ReadModel vocabulary) → "Current journal state unavailable
+  (<clause>)"; the outcome stays uncertain; never retried.
+| observed | message |
+| cancelled at seq N | "Run is cancelled (verified journal at seq N)" |
+| completed / failed / budget_exhausted at seq N | "Run already finished: <status> (verified journal at seq N)" |
+| non-terminal at seq N | "Run is <status> (verified journal at seq N); the cancel did not take effect" |
+| read unavailable | "Current journal state unavailable (<clause>)" |
+The console never says "this cancel appended" or "nothing changed"; rejection detail
+maps are never rendered (paths may appear inside detail).
+
+* Acceptance rows (RED attribution + real controls; console/test/c1/c1_m_*.exs)
+Evidence classes (MAP §4): MEASURED (real core through the fs seam), MODEL (console
+mechanism), MAPPING (stubbed invoke result at the mutation_invoke seam; no lifecycle
+claim), UNPROVEN (stated narrower guarantee).
+| Row | Oracle / witness | class | file |
+| M-01 routes | 7 routes exactly; index forms ["/logout"]; detail non-terminal forms ["/logout", ".../cancel"] buttons ["Log out", "Cancel run"]; terminal or no data: logout only | MODEL | c1_m_01_05_surface_test.exs |
+| M-02 actor binding | traced Prepare.invoke/3 receives exactly %{"class" => "console", "id" => config.operator.id} and Prepare.cancel/2 receives root: <server dir>; request fields class/id/actor/reason/root/path/run_dir/executor/operator change nothing (the mutant request is the control) | MEASURED | c1_m_01_05 |
+| M-03 CSRF/session | missing/wrong CSRF, no cookie, expired-for-action, revoked and foreign-session confirms never reach Prepare; the correct path calls Prepare.invoke exactly once | MODEL | c1_m_01_05 |
+| M-04 authorization/grant | simultaneous confirms of one intent → one acceptance + one :intent_invalid; TTL exact at the clock seam; binding to session + root + run_ref; scope at acceptance; revoke before accept → refused; between accept and grant → :refused_at_grant with no invoke; after grant → completes; fenced → :fenced without invoke | MODEL | c1_m_01_05 |
+| M-05 scope | root outside the session or config → refused before Prepare; Prepare.cancel receives root: <configured dir> | MODEL | c1_m_01_05 |
+| M-06 journal parity | console cancel vs the CLI's own path (Trusted.cancel + Trusted.invoke with actor class "operator") on byte-identical copies: equal type sequence incl. lease releases, reason "operator_cancel", Fold status/last_seq, line count; differences limited to requested_by class/id, command_id, the per-invocation identities event_id, ts and supervisor_instance and the chain hash prev_line_sha256 derived from them (named at GREEN), and path-bearing fields; run_cancelled unstamped; terminal fixtures (cancelled, completed) observed as such with bytes unchanged | MEASURED | c1_m_06_07_parity_test.exs |
+| M-07 idempotency | a replayed confirm (same intent) → :intent_invalid and no second invoke; a fresh second cancel on the cancelled copy → observed cancelled at the same seq, bytes unchanged | MEASURED | c1_m_06_07 |
+| M-08 occupancy | a) finished-but-alive occupies until DOWN (cap 1); b) expired start with the child held in init occupies until gone, no invoke; c) starter/late child counted; d) freed only on observed DOWN, stale DOWN ignored; capacity refusal = :busy without invoke | MODEL | c1_m_08_09_lifetime_test.exs |
+| M-09 lifetime | a) A1 adoption ordering (authority suspended, starter killed, held child, queued accept) → busy, adopted, granted, cancelled; b) A2 queued start (supervisor suspended) → reservation kept, late child counted, no grant/invoke, freed on DOWN, bytes unchanged; c) A3 starter killed before submit → released by the barrier, nothing invoked; d) B1 barrier helper killed → retry owned by the authority, ≤ 1 live helper, released once answered; e) B2 forged stale barrier result ignored, reservation retained; f) waiter death → completes and is retained; g) authority death before grant → no invoke; h) workers loss: granted operation stops on the parent EXIT and its invoker dies by the link; init-held operation = orphan seen by the successor census, fenced, reopened on DOWN; i) Registry loss → drain-then-restart, successor empty and open; j) every terminal transition wakes the waiter | MEASURED on the current topology | c1_m_08_09 |
+| M-10 busy | a) live Writer in the same BEAM (gated fs seam) → second_live_writer pre-write, class busy; b) another OS process holding the run lock (disposable consumer BEAM) → EXACTLY run_locked (measured 9-10 ms), class busy, no read | MEASURED | c1_m_10_12_outcome_test.exs |
+| M-11 abort | console stop with a Writer blocked in append / close: operation dead at stop return; the captured subtree drains within the Owner budget (measured at GREEN: the linked invoker takes the Owner with it and the subtree is gone at stop return, nothing appended); close leg (measured at GREEN, precision over the spike): the public core closes the journal ONCE after every row is durable, so the gated close already holds the complete cancelled journal (15 lines, one acceptance) and recovery is a no-op with bytes unchanged; the "fresh cancel = a second distinct acceptance id" obligation is exercised on the product path through a REAL partial command (journal_append_failed after two durable rows → ungated fresh cancel → 2 ids, observed cancelled); the open leg is retained evidence (>65 s), asserted as data, not re-run | MEASURED | c1_m_10_12 |
+| M-12 outcome classes | pre-write refusals via Scope and the live Writer; observed states via fixtures; a REAL partial append (PartialAppendFs: journal_append_failed after two durable rows → uncertain + separate read, never pre-write); close failure and post-append clauses via mutation_invoke stubs (MAPPING, attributed); read unavailable via read_gate + mutation_read_ms; every message string of the table | MAPPING for close/post-append; MEASURED otherwise | c1_m_10_12 |
+| M-13 redaction | detail maps, run directory path, intent token, op_ref and session material absent from HTML, flash and captured logs on the mutation path; canaries of C1-13 plus the run_dir canary | MODEL | c1_m_13_17_preservation_test.exs |
+| M-14 preservation | amendments by name: C1-12c, C1-01a, C1-01b (structural: the SessionStore startup tuple nests under Mutations), C1-00e/00f + H-14, C1-13a/b; every other C1/G/H row rerun; the RED delivers a hash manifest of console/test/** against a59d945 naming exactly the changed files | inventory | evidence manifest |
+| M-15 gate | console/bin/verify stage list unchanged; stage 11 passes; bin/c1-release-smoke unchanged; bin/c1-gate-controls 24 checks | MEASURED | c1_m_13_17 |
+| M-16 config | operator id outside the grammar refuses startup; the seven keys bounded; unknown keys refused; seams absent from the file schema | MODEL | c1_m_13_17 |
+| M-17 cleanup oracle | every owned pid (operations, starters, helpers, invokers, read tasks, captured core subtrees) tracked explicitly with monitored DOWN; a differential control (H-16) must report a deliberately held operation | MODEL | c1_m_13_17 |
+| M-18 lifecycle regressions (review G1-G3 on 16ad3df) | a) retention expires while the finished operation is alive (slot occupied), stays expired, record collected after DOWN; b) failed_to_start / unknown / refused_at_grant expire from their first terminal transition and are collected; c) replacement and session end while alive never leave an unreachable record and never release a live reservation; d) a dead waiter is consumed by its exact DOWN, a stale DOWN never disturbs the replacement waiter; e) a delayed grant leaves the idle deadline set at acceptance unchanged, idle expiry before the grant is refused_at_grant | MODEL | c1_m_18_lifecycle_test.exs |
+Every RED row fails on ONE attributed cause printed by the row: "RED (missing production
+implementation): <modules>" or "RED (missing production API): <Module.fun/arity>" or an
+assertion naming the amended obligation ("RED (U1 amendment <row>)" / "RED (U1 M-nn)").
+A compilation error, a broken harness setup, a cleanup leak or a failing control is NOT
+feature RED. No product implementation lives under test/support: the support module
+reaches the console only dynamically and models nothing of the product's own mechanism.
+Harness controls added by this unit hold at every head: H-16 the owned-pid tracker's REAL
+ExUnit lifecycle (the tracker is unlinked and torn down in on_exit after the test process
+exited, on passing and failing bodies; a held operation and a deliberate leak are recorded
+as leaks BEFORE the emergency kill; suspended processes are resumed first; registered LAST
+so it runs before the application stop); H-17 the CLI's own cancel on real fixtures (type
+sequence, lease releases, reason, observed status, completed run unchanged); H-18 the two
+lock clauses measured through the public seam (another OS process holding the run lock →
+run_locked; a gated live Writer in this BEAM → second_live_writer in under a second); H-19
+the REAL partial append (journal_append_failed after two durable rows; a fresh cancel is a
+second acceptance); H-20 the Prepare trace window covers a late asynchronous call inside
+the closure and none after it. Lifecycle rows create sessions and intents BEFORE suspending
+the authority, retry a refused accept on the SAME retained intent, observe the queued
+request in a suspended supervisor's mailbox before killing its sender, capture core
+subtrees while alive and join them by their original monitors, and run the synchronous
+confirm in an owned task when a gate must be released during the request.
+
+* Named amendments to existing rows (M-14)
+- C1-12c: routes exactly the 7 above; the index carries only /logout; the detail of an
+  allowed non-terminal run carries /logout and .../cancel with buttons "Log out",
+  "Cancel run".
+- C1-01a: OrrisConsole.Supervisor children in order [Mutations, QueryRegistry,
+  QueryControllers, QueryWorkers, Endpoint]; Mutations is rest_for_one with children
+  [MutationRegistry, MutationWorkers, SessionStore]; MutationWorkers max_children =
+  mutation_capacity and shutdown :infinity.
+- C1-01b (STRUCTURAL): a missing credential still fails startup closed with no implicit
+  generation; the failure tuple is now nested: {:failed_to_start_child,
+  OrrisConsole.Mutations, {:shutdown, {:failed_to_start_child, OrrisConsole.SessionStore,
+  {:credential, %{clause: "credential_missing"}}}}}. Refusal and "no credential
+  generated" are preserved verbatim; only the nesting changes.
+- C1-00e/00f: operator-id grammar; the seven closed keys present with their defaults; no
+  browser-settable or seam field in the loaded struct's public shape beyond the trusted
+  seams; H-14: the JSON file schema names the seven keys and never a seam.
+- C1-13a/b: the canary set gains the run directory path and the intent token; the
+  captured window includes the intent + confirm path and a killed operation.
+
+* Sequence and owner split
+1. This contract + RED (TEST/DOC only) on a fresh lane from PUBLIC a59d945; Claude
+   producer, Codex reviewer. Focused evidence: format, dev/test WAE compile, harness and
+   preservation controls, the exact RED row set, the test-file hash manifest and the
+   committed-core comparison against a59d945.
+2. Codex review → GREEN bounded to console/lib (session_store.ex extended;
+   mutation_registry.ex, mutation_workers.ex, mutation_operation.ex, mutations.ex,
+   mutation_controller.ex; router.ex; run_detail_live.ex; config.ex) → focused evidence →
+   ONE Codex canonical console gate → HTML checkpoint.
+3. Named follow-ups remain engineering work: console CI on GitHub Actions; the core
+   blocked-open lifecycle bound.
+
+* Completion boundary
+U1 completion means: an authenticated operator can cancel an unowned persisted run from
+the detail page with the measured authorization, occupancy, abort, parity and redaction
+behavior above. It does not deliver start/resume, mounted runs, attention/gate/review
+actions, a console-specific cancel reason, or control of a live run.
