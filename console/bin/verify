@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# The console's canonical pipeline (docs/contracts/console-readonly.org): numbered stages, fresh invocation-specific
+# evidence under $OUT (default console/_build/verify/<utc-stamp>-<pid>; a nonempty OUT is refused), fail-closed.
+# Run from console/ INSIDE the root's pinned shell with the console-owned paths:  bin/env bin/verify
+# (C1_BROWSER must name the pinned chrome-headless-shell).
+set -u
+here=$(cd "$(dirname "$0")/.." && pwd); root=$(cd "$here/.." && pwd); cd "$here"
+tag=elixir-1.20.4-otp-29.0.5
+export MIX_BUILD_ROOT="$here/_build/$tag" MIX_DEPS_PATH="$here/deps/$tag"; unset MIX_BUILD_PATH
+OUT=${OUT:-"$here/_build/verify/$(date -u +%Y%m%dT%H%M%SZ)-$$"}
+if [ -e "$OUT" ] && [ -n "$(ls -A "$OUT" 2>/dev/null)" ]; then echo "verify: refusing nonempty evidence directory $OUT" >&2; exit 3; fi
+mkdir -p "$OUT"; : > "$OUT/SUMMARY.txt"; touch "$OUT/.started"
+export here root tag OUT
+fail=0
+stage() { # stage <name> <command...>
+  local name=$1; shift
+  "$@" > "$OUT/$name.log" 2>&1; local rc=$?
+  echo "$rc" > "$OUT/$name.exit"; echo "$name: exit $rc" | tee -a "$OUT/SUMMARY.txt"
+  [ "$rc" = 0 ] || fail=1
+  return 0
+}
+record() { # record <name> <rc> <verdict-text>
+  echo "$2" > "$OUT/$1.exit"; echo "$1: exit $2 $3" | tee -a "$OUT/SUMMARY.txt"; [ "$2" = 0 ] || fail=1
+}
+# 00 exact toolchain (the root's own check: Elixir version and the OTP_VERSION file) and the browser prerequisite
+stage 00-toolchain sh -c '
+  required_elixir=1.20.4; required_otp=29.0.5
+  actual_elixir=$(elixir -e "IO.write(System.version())")
+  actual_otp=$(elixir -e "release = :erlang.system_info(:otp_release) |> List.to_string(); Path.join([List.to_string(:code.root_dir()), \"releases\", release, \"OTP_VERSION\"]) |> File.read!() |> String.trim() |> IO.write()")
+  echo "Elixir $actual_elixir / OTP $actual_otp"
+  [ "$actual_elixir" = "$required_elixir" ] && [ "$actual_otp" = "$required_otp" ]'
+stage 00-browser sh -c '[ -n "${C1_BROWSER:-}" ] && [ -x "$C1_BROWSER" ]'
+# 01 locked dependencies and advisories
+stage 01-deps-locked mix deps.get --check-locked
+stage 02-hex-audit mix hex.audit
+# 03 statics
+stage 03-format mix format --check-formatted
+stage 04-compile-wae mix compile --warnings-as-errors
+stage 05-test-compile-wae env MIX_ENV=test mix compile --warnings-as-errors
+# 06 Boundary controls (C1-01c): the runner must succeed, every exit file must be fresh and numeric, the negative
+#    control must carry the forbidden-reference diagnostic, and the exits must be exactly 1/0/0
+pk="$OUT/06-packaging"; mkdir -p "$pk"
+bin/c1-packaging-controls "$pk" > "$OUT/06-packaging.log" 2>&1; pk_rc=$?
+echo "$pk_rc" > "$OUT/06-packaging-runner.exit"
+pk_ok=1
+[ "$pk_rc" = 0 ] || pk_ok=0
+for f in negative-writer positive-query clean; do
+  if [ ! -f "$pk/$f.exit" ] || [ ! "$pk/$f.exit" -nt "$OUT/.started" ] || ! grep -qE "^[0-9]+$" "$pk/$f.exit"; then pk_ok=0; fi
+done
+if [ "$pk_ok" = 1 ]; then
+  [ "$(cat "$pk/negative-writer.exit")" = 1 ] && [ "$(cat "$pk/positive-query.exit")" = 0 ] && [ "$(cat "$pk/clean.exit")" = 0 ] || pk_ok=0
+  grep -q "forbidden reference to AiOrchestrator.Journal.Writer" "$pk/negative-writer.log" 2>/dev/null || pk_ok=0
+fi
+if [ "$pk_ok" = 1 ]; then record 06-packaging 0 "(runner $pk_rc; fresh exits 1/0/0; forbidden-reference diagnostic present)"; else record 06-packaging 1 "(runner $pk_rc; stale/missing/unexpected packaging evidence)"; fi
+# 07 pinned assets with manifest, production release, disposable release smoke (bootstrap + closed config + /login)
+stage 07-assets bin/c1-assets
+stage 07-assets-manifest sh -c 'cd priv/static/assets && shasum -a 256 -c MANIFEST.sha256'
+stage 08-release bin/c1-release
+stage 09-release-smoke env SMOKE_LOG_DIR="$OUT/09-release-smoke.d" bin/c1-release-smoke
+# 10 full acceptance (all rows, browser included) under --warnings-as-errors
+stage 10-rows-wae mix test --warnings-as-errors
+# 11 core preservation: root source/lock unchanged versus the committed head; 18-application production escript built
+#    into a disposable build path with any preexisting root artifact preserved byte for byte (mode included)
+stage 11-core-unchanged sh -c 'cd "$root" && git diff --quiet HEAD -- mix.exs mix.lock flake.nix flake.lock lib test bin'
+stage 12-core-escript-18 bin/c1-core-escript-check
+echo "verify: $([ $fail = 0 ] && echo PASS || echo FAIL)" | tee -a "$OUT/SUMMARY.txt"
+echo "evidence: $OUT"
+exit $fail

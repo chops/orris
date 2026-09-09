@@ -1,0 +1,38 @@
+#+title: OrrisConsole
+The authenticated READ-ONLY console for Orris runs (docs/contracts/console-readonly.org; module API, rows and the
+GREEN mapping in docs/contracts/console-readonly-red-map.org). A separate Mix project inside the repository with a
+path dependency on the core, its own lock, deps and build paths (OPEN-02). It never invokes Prepare or Commands.
+
+* Development entrypoint
+Inside console/: =direnv allow= (.envrc uses the ROOT flake's pinned toolchain and console-owned build/deps paths)
+or wrap any command with =bin/env=, for example:
+  bin/env mix deps.get
+  bin/env mix test                     # rows start the console themselves under disposable configurations
+  C1_BROWSER=<pinned chrome-headless-shell> bin/env mix test   # the browser rows need the pinned browser
+  bin/env bin/verify                   # the canonical console pipeline; fresh evidence under _build/verify/<stamp>-<pid> (a nonempty OUT is refused)
+
+* Operator setup (never automatic)
+1. Bootstrap the console-local credential WITHOUT starting the application:
+     bin/env bin/c1-setup /path/to/private/console/credential
+   The directory is created 0700 and the file 0600 (32 random bytes). To log in, enter the file's bytes as hex
+   (for example =xxd -p -c 64 /path/to/private/console/credential=). Rotation = stop, delete, setup, start.
+2. Write the closed configuration file (plain JSON data; no secret in it):
+     {"bind":"127.0.0.1","port":4100,"host":"127.0.0.1","scheme":"http","socket_mounts":["/live"],
+      "credential_path":"/path/to/private/console/credential",
+      "operator":{"id":"operator","root_ids":["alpha"]},
+      "roots":{"alpha":"/absolute/path/to/runs"},
+      "limits":{"idle_ms":1800000,"absolute_ms":43200000}}
+   =host= is the address or name the browser will use; the listener binds the loopback address only.
+3. Build and start the production release (configuration comes ONLY from the file):
+     bin/env bin/c1-release
+     ORRIS_CONSOLE_CONFIG_FILE=/path/to/console.json _build/prod/rel/orris_console/bin/orris_console start
+   Open http://127.0.0.1:4100/ and log in. Stop with =... orris_console stop=.
+Loopback HTTP only: the session cookie cannot be Secure; nothing is exposed beyond the loopback address.
+
+* Scripts
+- bin/c1-assets: copies the pinned framework ESM files from the locked deps into priv/static/assets (+ sha256 manifest)
+- bin/c1-release: production release under _build/prod (alias of the toolchain-tagged build root)
+- bin/c1-release-smoke: disposable bootstrap + config + release start/stop with a real HTTP check; every external operation runs as an owned process group under one monotonic deadline (SMOKE_BUDGET, default 60 s, with a bounded cleanup reserve); the release is started and stopped with an invocation-owned node name and a fresh cookie, the temp tree is removed only after every owned process is gone, logs kept under _build/verify-smoke
+- bin/c1-core-escript-check: the 18-application production escript of the ROOT built into a disposable path; a preexisting root artifact is preserved byte for byte
+- bin/c1-gate-controls: bounded failure controls for the gate scripts (crashed packaging runner, nonempty evidence refused, preserved artifact, owned release escalation, smoke success) against scratch copies with mocked tools
+- bin/c1-packaging-controls: C1-01c Boundary controls (negative/positive/clean exits)

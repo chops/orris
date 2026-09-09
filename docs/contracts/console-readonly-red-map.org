@@ -1,0 +1,307 @@
+#+title: C1 authenticated read-only console: RED implementation map (private draft)
+#+date: 2026-09-09
+#+status: GREEN candidate (RED rev5 rows + implementation): reviews R1-R7, F1-F6, rev3 R1-R5 and rev4 F1/F2 (logs/console-c1-red/codex/DRAFT-REVIEW.org, rev2/REVIEW.org) folded; contract = docs/contracts/console-readonly.org (verbatim, sha256 803eb2ec...); project = console/
+* What this draft is
+The adopted contract (console-readonly.org, copied here unchanged with its sha256) plus the executable RED: an
+isolated console Mix project (console/, cut from the B3 FINAL GO head 646f11f) whose tests name the acceptance rows C1-01..C1-14 against the module API pinned below. Every
+RED row fails on ONE cause, printed by the row itself: "RED (missing production implementation): <modules>". The harness
+controls H-1..H-7 and the Boundary packaging controls (C1-01c) must hold at every head; they hold now (r6-*.exit).
+Nothing was installed, published, or run against real credentials; the only listeners were disposable loopback
+listeners on ephemeral ports (H-3, H-4) that the harness stops and proves closed.
+* Measured state (r6-<stage>.exit; see MANIFEST-c1-red.txt)
+| stage | result |
+| deps (B2 lock, pinned exact versions; console deps/build under its own toolchain-tagged paths) | deps-check exit 0 |
+| mix format --check-formatted | exit 0 |
+| lib + test/support compile --warnings-as-errors (dev and test) | exit 0 / exit 0 |
+| harness controls H-1..H-7 | 7 passed, exit 0 |
+| all rows (test/c1) | 7/56 passed, exit 2: the 49 failures are exactly the 49 RED rows, each attributed "RED (missing production implementation)" |
+| C1-01c Boundary controls | forbidden Journal.Writer reference: compile WAE exit 1 with "forbidden reference to AiOrchestrator.Journal.Writer"; public Query reference: exit 0; clean: exit 0 |
+| frozen B3 worktree | untouched (git status clean; its _build never used: the scaffold builds under console/_build/elixir-1.20.4-otp-29.0.5) |
+Separation of causes: a harness or dependency failure shows as a failing H-row or a non-RED assertion; the r3/r4 runs
+retained in this directory show the two harness defects found and fixed before freeze (tracer self-blindness, LiveView
+test import) and the r5 run shows the build-path defect (MIX_BUILD_PATH passed empty instead of unset) that was fixed
+by the README/script correction; the r6 run is the frozen measurement.
+* Scaffold files (exact, to adopt under console/)
+- mix.exs (app :orris_console; deps ai_orchestrator path "..", phoenix 1.8.13, phoenix_live_view 1.2.11, phoenix_html
+  4.3.0, bandit 1.12.5, jason 1.4.5, boundary 0.10.4 runtime false; Boundary compiler; NO mod: yet, C1-01a pins it)
+- mix.lock (B2 f3-09 final console lock, verbatim), .formatter.exs, config/config.exs (json library, logger level),
+  README.org (run instructions: MIX_BUILD_ROOT/MIX_DEPS_PATH override, MIX_BUILD_PATH unset)
+- lib/orris_console.ex: `use Boundary, deps: [AiOrchestrator], exports: []` (the only production file at RED)
+- test/test_helper.exs; test/support/c1.ex (test boundary), c1_harness.ex, c1_cdp.ex, c1_clock.ex, c1_echo_plug.ex
+- test/c1/c1_harness_controls_test.exs (H-1..H-7) and the row files below; bin/c1-packaging-controls (C1-01c)
+GREEN adds: config/runtime.exs, lib/orris_console/{application,config,credential,session_store,session,ingress,
+endpoint,router,login_controller,auth_hook,query_job,query_workers,query_registry,query_worker,read_model,
+run_index_live,run_detail_live,error_view,redaction}.ex, assets/ + priv/static (pinned dependency ESM copy+hash),
+bin/verify, bin/c1-release, docs/contracts/console-readonly.org (this contract), rel/ for the release.
+* Pinned module API (arities and closed results; the rows assert exactly these)
+- OrrisConsole.Config.load(keyword) :: {:ok, config} | {:error, %{clause, detail}}. Trusted keys (test config in
+  C1.Harness.config/1): bind {127,0,0,1}; port; host (lowercase); scheme :http; socket_mounts ["/live"]; credential_path;
+  operator %{id, root_ids}; roots %{root_id => directory}; idle_ms (<= 1_800_000) ; absolute_ms (<= 43_200_000);
+  login_capacity 5; login_refill_ms 6_000; session_capacity 128; views_per_session 8; read_deadline_ms 2_000;
+  retry_ms 1_000; worker_capacity 128; controller_capacity 128; max_login_body 4_096; sweep_ms 1_000; server bool;
+  clock (0-arity monotonic ms fun; test seam, default System.monotonic_time/1). Derived: authority "host:port"
+  (lowercase, exact) and origin "http://authority". Clauses asserted: config_expiry_exceeds_default (C1-08b); the
+  remaining config_* clauses (bind_not_loopback, authority_invalid, proxy_refused, roots_invalid,
+  credential_path_missing, operator_invalid) are named for GREEN and not yet rowed (review may add).
+- OrrisConsole.Credential.setup(path) :: :ok | {:error, %{clause}} with credential_exists, credential_parent_unsafe,
+  credential_symlink, credential_owner_mismatch, credential_uid_probe_failed, credential_write_failed;
+  load(path) :: {:ok, <<_::256>>} | {:error, %{clause}} with credential_missing, credential_not_regular,
+  credential_mode_unsafe, credential_owner_mismatch, credential_invalid_length. 32 random bytes; dir 0700 before file;
+  file 0600 before bytes (C1-02e traces File.chmod/2 before File.write). Login submits the secret hex-encoded in the
+  "credential" form field (README tells the operator how to read the file; never printed by setup).
+- OrrisConsole.SessionStore (named, supervised first): login(store, submitted) :: {:ok, id} | {:error, :invalid |
+  :rate_limited | :capacity | :unavailable}; validate(store, id, :observe | :action) :: {:ok, session} |
+  {:error, :invalid | :expired | :unavailable} where session is the server-only map %{actor_id, root_ids, issued_ms,
+  idle_deadline_ms, absolute_deadline_ms}; register_view(store, id, pid) :: :ok | {:error, :invalid | :expired |
+  :view_capacity | :unavailable}; revoke(store, id) :: :ok (sends {:session_revoked, id} to every registered view
+  BEFORE returning); revoke_all(store) :: :ok; counts(store) :: %{sessions, views} (diagnostic, no ids).
+  A killed Store restarts empty (C1-09b). Signing key fresh per boot. Cookie name _orris_console_key.
+- OrrisConsole.Ingress.call(conn, config) :: conn (halted 403 "refused" or unchanged) invoked from Endpoint.call/2
+  before super; refusal never reaches router dispatch or Socket.connect (rows count the framework telemetry
+  [:phoenix, :router_dispatch, :start] and [:phoenix, :socket_connected]).
+- OrrisConsole.Endpoint (server_info/1 when server: true), Router routes EXACTLY {GET /, GET /runs/:root_id/:run_ref,
+  GET /login, POST /login, POST /logout} (C1-12c), LoginController, Socket at the configured mounts, longpoll false.
+- OrrisConsole.ReadModel.list(config, session, root_id) :: {:ok, %{root_id, runs: [%{run_ref, run_id, status,
+  last_seq, error}], skipped}} | {:error, :not_found | :invalid | :unavailable}; summary(config, session, root_id,
+  run_ref) :: {:ok, %{run_ref, run_id, status, last_seq, summary, rendered, pending_repair, host}} | {:error, ...}
+  (host = the Query.host_view facts, :unknown legs preserved); context/4 :: {:ok, %{run_ref, rendered,
+  pending_repair}} | {:error, ...}. A root id outside session.root_ids answers :not_found exactly like an unknown id.
+- OrrisConsole.QueryJob.start(view_pid, read_fun, opts) :: {:ok, job} | {:error, :capacity | :view_busy |
+  :unavailable}; opts deadline_ms, correlation; delivers {:query_result, job, correlation, {:ok, v} | {:error,
+  :deadline | :down | :failed}} to the view only after the worker's actual DOWN. QueryWorkers = DynamicSupervisor
+  (max_children = worker_capacity) over QueryWorker (links to the controller before reading; start acknowledgement
+  before any read); QueryRegistry unique per view (key = view pid, value :worker) held until worker death.
+  The read_fun runs inside the worker (rows use it for held, delayed-exit and raising reads).
+- Display vocabulary asserted: "stale", "refresh delayed", "pending repair", "host: unknown", "last successful read:
+  <clock ms>", "not available" (cross-root selector), "not accepted" (wrong credential), single "Log out" button.
+- OrrisConsole.Redaction: Logger filter + format_status; canaries (secret hex, digest hex, session id, root path,
+  exception text, CTX canary) absent from every captured log line (C1-13a/b).
+* Rows (exact test names; file; RED attribution modules)
+| C1-01a application mod + supervision order; C1-01b fail-closed startup without a credential | c1_01_packaging_test.exs |
+| C1-01c Boundary controls | bin/c1-packaging-controls (negative-writer.exit=1, positive-query.exit=0, clean.exit=0) |
+| C1-02a..e credential setup/load/poisoning/traced chmod-before-write | c1_02_bootstrap_test.exs |
+| C1-03a..f Host, parsed authority, raw scheme, forwarded, Origin, mount boundary (real TCP) ; C1-04a malformed, C1-04b upgrade reaches connect | c1_03_04_ingress_test.exs |
+| C1-05a..e login, CSRF, limiter with clock seam, renewal, bounds | c1_05_login_test.exs |
+| C1-06a..c HTTP privacy with Query-call tracing; C1-07a..c websocket privacy | c1_06_07_privacy_test.exs |
+| C1-08a..d exact expiry, absolute, view slots, refresh-not-activity; C1-09a..d logout, Store restart, app restart + rotation, result-vs-revoke | c1_08_09_session_test.exs |
+| C1-10a..d projections vs Query facts, torn tail, corrupt/missing/disallowed, deleted cache, bytes unchanged | c1_10_projections_test.exs |
+| C1-11a, a2, b, c, d lifetime/refusal/ordering/startup (adapter rows adopted from the spike) | c1_11_lifetime_test.exs |
+| C1-12a..c escaping, labels, exact routes/no controls; C1-13a..b redaction incl. crash reports | c1_12_13_display_redaction_test.exs |
+| C1-14 headless browser under the release server via DevTools protocol (C1.CDP) | c1_14_browser_test.exs |
+H-1 public core reachable with real fixtures; H-2 torn tail is pending_repair data; H-3 disposable listener + raw TCP
+client, closed afterwards; H-4 pinned chrome-headless-shell driven through C1.CDP against the listener; H-5 Query
+tracing sees own-process and spawned-process calls (a tracer never sees its own calls: the harness runs the traced
+function in a task); H-6 core lock is the frozen B3 lock; H-7 log capture sees warnings and crash reports.
+* Draft choices to review (ordinary; flag if you want them changed before GREEN)
+1. Release configuration for C1-14: the test hands the trusted config to the release through ORRIS_CONSOLE_CONFIG
+   (base64 of :erlang.term_to_binary of the keyword) read by config/runtime.exs; a config FILE path would be the
+   alternative. Either way the browser never supplies it.
+2. Query-call tracing (:erlang.trace on all processes, global pattern on AiOrchestrator.Query) is the "never invokes
+   Query" witness; it is exact and cheap in tests but it is a VM-wide trace: rows are async: false.
+3. C1-11 uses the QueryJob read_fun seam for delayed-exit/held/raising reads (the worker runs the closure; the
+   production worker keeps trap_exit false; a test closure may trap inside the worker as the spike's stand-in did).
+4. The credential is submitted hex-encoded (64 chars) in a password field; secure_compare on SHA-256 digests.
+5. C1-13b asserts crash-report redaction of a killed Store and a raising worker under a captured :logger handler.
+6. Trusted.invoke doc arity 5->4 (Codex's deferred B3 note) is a core TEST/DOC item; it is not in this console draft
+   and should be its own one-line core successor after FINAL GO (it touches the frozen lane).
+* Not claimed
+No production behaviour; no browser login (H-4 is loading + evaluation against an echo page); no release build; no
+dependency license/size inventory beyond the B2 lock (C1-01 GREEN stage); no installed change.
+* Rows added at adoption from the reviewer cut points (C1-REVIEW-CUTPOINTS.org)
+- "C1-10e a list entry's nested core rejection is sanitized to the closed vocabulary; the index renders no inspected failure"
+- "C1-10f the index invents no repair state: list entries carry no pending_repair, only the detail read reports it"
+* Review R1-R7 resolution (RED rev2)
+- R1 harness execution: overrides merge through =Harness.merged/2= (H-8 proves precedence); the Query tracer is a
+  SEPARATE process and the traced closure runs in the test (H-5 own-process + spawned calls, H-5b monitor DOWN stays
+  in the test mailbox); the permission oracle traces a separate process with a delivered-trace barrier and requires
+  the exclusive open / mode change before the first 32-byte write AND that such a write exists (H-10: faithful passes,
+  write-first mutant fails at =write_before_permission=).
+- R2 fixture truth: =Harness.canary_run/1= rewrites the plan work item id of the real kill9 fixture (valid journal;
+  H-9 proves the core renders it in context, summary and list); host facts asserted as the core answers them (live
+  Monitor: registered false / live false; dead monitor through the trusted =query_opts= seam: :unknown with legs
+  [:lookup, :status]); C1-10d seeds and deletes real run-summary.org / run-context.org canaries; C1-10e nested entry
+  error sanitized.
+- R3 ingress oracles: acceptance is the dispatch witness (router dispatch count 1) and the later layer's status is
+  asserted separately (POST /login with Origin and no CSRF: dispatched, 403 from CSRF); a sibling of the mount path
+  without Upgrade is ordinary navigation (dispatched, 404), with Upgrade it is refused before dispatch.
+- R4 worker proof: =C1.Oracles.ordering/1= gates the dead-worker / clean-Registry / controller-DOWN-not-observed cut
+  point (controller suspended) and requires refusal there (H-11: premature-admission mutant fails); =link_gate/1=
+  proves start-before-read by a read gated on a message sent only after start returned, and no detached read after a
+  controller kill (H-12: no-link mutant fails); C1-11b counts actual Query admissions in controlled windows and POSTs
+  logout while blocked; controllers are capped (=OrrisConsole.QueryControllers=, DynamicSupervisor max_children =
+  controller_capacity) and pinned in the supervision order (C1-01a); every dummy view/job/worker is cleaned up.
+- R5 session/socket: C1-07a performs real websocket upgrades with the page's CSRF meta: accepted control 101, missing
+  or forged socket CSRF / no cookie / garbage cookie / revoked session refused at Socket.connect (socket count 1,
+  no Query); C1-09d holds the view's CURRENT admitted read through the trusted =read_gate= test seam (accepted control
+  delivers; revoke-then-release drops and terminates; Store restart with a read in flight terminates); C1-09e runs the
+  delivery oracle against the product =RunIndexLive.deliver/2= (H-13: no-revalidation mutant fails); a disconnected
+  render may be the loading shell and must start no unowned read (C1-06b).
+- R6 named obligations: C1-00a..f exercise every Config clause (bind, authority, proxy, roots, operator, credential
+  path, expiry); C1-02f owner mismatch and probe failure through the explicit =probe_uid= seam of =Credential.setup/2=
+  and =load/2=; C1-05f max_login_body (413 before comparison, limiter not charged); C1-13a uses the RAW Store session
+  id as a canary plus error pages; C1-13b proves the digest is present in the Store state before the crash.
+- R7 adoption/browser: the browser path is the explicit test setting =C1_BROWSER= (absence = clear failure; H-4 and
+  C1-14 print the measured version + sha256); the browser and release OS processes are owned (kill, wait, then
+  remove profile/credential); navigation waits for the requested URL; CSP is asserted from the actual response
+  header and by a controlled inline script that raises a violation while the LiveSocket stays connected; the release
+  reads the closed JSON configuration FILE named by =ORRIS_CONSOLE_CONFIG_FILE= (=Config.load_file/1=, H-14 schema).
+* Pinned API additions (RED rev2)
+- =Config.load_file(path)= :: {:ok, config} | {:error, %{clause: config_file_missing | config_file_invalid}}; the file
+  is a JSON object: bind, port, host, scheme, socket_mounts, credential_path, operator{id, root_ids}, roots, limits{...};
+  unknown keys are refused (closed schema); no secret in it. Config keys =query_opts= (server-only Query seam keys
+  budget_ms/monitor) and =read_gate= (test seam) exist only in the in-VM keyword form.
+- =Credential.setup(path, opts)= / =load(path, opts)= with =probe_uid: (-> {:ok, uid} | {:error, term})= (explicit test
+  seam; default = the VM-created probe file).
+- =OrrisConsole.QueryControllers= (DynamicSupervisor, max_children controller_capacity) owns the QueryJob controllers;
+  Registry keys {:worker, view} and {:controller, view}; =QueryJob.start/3= refuses :view_busy while either exists.
+- =RunIndexLive.deliver(state, {:query_result, job, correlation, result})= is the pure delivery step (revalidation +
+  current-read check) the delivery oracle exercises.
+- Every product read worker calls the =read_gate= seam when configured: =send(gate, {:read_gate, self(), corr})= then
+  waits for =:go= before the read.
+- Rows renamed/added: C1-00a..f, C1-02f, C1-03e/f semantics, C1-05f, C1-07a socket cells, C1-09d/e, C1-10c/d/e/f,
+  C1-11a2/b/c/d, C1-13a/b; harness controls H-5b, H-8..H-14.
+* Review F1-F6 resolution (RED rev3)
+- F1 the permission oracle binds one identity: the exclusive open of the path returning descriptor D (return trace),
+  a change_mode of the path to exactly 0600 after it, and a 32-byte write to D; any delete/rename/other mode/
+  non-exclusive open/write_file of the path between the open and that write is a replacement. Mutants beside the
+  faithful control: write_first, no_exclusive_open, chmod_then_replace, secret_elsewhere (H-10, each at its step).
+  OTP's file API has no permission option on open, so the mode change is required, never a tuple match.
+- F2 the premature-admission mutant registers no controller key and checks only the worker key, so it really admits a
+  reading replacement at the cut point; the oracle names that admission (H-11). The ack witness traces
+  proc_lib.init_ack of new processes with monotonic timestamps and compares it with the read's own entry time; a
+  read-before-ack worker mutant fails (H-12); ten early controller kills leave no worker/read. Controllers are capped
+  separately (C1-11a2: worker 2 / controller 1) and the controller key lives until delivery. `Oracles.outcome/1`
+  kills and proves gone every tracked process (suspended controllers included) on pass and fail.
+- F3 the delivery oracle tests a forged job and a forged correlation while VALID, then the current result, then the
+  stale case; the identity-ignoring mutant fails at forged_job (H-13); C1-09e runs it on both RunIndexLive.deliver/2
+  and RunDetailLive.deliver/2; C1-09d releases the mounted read first, binds the accepted control to the applied
+  correlation (`data-c1-read-correlation`) and to an index-visible change (a new run), then revoke and Store restart.
+- F4 "location" header key; C1-07a runs on a disposable listener (port asserted, closed on app stop); rows wait for
+  the applied read (`data-c1-read="complete"`) after the loading shell instead of asserting data on the first render.
+- F5 C1-13b proves the digest present by VALUE in the Store state, then checks hex/base64/inspect renderings of the
+  credential and id digests plus the raw id in the formatted status (:sys.get_status) and in crash reports; C1-13a
+  decodes the raw session id from the observed request's own cookie with Plug's cookie store and the endpoint's
+  public session options (`Endpoint.session_options/0`), and treats the cookie value itself as bearer material.
+- F6 host normalization control (C1-00b: "LocalHost" loads as "localhost"; raw uppercase Host stays refused);
+  browser identity asserted against the pinned per-platform version+sha256 (H-4, C1-14); idempotent owned teardown
+  (a second stop is a no-op; signals only while the Port is open); C1-14 tears down release, listener, browser and
+  credential in an after block on every path; navigation finding withdrawn by the reviewer, the same-URL delayed
+  reload stays as control H-4b (new nonce, elapsed >= delay, header bound to the body nonce).
+* Pinned API additions (RED rev3)
+- Main element attribute `data-c1-read="complete"` (generic marker); internal correlations are NEVER rendered: the
+  applied read is witnessed server-side through the trusted test seam `read_witness: pid`
+  ({:read_applied, view_pid, correlation}).
+- `RunDetailLive.deliver/2` alongside `RunIndexLive.deliver/2`; `OrrisConsole.Endpoint.session_options/0` (the Plug
+  session options: store :cookie, key "_orris_console_key", signing salt).
+- `Config.load/1` normalizes `host` to lowercase; the derived authority is lowercase.
+* Review rev3 R1-R5 resolution (RED rev4)
+- R1 the early-kill branch keeps the view identity: after the controller's DOWN, the view's own `{:worker, view}` key
+  must clear (bounded), every worker that entered is offered `:proceed` and must be DOWN, and no read may complete;
+  the `early_detached` mutant (the reviewer's injection: unlinked worker that starts the read after its controller
+  died) fails at `orphan_after_early_kill` (H-12).
+- R2 teardown never signals a retained numeric pid: owned = processes whose CURRENT command line names the unique
+  profile, plus their descendants captured before any signal whose command line is the browser; each signalled pid
+  has its own exit witness; a repeat finds nothing owned and signals nothing. The OS layer is injectable; H-4c mock
+  controls: closed Port + absent profile -> no signal (never the stale pid); present profile -> only the mains and
+  browser descendants, never a foreign child; repeat -> nothing.
+- R3 `C1.Resources`: cleanup installed at acquisition before the next fallible startup, reverse order on every path,
+  a raising cleanup neither skips the others nor hides its failure (H-15); C1-14 acquires credential, release (with
+  stop + exit witness + listener closed) and browser through it.
+- R4 C1-11b holds the blocker with a 60 s deadline, asserts its liveness across the observation, a fresh view stays
+  unavailable with no admission before release, then the explicit release yields exactly one admission and real data.
+- R5 no browser-visible correlation; C1-09d binds the accepted control to the server-side `read_applied` witness and
+  to the exact run entry link (`href="/runs/alpha/b"`); revoke/Store-restart cases assert no witness for the dropped read.
+* Review rev4 F1/F2 resolution (RED rev5)
+- F1 ownership is exact: a main is owned only when its executable IS the configured browser binary and one argument
+  equals `--user-data-dir=<profile>` at an argument boundary (a prefix profile or the option text inside a foreign
+  argument never matches); descendants are owned only by executable identity; `alive?` uses the same predicate.
+  H-4c mock negatives: prefix profile, foreign command carrying the option text, chrome-named non-browser child.
+  The test ownership model is the current command line; no race-free OS identity is claimed.
+- F2 H-15 owns `b` independently (monitor + on_exit at acquisition), keeps the deliberate raising cleanup and the
+  proof that a/c are still attempted, then reaps `b` and proves every acquired process DOWN before completion.
+- C1-11a2 name shortened coherently (row identity and body unchanged).
+* GREEN source and change mapping (console/lib/orris_console)
+| module | rows | notes |
+| application.ex | C1-01a/b | fail-closed start: Config.load (keyword) or Config.load_file (release); Redaction.install; endpoint runtime env (loopback bind, fresh secret, server flag); children in the pinned order |
+| config.ex | C1-00a..f, C1-01c | every clause; lowercase host; closed JSON schema (`load_file/1`, unknown keys refused; a file-loaded configuration serves) |
+| credential.ex | C1-02a..f | VM probe uid; parent 0700 (mode only); exclusive open, chmod 0600, then the 32-byte write; `probe_uid` seam |
+| session_store.ex | C1-05, C1-08, C1-09 | token bucket (malformed submissions charged), digest compare, capacity, exact expiry on the configured clock, 8 views, revoke notices before reply, format_status counts only |
+| ingress.ex | C1-03, C1-04 | raw Host + parsed authority + no forwarded + Upgrade only on mounts + Origin rules; control characters in the target refused; configured mount rewritten to the compiled "/live" socket |
+| endpoint.ex / socket.ex | C1-03, C1-07a | ingress before the framework; parser length = login limit; OrrisConsole.Socket refuses at connect (session + CSRF) |
+| router.ex / plugs.ex / login_controller.ex / error_html.ex / layouts.ex | C1-05, C1-06, C1-12c, C1-13 | exactly five routes; RequireSession, ScopeGuard (generic 404), BodyLimit, CSP + same-origin referrer policy; hex credential; generic error pages |
+| auth_hook.ex / reader.ex / run_index_live.ex / run_detail_live.ex | C1-06, C1-07, C1-08d, C1-09, C1-11b, C1-12 | connected registration + Store monitor; `deliver/2` pure revalidation + current identity; one retry timer; STALE/unavailable + "refresh delayed"; read_gate/read_witness seams; escaped Org text |
+| read_model.ex | C1-06c, C1-10 | root id -> configured directory; only public Query calls; closed errors; nested entry errors sanitized; no path in view data |
+| query_job.ex / query_worker.ex / query_workers.ex / query_controllers.ex / query_registry.ex | C1-11 | the measured adapter: controllers capped, workers capped, link before register before ack, delivery after DOWN, keys until death/delivery |
+| redaction.ex | C1-13 | primary logger filter: paths, credential path, 32-byte renderings, tokens; supervisor reports kept visible and scrubbed; installed by replacement |
+| priv/static/assets, bin/c1-assets, bin/c1-release | C1-01, C1-14 | pinned framework ESM copied from the locked deps with a sha256 manifest; release from the closed JSON file |
+* Test corrections made during GREEN (each an observation fix, never a weakened acceptance)
+- C1-03a absent and duplicate Host: the HTTP/1.1 parser refuses them with 400 before the guard can answer 403; the
+  cells accept either status and still require that nothing reaches the framework.
+- C1-03f sibling-path navigation: the framework emits no dispatch telemetry for an unmatched path; the witness is the
+  404 status (the guard only ever answers 403) with no socket connect.
+- C1-11b: the admission window closes at the view's own server-side applied-read witness; the idle assertion is a
+  bounded wait (the periodic refresh may have a read in flight at the instant of the assertion).
+- C1-14: the browser is pointed at the loopback address itself ("localhost" resolves to ::1 first in the browser);
+  page text is read after the connected view applied its read; the login/logout submits wait for their own
+  navigations to land; the navigation diagnostic reports the page the browser ended on.
+- Test boundary: outgoing references are not checked in test support; rows run with `--no-start` and the core is
+  started by the test helper (its Host monitor answers real facts).
+- Test-only dependency: `lazy_html` (Phoenix.LiveViewTest's HTML parser), never in the release.
+* Product choices recorded
+- `Referrer-Policy: same-origin` (a no-referrer policy makes browsers send `Origin: null` on form navigations).
+- Supervisor reports are kept visible (`handle_sasl_reports`, enforced at install) and scrubbed by the filter.
+- The compiled socket path is "/live"; a differently configured mount is admitted by the guard and rewritten to it.
+* GREEN review resolution (GREEN rev2, logs/console-c1-green/codex/review-4c11648)
+- G1 an accepted read failure keeps the last successful value (`Reader.deliver/2` separates the delivered result
+  from the retained data), marks stale with the last-success timestamp and schedules one retry (G1a seam row, G1b
+  detail view success -> failure -> recovery).
+- G2 the current controller is monitored by its exact reference; its DOWN marks stale (or unavailable) and retries
+  through bounded admission, stale DOWNs are ignored, the hook redirects only on the Store's own monitor (G2a first
+  read, G2b after success + stale DOWN + Store loss). Admission that finds the current controller already dead (its
+  DOWN not yet observed, the periodic refresh raced it) marks the lost read stale before admitting the replacement,
+  so a lost read is always visible until the replacement applies (observed 2/8 before this rule).
+- G3 `OrrisConsole.Plugs.Parsers` bounds the bytes actually read (declared or chunked) by the validated runtime limit
+  and answers 413 before any field is parsed or compared; the declared-length check stays as the cheap first refusal
+  (G3 chunked/declared 413 with a tightened limit, ordinary login within it).
+- G4 HTTP/2 disabled in the listener (`http_2_options: [enabled: false]`); prior-knowledge preface negative control (G4).
+- G5 console entrypoints: `.envrc`/`bin/env` (root pin reused, console-owned paths), `bin/verify` (numbered stages with
+  retained exits: toolchain and browser prerequisite, locked deps, hex audit, format, WAE dev/test, Boundary controls,
+  assets + manifest, release, disposable release smoke with a non-starting bootstrap, full rows under WAE, core
+  unchanged, 18-application production escript), `bin/c1-setup` (non-starting bootstrap), `bin/c1-release-smoke`;
+  README with the valid closed configuration example and the release start.
+* Verifier review resolution (GREEN rev3, logs/console-c1-green/codex/review-5f85fcc)
+- V1 `bin/verify` writes fresh, invocation-specific evidence (a nonempty OUT is refused, exit 3); the packaging
+  runner's exit is captured (06-packaging-runner.exit) and the stage passes only with fresh numeric 1/0/0 exit files
+  newer than the invocation marker AND the forbidden-reference diagnostic in the negative log; the toolchain stage
+  reuses the root's exact check (Elixir 1.20.4 and the OTP_VERSION file 29.0.5).
+- V2 `bin/c1-core-escript-check` builds the root escript into a disposable build path and preserves any preexisting
+  root artifact (bytes and mode) on success and failure, cleaning only its scratch directory.
+- V3 `bin/c1-release-smoke` owns the spawned release process (bounded readiness that fails if the process exits,
+  stop then wait, TERM/KILL escalation only against the owned process and its descendants), removes the temp tree
+  only after the release is proven gone, and keeps setup/stop/release logs outside the tree.
+- `bin/c1-gate-controls` reproduces the reviewer's scenarios against scratch copies with mocked tools (C-1 crashed
+  runner -> FAIL, C-1b nonempty evidence refused, C-1c crashing runner with an empty fresh directory, C-2 artifact
+  preserved + scratch cleaned + no-artifact case, C-3 failing smoke escalates its owned mock release and removes the
+  tree only after it is gone with logs outside, C-4 success path). The producer runs only these controls and the
+  real disposable smoke; Codex owns the one full verify run.
+* Verifier delta resolution (GREEN rev4, logs/console-c1-green/codex/review-9037457)
+- R1 `bin/c1-core-escript-check`: the backup is verified (copy + cmp) BEFORE the build or the stage fails without
+  building; the artifact is restored and verified after success and after a build failure; a failed restore answers
+  non-zero, keeps the backup with the original bytes and prints its path; scratch is removed only after a verified
+  restore. Controls R1-a (backup copy fails), R1-b (build fails), R1-c (restore copy fails) beside the positive.
+- R2 `bin/c1-release-smoke` runs under ONE finite budget (SMOKE_BUDGET, default 60 s): every external command
+  (bootstrap, HTTP probes, stop) is a bounded owned child killed at its bound, HTTP additionally carries connect and
+  max-time limits; the spawned release is owned, stopped, escalated (TERM/KILL) and reaped with `wait`; descendants
+  captured while it lived are killed and proven gone; cleanup is idempotent and never signals a stale or foreign pid;
+  the temp tree is removed only after every owned process is gone, otherwise it is kept with the evidence. Controls
+  R2-a hanging stop, R2-b hanging HTTP client, R2-c partial startup, R2-d descendant reaped, plus C-3/C-4.
+* Verifier delta resolution (GREEN rev5, logs/console-c1-green/codex/review-f72a3a4)
+- R2-a every external operation of the smoke (bootstrap, HTTP probes, release start, stop) is an owned job in its own
+  process group (bash job control); a bound kills the whole group and waits for it to drain, so no descendant of a
+  timed-out wrapper survives; one monotonic deadline (work budget + a bounded cleanup reserve) replaces per-descendant
+  waits; cleanup proves every owned group gone (one bounded pass, then KILL) before removing the tree.
+- R2-b the release is started AND stopped with an invocation-owned distribution identity (unique RELEASE_NODE, fresh
+  RELEASE_COOKIE passed only through the environment of those two commands, never logged), so the stop RPC cannot
+  address a shared or installed instance; control R2-b records both identities through the mock release, requires
+  them equal, unique and unlogged, and keeps a default-identity sentinel alive across the smoke; control R2-a proves
+  a setup descendant is killed with its group.

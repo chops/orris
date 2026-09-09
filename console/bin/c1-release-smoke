@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# Disposable release smoke with OWNED PROCESS GROUPS under ONE monotonic deadline.
+# Budget: SMOKE_BUDGET seconds (default 60) = work budget + a bounded cleanup reserve (SMOKE_CLEANUP_RESERVE, default
+# 5). Every external operation (bootstrap, HTTP probes, release start, release stop) runs as a job in its own process
+# group; a bound kills the WHOLE group and waits for it to drain, so no descendant of a timed-out wrapper survives.
+# The release is started and stopped with an invocation-owned distribution identity (unique RELEASE_NODE, fresh
+# RELEASE_COOKIE never written to logs), so stop can only address this instance. Cleanup is idempotent, proves every
+# owned group gone before removing the private temp tree (otherwise keeps it with the evidence), and a failed or
+# hung stop fails the smoke while containment continues. Logs live outside the tree ($SMOKE_LOG_DIR).
+set -u
+set -m  # job control: each background job gets its own process group (the ownership unit)
+here=$(cd "$(dirname "$0")/.." && pwd); cd "$here"; tag=elixir-1.20.4-otp-29.0.5
+rel="$here/_build/$tag/prod/rel/orris_console/bin/orris_console"
+logs=${SMOKE_LOG_DIR:-"$here/_build/verify-smoke"}; mkdir -p "$logs"; : > "$logs/stop.log"
+budget=${SMOKE_BUDGET:-60}; reserve=${SMOKE_CLEANUP_RESERVE:-5}; [ "$reserve" -lt "$budget" ] || reserve=$((budget / 2))
+started=$(date +%s); work_deadline=$((started + budget - reserve)); hard_deadline=$((started + budget))
+left() { local r=$(( $1 - $(date +%s) )); [ "$r" -gt 0 ] && echo "$r" || echo 0; }
+min() { [ "$1" -lt "$2" ] && echo "$1" || echo "$2"; }
+group_alive() { pgrep -g "$1" > /dev/null 2>&1; }
+owned=""
+# run_owned <seconds> <command...>: the command as an owned job group; killed as a GROUP at the bound (124)
+run_owned() {
+  local secs=$1; shift; [ "$secs" -gt 0 ] || return 124
+  "$@" & local pid=$!; owned="$owned $pid"; local t=0
+  while kill -0 "$pid" 2>/dev/null && [ "$t" -lt $((secs * 10)) ]; do sleep 0.1; t=$((t + 1)); done
+  if kill -0 "$pid" 2>/dev/null; then kill -KILL -- "-$pid" 2>/dev/null; wait "$pid" 2>/dev/null; drain_group "$pid" 20; return 124; fi
+  wait "$pid"; local rc=$?; drain_group "$pid" 20; return $rc
+}
+drain_group() { local i=0; while group_alive "$1" && [ "$i" -lt "$2" ]; do sleep 0.1; i=$((i + 1)); done; ! group_alive "$1"; }
+http() { run_owned "$(min 5 "$(left "$work_deadline")")" curl -s --connect-timeout 2 --max-time 3 "$@"; }
+# invocation-owned distribution identity: unique node, fresh cookie (never logged), passed to start AND stop only
+node="orris_console_smoke_$$_$(date +%s)"
+cookie=$(head -c 24 /dev/urandom | base64 | tr -d '/+=\n')
+work=$(mktemp -d "${TMPDIR:-/tmp}/orris-console-smoke.XXXXXX") || exit 1; chmod 700 "$work"; mkdir -p "$work/root/run"
+cp "$here/../test/fixtures/contracts/scenarios/kill9_resume/events_pre_dispatch.jsonl" "$work/root/run/events.jsonl"
+rel_pid=""; stopped=0; cleaned=0; stop_failed=0
+all_gone() { for p in $owned; do group_alive "$p" && return 1; done; return 0; }
+stop_release() { # idempotent; answers 0 only when every owned group is gone; a failed/hung stop sets stop_failed
+  [ "$stopped" = 0 ] || return "$stop_rc"; stopped=1; stop_rc=0
+  if [ -n "$rel_pid" ] && group_alive "$rel_pid"; then
+    RELEASE_NODE="$node" RELEASE_COOKIE="$cookie" RELEASE_DISTRIBUTION=sname ORRIS_CONSOLE_CONFIG_FILE="$work/console.json" \
+      run_owned "$(min 10 "$(left "$hard_deadline")")" "$rel" stop >> "$logs/stop.log" 2>&1 || { echo "stop command failed or timed out (escalating against the owned release group)" >> "$logs/stop.log"; stop_failed=1; }
+    drain_group "$rel_pid" "$(min 50 $(( $(left "$hard_deadline") * 10 )))" || { kill -TERM -- "-$rel_pid" 2>/dev/null; drain_group "$rel_pid" "$(min 30 $(( $(left "$hard_deadline") * 10 )))"; } || { kill -KILL -- "-$rel_pid" 2>/dev/null; drain_group "$rel_pid" 10; }
+    wait "$rel_pid" 2>/dev/null
+  fi
+  # every owned group (setup, probes, release, stop): one bounded pass, then a KILL of whatever remains
+  for p in $owned; do group_alive "$p" && kill -KILL -- "-$p" 2>/dev/null; done
+  local i=0; while ! all_gone && [ "$i" -lt 20 ]; do sleep 0.1; i=$((i + 1)); done
+  all_gone || { echo "owned process group(s) still alive after escalation: $(for p in $owned; do group_alive "$p" && printf '%s ' "$p"; done)" >> "$logs/stop.log"; stop_rc=1; }
+  return "$stop_rc"
+}
+cleanup() {
+  local rc=$?
+  [ "$cleaned" = 0 ] || exit "$rc"; cleaned=1
+  stop_release; gone=$?
+  [ -f "$work/release.log" ] && cp "$work/release.log" "$logs/release.log"
+  if [ "$gone" = 0 ]; then rm -rf "$work"; else echo "temp tree $work KEPT: owned processes not gone" >> "$logs/stop.log"; rc=1; fi
+  [ "$stop_failed" = 0 ] || rc=1
+  exit $rc
+}
+trap cleanup EXIT
+run_owned "$(min 30 "$(left "$work_deadline")")" bin/c1-setup "$work/cred/console/credential" > "$logs/setup.log" 2>&1 || { echo "bootstrap failed or timed out"; exit 1; }
+port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
+cat > "$work/console.json" <<CFG
+{"bind":"127.0.0.1","port":$port,"host":"127.0.0.1","scheme":"http","socket_mounts":["/live"],
+ "credential_path":"$work/cred/console/credential","operator":{"id":"operator","root_ids":["alpha"]},
+ "roots":{"alpha":"$work/root"},"limits":{}}
+CFG
+RELEASE_NODE="$node" RELEASE_COOKIE="$cookie" RELEASE_DISTRIBUTION=sname ORRIS_CONSOLE_CONFIG_FILE="$work/console.json" "$rel" start > "$work/release.log" 2>&1 &
+rel_pid=$!; owned="$owned $rel_pid"
+ready=0
+while [ "$(left "$work_deadline")" -gt 0 ]; do
+  group_alive "$rel_pid" || { echo "release exited during startup"; exit 1; }
+  http -o /dev/null -H "Host: 127.0.0.1:$port" "http://127.0.0.1:$port/login" && { ready=1; break; }
+  sleep 0.2
+done
+[ "$ready" = 1 ] || { echo "release never listened within the budget"; exit 1; }
+status=$(http -o "$work/login.html" -D "$work/headers" -w '%{http_code}' -H "Host: 127.0.0.1:$port" "http://127.0.0.1:$port/login") || status=000
+grep -qi '^content-security-policy: default-src' "$work/headers" 2>/dev/null && csp=yes || csp=no
+grep -q 'name="credential"' "$work/login.html" 2>/dev/null && form=yes || form=no
+stop_release || exit 1
+[ "$stop_failed" = 0 ] || { echo "release smoke: the stop command failed or hung (release contained by escalation)"; exit 1; }
+http -o /dev/null -H "Host: 127.0.0.1:$port" "http://127.0.0.1:$port/login" && listening=yes || listening=no
+echo "release smoke: login status $status csp $csp form $form owned-groups-gone yes listener-after-stop $listening budget-left $(left "$hard_deadline")s"
+[ "$status" = 200 ] && [ "$csp" = yes ] && [ "$form" = yes ] && [ "$listening" = no ]

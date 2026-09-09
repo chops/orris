@@ -1,0 +1,272 @@
+#!/usr/bin/env python3
+"""Bounded failure controls for the console gate scripts (review V1-V3), run against UNCHANGED copies of the scripts
+in scratch trees with mocked external tools; no real gate, release, listener or producer artifact is touched.
+  C-1  a crashed packaging runner with stale preseeded 1/0/0 exits must FAIL the gate (fresh evidence required)
+  C-1b a nonempty evidence directory is refused
+  C-2  a preexisting root escript artifact survives a passing core-escript stage byte for byte, mode included;
+       the scratch build directory is cleaned; without a preexisting artifact the built one is removed
+  C-3  a release whose stop fails is escalated as an OWNED process; the temp tree is removed only after it is gone;
+       logs survive outside the tree; the smoke exits non-zero
+  C-4  the smoke success path with a mocked release answering 200 + CSP + form exits 0 and leaves nothing behind
+"""
+import os, pathlib, shutil, subprocess, sys, tempfile, time
+
+HERE = pathlib.Path(__file__).resolve().parent.parent
+SRC_VERIFY = HERE / "bin/verify"
+SRC_ESCRIPT = HERE / "bin/c1-core-escript-check"
+SRC_SMOKE = HERE / "bin/c1-release-smoke"
+TAG = "elixir-1.20.4-otp-29.0.5"
+failures = []
+
+MIX_MOCK = "#!" + sys.executable + "\n" + (
+    "import sys, os, zipfile, pathlib\n"
+    "if 'escript.build' in sys.argv:\n"
+    "    p = pathlib.Path(os.environ['root']) / 'bin/ai-orchestrator'\n"
+    "    with zipfile.ZipFile(p, 'w') as z:\n"
+    "        for i in range(18):\n"
+    "            z.writestr(f'app{i}/ebin/x.beam', b'')\n"
+    "    p.chmod(0o755)\n"
+    "sys.exit(0)\n")
+
+
+def check(name, ok, detail=""):
+    print(f"{name}: {'PASS' if ok else 'FAIL'} {detail}")
+    if not ok:
+        failures.append(name)
+
+
+def script(path, text):
+    path.write_text(text)
+    path.chmod(0o755)
+
+
+def mock_tools(fake):
+    script(fake / "elixir", '#!/bin/sh\ncase "$*" in *System.version*) printf 1.20.4;; *) printf 29.0.5;; esac\n')
+    for n in ["git", "shasum"]:
+        script(fake / n, "#!/bin/sh\nexit 0\n")
+    script(fake / "browser", "#!/bin/sh\nexit 0\n")
+    script(fake / "mix", MIX_MOCK)
+
+
+def scratch_console(root, packaging_exit, preseed):
+    c = root / "console"; fake = root / "mockbin"
+    for p in [c / "bin", fake, root / "bin", root / f"_build/{TAG}", c / "priv/static/assets", c / "_build"]:
+        p.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(SRC_VERIFY, c / "bin/verify")
+    shutil.copy2(SRC_ESCRIPT, c / "bin/c1-core-escript-check")
+    for n in ["c1-assets", "c1-release", "c1-release-smoke"]:
+        script(c / "bin" / n, "#!/bin/sh\nexit 0\n")
+    body = '#!/bin/sh\nout=$1\nmkdir -p "$out"\n'
+    if packaging_exit == 0:
+        body += ('echo 1 > "$out/negative-writer.exit"; echo 0 > "$out/positive-query.exit"; echo 0 > "$out/clean.exit"\n'
+                 'echo "warning: forbidden reference to AiOrchestrator.Journal.Writer" > "$out/negative-writer.log"\n')
+    body += f"echo PACKAGING_RUNNER >&2\nexit {packaging_exit}\n"
+    script(c / "bin/c1-packaging-controls", body)
+    mock_tools(fake)
+    out = root / "evidence"
+    if preseed:
+        (out / "06-packaging").mkdir(parents=True)
+        for n, code in [("negative-writer", 1), ("positive-query", 0), ("clean", 0)]:
+            (out / "06-packaging" / f"{n}.exit").write_text(f"{code}\n")
+        (out / "06-packaging/negative-writer.log").write_text("warning: forbidden reference to AiOrchestrator.Journal.Writer\n")
+        time.sleep(1.1)  # older than any later invocation marker
+    env = os.environ.copy(); env.update(PATH=f"{fake}:{env['PATH']}", C1_BROWSER=str(fake / "browser"))
+    return c, out, env
+
+
+def control_1():
+    with tempfile.TemporaryDirectory(prefix="c1-gate-c1-") as tmp:
+        root = pathlib.Path(tmp); c, out, env = scratch_console(root, packaging_exit=42, preseed=True)
+        env["OUT"] = str(out)
+        run2 = subprocess.run(["bash", str(c / "bin/verify")], cwd=c, env=env, text=True, capture_output=True, timeout=60)
+        check("C-1b a nonempty evidence directory is refused", run2.returncode == 3 and "refusing nonempty" in run2.stderr, f"rc={run2.returncode}")
+        env["OUT"] = str(root / "fresh-evidence")
+        run = subprocess.run(["bash", str(c / "bin/verify")], cwd=c, env=env, text=True, capture_output=True, timeout=60)
+        summary = (root / "fresh-evidence/SUMMARY.txt").read_text() if (root / "fresh-evidence/SUMMARY.txt").exists() else ""
+        check("C-1 a crashed packaging runner (exit 42, no fresh evidence) fails the gate", run.returncode != 0 and "06-packaging: exit 1" in summary and "verify: FAIL" in summary, f"rc={run.returncode}")
+        # stale evidence copied into the fresh directory before the run still does not pass: files older than the marker
+        stale = root / "stale-evidence"; shutil.copytree(out, stale)
+        env["OUT"] = str(root / "stale-run")
+        (root / "stale-run").mkdir()
+        run3 = subprocess.run(["bash", str(c / "bin/verify")], cwd=c, env=env, text=True, capture_output=True, timeout=60)
+        check("C-1c an empty fresh directory with a crashing runner still fails", run3.returncode != 0)
+
+
+def escript_failure(name, inject, want_original=b"original", want_backup_kept=False, mix_exit=0):
+    """runs the unchanged core-escript check with one injected failure; the original artifact must survive"""
+    with tempfile.TemporaryDirectory(prefix="c1-gate-r1-") as tmp:
+        root = pathlib.Path(tmp); c, out, env = scratch_console(root, packaging_exit=0, preseed=False)
+        artifact = root / "bin/ai-orchestrator"; artifact.write_bytes(b"original"); artifact.chmod(0o640)
+        fake = root / "mockbin"
+        if inject == "backup":
+            script(fake / "cp", '#!/bin/sh\ncase "$3" in */preserved) exit 42;; esac\nexec /bin/cp "$@"\n')
+        elif inject == "restore":
+            script(fake / "cp", '#!/bin/sh\ncase "$2" in */preserved) exit 42;; esac\nexec /bin/cp "$@"\n')
+        if mix_exit:
+            script(fake / "mix", "#!/bin/sh\necho BUILD_FAILED >&2\nexit " + str(mix_exit) + "\n")
+        env3 = dict(env); env3["root"] = str(root)
+        run = subprocess.run(["bash", str(c / "bin/c1-core-escript-check")], cwd=c, env=env3, text=True, capture_output=True, timeout=60)
+        preserved = artifact.exists() and artifact.read_bytes() == want_original and (artifact.stat().st_mode & 0o777) == 0o640
+        scratches = list((root / f"_build/{TAG}").glob("verify-escript.*"))
+        backups = [p for p in scratches if (p / "preserved").exists() and (p / "preserved").read_bytes() == b"original"]
+        kept_ok = (len(backups) >= 1) if want_backup_kept else (scratches == [])
+        # after a FAILED restore the artifact cannot hold the original bytes; the backup must, and its path is reported
+        original_available = preserved or (want_backup_kept and len(backups) >= 1 and "kept at" in (run.stdout + run.stderr))
+        check(name, run.returncode != 0 and original_available and kept_ok, f"rc={run.returncode} preserved={preserved} scratch={len(scratches)} backup_kept={len(backups)} out={(run.stdout + run.stderr).strip()[-140:]}")
+
+
+def control_2():
+    with tempfile.TemporaryDirectory(prefix="c1-gate-c2-") as tmp:
+        root = pathlib.Path(tmp); c, out, env = scratch_console(root, packaging_exit=0, preseed=False)
+        artifact = root / "bin/ai-orchestrator"; artifact.write_bytes(b"PRESERVE-EXISTING-ARTIFACT"); artifact.chmod(0o640)
+        env["OUT"] = str(out)
+        run = subprocess.run(["bash", str(c / "bin/verify")], cwd=c, env=env, text=True, capture_output=True, timeout=60)
+        summary = (out / "SUMMARY.txt").read_text() if (out / "SUMMARY.txt").exists() else ""
+        preserved = artifact.exists() and artifact.read_bytes() == b"PRESERVE-EXISTING-ARTIFACT" and (artifact.stat().st_mode & 0o777) == 0o640
+        check("C-2 a passing gate keeps a preexisting root escript artifact (bytes + mode)", run.returncode == 0 and "verify: PASS" in summary and "12-core-escript-18: exit 0" in summary and preserved, f"rc={run.returncode} preserved={preserved} summary={summary.strip().splitlines()[-1] if summary else ''}")
+        leftovers = list((root / f"_build/{TAG}").glob("verify-escript.*"))
+        check("C-2b the escript scratch directory is cleaned", leftovers == [])
+        artifact.unlink()
+        env3 = dict(env); env3["root"] = str(root)  # the mocked mix reads the root path the gate exports
+        run3 = subprocess.run(["bash", str(c / "bin/c1-core-escript-check")], cwd=c, env=env3, text=True, capture_output=True, timeout=60)
+        check("C-2c without a preexisting artifact the built one is removed", run3.returncode == 0 and not artifact.exists(), f"rc={run3.returncode}")
+
+
+CURL_OK = r'''#!/bin/sh
+prev=""; out=""; hdr=""; w=0
+for a in "$@"; do case "$prev" in -o) out=$a;; -D) hdr=$a;; -w) w=1;; esac; prev=$a; done
+[ -f "$STOPPED_MARK" ] && exit 7
+if [ -n "$out" ] && [ "$out" != /dev/null ]; then echo '<form><input name="credential"></form>' > "$out"; fi
+if [ -n "$hdr" ]; then echo 'content-security-policy: default-src none' > "$hdr"; fi
+[ "$w" = 1 ] && printf 200
+exit 0
+'''
+CURL_DOWN = "#!/bin/sh\nprintf 000\nexit 7\n"
+REL_MOCK = '#!/bin/sh\ncase "$1" in start) echo $$ > "$PID_MARK"; dirname "$ORRIS_CONSOLE_CONFIG_FILE" > "$WORK_MARK"; echo "${RELEASE_NODE:-default}|${RELEASE_COOKIE:-default}" > "$PID_MARK.start-identity"; exec /bin/sleep 30;; stop) touch "$STOPPED_MARK"; echo "${RELEASE_NODE:-default}|${RELEASE_COOKIE:-default}" > "$PID_MARK.stop-identity"; exit STOP_EXIT;; esac\n'
+
+
+def smoke_tree(root, stop_exit, curl_ok):
+    c = root / "console"; fake = root / "mockbin"
+    rel = c / f"_build/{TAG}/prod/rel/orris_console/bin/orris_console"
+    for p in [c / "bin", fake, rel.parent, root / "test/fixtures/contracts/scenarios/kill9_resume", root / "temps"]:
+        p.mkdir(parents=True, exist_ok=True)
+    (root / "test/fixtures/contracts/scenarios/kill9_resume/events_pre_dispatch.jsonl").write_text("fixture")
+    shutil.copy2(SRC_SMOKE, c / "bin/c1-release-smoke")
+    script(c / "bin/c1-setup", "#!/bin/sh\nexit 0\n")
+    script(fake / "curl", CURL_OK if curl_ok else CURL_DOWN)
+    script(rel, REL_MOCK.replace("STOP_EXIT", str(stop_exit)))
+    env = os.environ.copy()
+    env.update(PATH=f"{fake}:{env['PATH']}", TMPDIR=str(root / "temps"), PID_MARK=str(root / "pid"), WORK_MARK=str(root / "workpath"), STOPPED_MARK=str(root / "stopped"), SMOKE_LOG_DIR=str(root / "smoke-logs"))
+    return c, env
+
+
+def child_gone(pid):
+    q = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True)
+    return q.returncode != 0 or not q.stdout.strip() or q.stdout.strip().startswith("Z")
+
+
+def run_smoke(stop_exit, curl_ok, name, want_rc_zero):
+    with tempfile.TemporaryDirectory(prefix="c1-gate-smoke-") as tmp:
+        root = pathlib.Path(tmp); c, env = smoke_tree(root, stop_exit, curl_ok)
+        env["SMOKE_BUDGET"] = "8"  # the mock release sleeps 30 s: the smoke's own budget must end first
+        pid = None
+        try:
+            run = subprocess.run(["bash", str(c / "bin/c1-release-smoke")], cwd=c, env=env, text=True, capture_output=True, timeout=60)
+            pid = int((root / "pid").read_text()); work = pathlib.Path((root / "workpath").read_text().strip())
+            gone = child_gone(pid)
+            rc_ok = (run.returncode == 0) if want_rc_zero else (run.returncode != 0)
+            check(name, rc_ok and gone and not work.exists(), f"rc={run.returncode} gone={gone} tree={work.exists()} out={run.stdout.strip()[-100:]}")
+            check(name + " (logs outside the removed tree)", (root / "smoke-logs/stop.log").exists())
+        finally:
+            if pid and not child_gone(pid):
+                os.kill(pid, 9)
+
+
+def smoke_case(name, stop_exit, curl_ok, want_rc_zero, rel_text=None, curl_text=None, budget=8, expect_gone_kids=None):
+    with tempfile.TemporaryDirectory(prefix="c1-gate-smoke-") as tmp:
+        root = pathlib.Path(tmp); c, env = smoke_tree(root, stop_exit, curl_ok)
+        rel = c / f"_build/{TAG}/prod/rel/orris_console/bin/orris_console"
+        if rel_text: script(rel, rel_text)
+        if curl_text: script(root / "mockbin/curl", curl_text)
+        env["SMOKE_BUDGET"] = str(budget); env["KID_MARK"] = str(root / "kid")
+        pid = None
+        try:
+            t0 = time.time()
+            run = subprocess.run(["bash", str(c / "bin/c1-release-smoke")], cwd=c, env=env, text=True, capture_output=True, timeout=budget + 30)
+            elapsed = time.time() - t0
+            pid = int((root / "pid").read_text()) if (root / "pid").exists() else None
+            work = pathlib.Path((root / "workpath").read_text().strip()) if (root / "workpath").exists() else None
+            gone = pid is None or child_gone(pid)
+            kid_gone = True
+            if expect_gone_kids and (root / "kid").exists():
+                kid_gone = child_gone(int((root / "kid").read_text()))
+            rc_ok = (run.returncode == 0) if want_rc_zero else (run.returncode != 0)
+            tree_gone = work is None or not work.exists()
+            check(name, rc_ok and gone and kid_gone and tree_gone and elapsed < budget + 15, f"rc={run.returncode} gone={gone} kid_gone={kid_gone} tree_gone={tree_gone} elapsed={elapsed:.1f}s out={run.stdout.strip()[-110:]}")
+            check(name + " (logs outside the removed tree)", (root / "smoke-logs/stop.log").exists() or (root / "smoke-logs/setup.log").exists())
+        finally:
+            for mark in ["pid", "kid"]:
+                if (root / mark).exists():
+                    p = int((root / mark).read_text())
+                    if not child_gone(p):
+                        os.kill(p, 9)
+
+
+HANG_STOP = REL_MOCK.replace('touch "$STOPPED_MARK"; exit STOP_EXIT', 'touch "$STOPPED_MARK"; exec /bin/sleep 60')
+HANG_CURL = "#!/bin/sh\nexec /bin/sleep 60\n"
+EARLY_EXIT = '#!/bin/sh\ncase "$1" in start) echo $$ > "$PID_MARK"; dirname "$ORRIS_CONSOLE_CONFIG_FILE" > "$WORK_MARK"; exit 3;; stop) exit 0;; esac\n'
+WITH_CHILD = '#!/bin/sh\ncase "$1" in start) echo $$ > "$PID_MARK"; dirname "$ORRIS_CONSOLE_CONFIG_FILE" > "$WORK_MARK"; /bin/sleep 60 & echo $! > "$KID_MARK"; exec /bin/sleep 60;; stop) touch "$STOPPED_MARK"; exit 1;; esac\n'
+
+def control_setup_descendant():
+    """R2-a: a bootstrap wrapper whose child outlives the wrapper is killed as a group at the bound; the tree is removed only then"""
+    with tempfile.TemporaryDirectory(prefix="c1-gate-r2a-") as tmp:
+        root = pathlib.Path(tmp); c, env = smoke_tree(root, 0, True)
+        env["SMOKE_BUDGET"] = "2"; env["SMOKE_CLEANUP_RESERVE"] = "1"; env["KID_MARK"] = str(root / "kid")
+        script(c / "bin/c1-setup", '#!/bin/sh\n/bin/sleep 60 &\necho $! > "$KID_MARK"\nwait\n')
+        run = subprocess.run(["bash", str(c / "bin/c1-release-smoke")], cwd=c, env=env, text=True, capture_output=True, timeout=30)
+        kid = int((root / "kid").read_text()) if (root / "kid").exists() else None
+        time.sleep(0.3)
+        kid_gone = kid is None or child_gone(kid)
+        temps = list((root / "temps").glob("orris-console-smoke.*"))
+        check("R2-a a setup descendant outliving its timed-out wrapper is killed with the group; tree removed only after", run.returncode != 0 and kid_gone and temps == [], f"rc={run.returncode} kid_gone={kid_gone} temps={len(temps)} out={run.stdout.strip()[-80:]}")
+        if kid and not child_gone(kid):
+            os.kill(kid, 9)
+
+
+def control_stop_identity():
+    """R2-b: start and stop carry the same invocation-owned node/cookie (unique, not the default), the cookie never
+    reaches the logs, and a sentinel instance with the default identity is untouched by the smoke's stop"""
+    with tempfile.TemporaryDirectory(prefix="c1-gate-r2b-") as tmp:
+        root = pathlib.Path(tmp); c, env = smoke_tree(root, 0, True)
+        env["SMOKE_BUDGET"] = "8"
+        sentinel = subprocess.Popen(["/bin/sleep", "60"], start_new_session=True)  # a foreign instance stand-in
+        try:
+            run = subprocess.run(["bash", str(c / "bin/c1-release-smoke")], cwd=c, env=env, text=True, capture_output=True, timeout=40)
+            pid_mark = root / "pid"
+            start_id = (pathlib.Path(str(pid_mark) + ".start-identity")).read_text().strip() if pathlib.Path(str(pid_mark) + ".start-identity").exists() else "missing"
+            stop_id = (pathlib.Path(str(pid_mark) + ".stop-identity")).read_text().strip() if pathlib.Path(str(pid_mark) + ".stop-identity").exists() else "missing"
+            node, _, cookie = start_id.partition("|")
+            logs_text = "".join(p.read_text() for p in (root / "smoke-logs").glob("*.log")) + run.stdout + run.stderr
+            sentinel_alive = sentinel.poll() is None
+            ok = (run.returncode == 0 and start_id == stop_id and node.startswith("orris_console_smoke_") and node != "orris_console"
+                  and len(cookie) >= 16 and cookie != "default" and cookie not in logs_text and sentinel_alive)
+            check("R2-b start and stop share one invocation-owned identity (unique node, fresh unlogged cookie); a default-identity sentinel survives", ok, f"rc={run.returncode} node={node} same={start_id == stop_id} cookie_logged={cookie in logs_text} sentinel_alive={sentinel_alive}")
+        finally:
+            if sentinel.poll() is None:
+                sentinel.kill(); sentinel.wait()
+
+
+run_controls = [control_1, control_2, control_setup_descendant, control_stop_identity,
+                lambda: escript_failure("R1-a backup copy fails: nothing built, original untouched, scratch cleaned", "backup"),
+                lambda: escript_failure("R1-b build fails: original restored (bytes + mode), scratch cleaned", None, mix_exit=1),
+                lambda: escript_failure("R1-c restore copy fails: non-zero, backup with the original bytes KEPT and its path reported", "restore", want_original=b"original", want_backup_kept=True),
+                lambda: smoke_case("R2-a hanging stop (60 s) is bounded: escalation kills the owned release inside the budget", 0, True, False, rel_text=HANG_STOP),
+                lambda: smoke_case("R2-b hanging HTTP client (60 s) is bounded: the owned release is stopped inside the budget", 0, False, False, curl_text=HANG_CURL),
+                lambda: smoke_case("R2-c partial startup (release exits at once) fails fast and cleans up", 0, False, False, rel_text=EARLY_EXIT),
+                lambda: smoke_case("R2-d a descendant of the owned release is reaped when stop fails (smoke non-zero)", 1, True, False, rel_text=WITH_CHILD, expect_gone_kids=True),
+                lambda: run_smoke(1, False, "C-3 failing smoke (curl down, stop fails) exits non-zero, escalates its OWNED release, removes the tree only after it is gone", False),
+                lambda: run_smoke(0, True, "C-4 smoke success path exits 0 with the owned release stopped and the tree removed", True)]
+for control in run_controls:
+    control()
+print("gate controls:", "PASS" if not failures else "FAIL " + ", ".join(failures))
+sys.exit(0 if not failures else 1)

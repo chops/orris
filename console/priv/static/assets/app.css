@@ -1,0 +1,5 @@
+body { font-family: system-ui, sans-serif; margin: 0; color: #1c1b18; background: #fcfbf8; }
+.bar { display: flex; justify-content: space-between; align-items: center; padding: 0.5rem 1rem; border-bottom: 1px solid #e2ded6; }
+main { padding: 1rem; }
+table { border-collapse: collapse; } td { padding: 0.25rem 0.75rem; border-bottom: 1px solid #e2ded6; }
+.status { color: #5f5b53; } .notice { color: #9c3d22; } pre { background: #f5f3ee; padding: 0.75rem; overflow-x: auto; }

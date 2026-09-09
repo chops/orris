@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Non-starting credential bootstrap: creates the console-local credential at the given path WITHOUT starting the
+# application (which fails closed without a credential). Prints how to read it; never prints the secret.
+#   bin/c1-setup /path/to/private/console/credential
+set -eu
+here=$(cd "$(dirname "$0")/.." && pwd); cd "$here"
+path=${1:?credential path required}
+mix run --no-start -e 'case OrrisConsole.Credential.setup(hd(System.argv())) do :ok -> IO.puts("credential created"); {:error, r} -> IO.puts(:stderr, "refused: " <> r.clause); System.halt(1) end' -- "$path"
+echo "login value: the hex of the file's 32 bytes, e.g.  xxd -p -c 64 '$path'  (keep it private; rotation = stop, delete, setup, start)"

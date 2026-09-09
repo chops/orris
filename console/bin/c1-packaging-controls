@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# C1-01c: a forbidden private core reference fails --warnings-as-errors with Boundary's diagnostic; the public Query
+# reference compiles. Run from console/ inside the repository Nix shell with the console's own build paths.
+set -u
+here=$(cd "$(dirname "$0")/.." && pwd); cd "$here"
+# B2 F3 override: the flake derives these from the Git root; the console owns its own build and deps paths
+tag=elixir-1.20.4-otp-29.0.5
+export MIX_BUILD_ROOT="$here/_build/$tag" MIX_DEPS_PATH="$here/deps/$tag"; unset MIX_BUILD_PATH
+out=${1:-"$here/_build/c1-packaging"}; mkdir -p "$out"
+cat > lib/c1_probe.ex <<'EOF'
+defmodule OrrisConsole.C1Probe do
+  @moduledoc false
+  def forbidden, do: &AiOrchestrator.Journal.Writer.append/2
+end
+EOF
+mix compile --force --warnings-as-errors > "$out/negative-writer.log" 2>&1; echo $? > "$out/negative-writer.exit"
+cat > lib/c1_probe.ex <<'EOF'
+defmodule OrrisConsole.C1Probe do
+  @moduledoc false
+  def public, do: &AiOrchestrator.Query.list_runs/1
+end
+EOF
+mix compile --force --warnings-as-errors > "$out/positive-query.log" 2>&1; echo $? > "$out/positive-query.exit"
+rm -f lib/c1_probe.ex
+mix compile --force --warnings-as-errors > "$out/clean.log" 2>&1; echo $? > "$out/clean.exit"
+echo "negative-writer exit $(cat "$out/negative-writer.exit") (expected non-zero: forbidden reference); positive-query exit $(cat "$out/positive-query.exit") (expected 0); clean exit $(cat "$out/clean.exit")"
+grep -c "forbidden reference" "$out/negative-writer.log" | sed 's/^/forbidden-reference diagnostics: /'

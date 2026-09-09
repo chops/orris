@@ -1,0 +1,240 @@
+#+title: Authenticated read-only console contract (C1)
+#+date: 2026-09-09
+#+status: CONTRACT DRAFT after peer GO; product TEST/DOC adoption follows B3 FINAL GO
+* Authority and entry condition
+Charles ratified NS-38 and the console-only MC-3 amendment and delegated ordinary
+engineering choices. OPEN-02 is resolved: separate console/ Mix project in Orris,
+path dependency .., independent lock/deps/build; portable core remains unchanged.
+C1 enters production implementation only after B3 exact-head FINAL GO and this
+contract/RED review. Map rev2 peer GO m_1788952528301 accepted the mechanisms;
+its F1/F2 precisions are folded below without another map-only review cycle. Ash/AshAI, installed configuration, real credentials, publication
+and installed-runtime changes remain held. Disposable loopback tests are development
+validation, never installed listeners. No product-completion claim for this slice.
+
+This map converts the reviewed auth rev3 mechanisms into named application seams
+and executable obligations. PROPOSED-FIRST-CONSOLE-CONTRACT.org remains the detailed
+threat model/evidence, with the precisions below governing its ingress wording.
+Ordinary docs and contracts are Org. New application/module names use OrrisConsole
+and :orris_console; existing core identifiers remain until the separate broad rename.
+
+* Useful delivered behavior
+The operator explicitly initializes a console-only local credential, runs the
+separate application, authenticates through a CSRF-protected login, and sees actual
+configured-root run listings and journal-derived summary/context. Detail displays
+pending repair, unknown host observations and stale refreshes honestly. Logout,
+expiry and restart revoke access. There are no enabled or decorative command buttons.
+Mounted Commands integration and policy-bound mutations are the NEXT product unit.
+Projection.Index/ETS rebuilding, status --watch, MCP, multi-user and remote deployment
+are future units; direct Query reads here do not mark those requirements delivered.
+
+* Threat boundary and identity choice
+Trusted: the operator account, local console configuration and configured filesystem
+roots. Untrusted: HTTP/websocket messages, cookies, run selectors, journals as display
+text, hostile websites and unauthenticated local TCP clients. Same-UID processes that
+can read credential/process memory can impersonate the operator; no OS sandbox claim.
+Use explicit local login (OPEN-03 option b for this console only). The private daemon
+UDS's peer credentials cannot authenticate a browser TCP connection. This does not
+settle UDS operator bootstrap or assignment-token OPEN-04 across other surfaces.
+Record this narrower resolution after peer review; no harness identity is reused.
+Actor id and allowed-root map are trusted server config, never browser parameters.
+
+* Layout, configuration and module map
+All paths below are within console/. A public core module is consumed through its
+reviewed export; no private-reference suppression or root web dependency is permitted.
+| File/module | Responsibility and interface |
+| mix.exs, mix.lock, flake.nix, .envrc | Own deps/build/lock, pinned toolchain 1.20.4/OTP29.0.5; explicit MIX_DEPS_PATH/MIX_BUILD_PATH for console; root flake lock reused/pinned without drift |
+| lib/orris_console/application.ex | Supervision, dependency readiness and fail-closed startup; no implicit credential generation |
+| config/runtime.exs; Config | Validate canonical root-id map, origin, loopback bind, socket mounts, credential path, operator id and tightened budgets |
+| Credential | setup(path) -> :ok or closed error; load(path) -> {:ok, digest} or closed error; exclusive creation, owner/mode/type checks |
+| SessionStore | login(secret), validate(id, activity), register_view(id, pid), revoke(id); private ETS; atomic admission/expiry/registration; closed result types |
+| Session | Trusted server-only identity/scope returned by Store; no arbitrary browser struct/map casting |
+| Ingress | Strict pre-dispatch Host/Origin/Upgrade guard called from Endpoint.call/2 before super |
+| Endpoint, Router, LoginController | Server session+CSRF, login/logout routes, private pipelines and LiveView socket session validation |
+| AuthHook | Disconnected render and connected on_mount validation, view registration/revocation, session checks at event/result cut points |
+| QueryJob, QueryWorkers | Responsive owner plus bounded supervised read workers; actual worker lifetime owns capacity; see lifecycle below |
+| ReadModel | Only Query.list_runs/run_summary/run_context/host_view; server root mapping and closed errors, public view data; never Query.resolve path output to client |
+| RunIndexLive, RunDetailLive | Real data, escaped context, timestamp/repair/unknown/stale states, scoped root/run selectors |
+| ErrorView, Redaction | Closed error vocabulary, parameter/log/format_status redaction; no raw inspected failures |
+| assets/, priv/static/ | Pinned LiveView client assets, minimal local CSS, CSP-safe initialization; no CDN runtime dependency |
+| bin/verify, tests, README.org, docs/contracts/console-readonly.org | Console canonical pipeline and actual runnable setup/launch instructions; root preservation evidence |
+
+No Ecto/database, Ash, adapter executor, new core dependency or external auth service.
+B2's reviewed Phoenix1.8.13/LiveView1.2.11 lock is the starting dependency evidence,
+not a blanket approval of whatever a new resolver selects. Record final exact lock,
+transitive/direct inventory, license provenance, warnings, build time and release size.
+Native ESM import/LiveSocket construction under restrictive CSP passed in a real
+headless browser (ASSET-BROWSER-REVIEW.org); use these pinned dependency assets with
+a deterministic copy/hash step as the initial path. This is not C1-14 acceptance.
+Use framework assets already in dependencies where possible; any asset toolchain
+addition is explicit, pinned and measured in the console closure only.
+
+* Concrete configuration and admission semantics
+- Bind exactly trusted IPv4/IPv6 loopback address; first default127.0.0.1. Advertised
+  origin is explicit scheme/host/port. Refuse wildcard/remote/proxy config for C1.
+- Validate and store configured authority hostname lowercased (including explicit
+  configured port); build the exact advertised authority/origin from that value.
+  Require exactly one raw Host, case-sensitive exact equality to that authority,
+  on ALL paths including static/error/login/upgrade. ALSO require parsed conn.host,
+  conn.port and transport conn.scheme to match config: an absolute request target
+  can override Host-derived parsed authority in Bandit. TCP-ABSOLUTE-REVIEW.org pins
+  the counterexample and27 passing corrected cells. Raw target scheme never grants
+  TLS: Bandit uses actual transport security. Parsed conn.host is compared exactly
+  against the same lowercase configured hostname; uppercase raw Host is rejected
+  even with a matching lowercase absolute target. Reject Forwarded and every
+  x-forwarded-* header. No reverse-proxy interpretation or Host normalization fallback.
+- Socket membership comes from the SAME configured endpoint mount paths used by
+  socket registration, with path-segment boundaries, not a literal /socket/ prefix.
+  Any Upgrade header outside those mounts is403 before framework dispatch. On socket
+  paths OR any Upgrade OR methods other than GET/HEAD, exactly one matching Origin
+  is mandatory. Thus GET to the configured mount without Upgrade still needs Origin;
+  OPTIONS without Origin is refused. Ordinary GET/HEAD navigation may omit Origin;
+  a present wrong/duplicate Origin is always refused. Longpoll and HTTP/2 disabled
+  in C1; enable additional transports only after actual parser/session coverage.
+- Phoenix session+CSRF controls remain enabled, including LiveView connect_info
+  and _csrf_token validation. Passing Ingress does not authenticate or waive CSRF.
+  Signed, unencrypted cookie carries only opaque session id and CSRF bookkeeping.
+  HttpOnly, SameSite=Strict, host-only, path=/; TLS requires Secure. Explicit loopback
+  HTTP cannot use Secure/__Host- and is documented accordingly, not called TLS.
+- Credential setup creates directory0700 before an exclusive empty regular file,
+  file0600 before secret bytes, then writes/syncs; refuses unsafe existing paths,
+  symlinks and owner mismatch. UID derives from lstat of an exclusively VM-created
+  fresh file in a private temporary directory, with cleanup and fail-closed errors.
+  Load validates type/permissions/owner. No token in argv, URL, default output or logs.
+  Disposable-only setup during tests. Stop/regenerate/start is explicit rotation.
+- Credential comparison hashes to equal-length SHA256 then secure_compare. Bounded
+  global login token bucket capacity5, refill1/6seconds monotonic; closed429 at
+  exhaustion, recovery after requests stop. Local exhaustion DoS tradeoff explicit.
+- SessionStore serializes login, expiry, registration and revoke. Capacity128, no
+  silent eviction; random id renewed on login, only digest key stored. Defaults idle
+  30min/absolute12h, config may tighten not disable; sweep1second. At most8 views per
+  session, monitors reclaim view slots. Automatic refresh does not count as activity.
+  Login and authenticated explicit interactions can update idle time. Invalid data
+  never grows tables or creates atoms. Fresh signing key+empty store each restart.
+- A revoke call removes validity and sends view termination notices before returning.
+  Each new query admission and result delivery validates through Store. Results
+  admitted immediately before revoke can already be in transit: tests name that
+  linearization boundary; no claim to retract data already sent to the browser.
+  Store restart invalidates all sessions; views must fail closed and terminate,
+  including any previously admitted QueryJob result. Disconnected render is gated too.
+- SessionStore/Query process state, messages, exceptions and params are sensitive.
+  Suppress parameter logging at HTTP and LiveView boundaries, sanitize status and
+  failure logs, catch workers into closed errors before uncaught exception reporting.
+  Do not blanket claim redaction based on only successful request logs.
+
+* Query lifetime and capacity (measured adapter; product integration pending)
+The seven existing lifecycle controls prove linked owner/worker cancellation, NOT
+aggregate slot preservation after owner death. Putting only QueryJob controllers
+under DynamicSupervisor max_children would free capacity when a controller dies,
+even if its read worker has not yet exited. Do not adopt that weaker mechanism.
+Measured adapter (QUERY-CAPACITY-REVIEW.org, nine controls, two failing mutants):
+put the actual temporary read workers under a DynamicSupervisor
+with max_children128, plus a unique per-view worker registration lasting until real
+worker death. A responsive QueryJob observes caller/deadline and owns cancellation;
+the worker links to that controller BEFORE admitting its read, while its supervisor
+retains the global slot until actual DOWN. Start acknowledgement cannot await Query
+or disk I/O. A killed-before-link controller must cause worker startup to fail, not
+permit a detached read. A responsive owner never traps private exceptions into logs.
+Startup, controller/view :kill, suspended worker, normal stop, supervisor loss and
+delayed-exit slot ownership were measured in the disposable spike. Product startup/
+restart and session-bound integration remain C1-09/C1-11 obligations; the test-only
+delayed-exit worker is not a real NIF or a production trap_exit setting.
+One worker per view, no missed-refresh queue, global128 actual worker children.
+Also cap responsive QueryJob controllers at128; a caller does not queue waiting for
+start_child/Registry capacity. Any max_children or per-view Registry refusal becomes
+STALE/unavailable plus the same1second retry as a read failure. The view tracks its
+current controller and worker identity: completion cannot permit a replacement until
+that controller has observed the OLD worker DOWN. Registry cleanup alone is not the
+completion acknowledgement. If the controller dies, its view sees DOWN, marks stale
+and retries only through bounded admission; actual worker capacity remains held.
+No Query/disk I/O is allowed before the worker start_link acknowledgement; this is a
+testable ordering requirement, not a comment about ordinary fast-start behavior.
+Default2second read deadline initiates kill; no new read before actual old worker
+DOWN. Retain last successful value marked STALE on failure/capacity refusal; no prior
+success means unavailable. Retry1second after completion/refusal, not stacked timers.
+Every refresh maps session root id to server config before calling public Query.
+B3 budget bounds host-observation legs, not disk I/O. No hard termination bound on
+uncancellable kernel/NIF work is claimed; a pending worker consumes capacity. Killing
+these reads is allowed only because Query never writes. Future Commands cannot reuse
+this cancellation wrapper. Application restart/session revocation behavior and
+worker supervisor shutdown must be measured, not inferred from child order.
+
+* Named acceptance rows (RED attribution + real controls required)
+| Row | Oracle / negative or lifecycle witness |
+| C1-01 packaging | Separate console production compile/release/boot and assets; root lock+deps unchanged, 18-app escript preserved; forbidden core private reference fails WAE while public Query reference passes |
+| C1-02 bootstrap | Real temporary credential creation, correct owner/modes, repeat refusal, symlink/wrong-mode/owner/probe errors, no bytes before permissions; UID env/PATH poisoning has no effect |
+| C1-03 ingress | All configured real mounts incl changed /live path; absent/wrong/duplicate Host/Origin, forwarded headers, uppercase Host incl matching absolute target, conflicting absolute target host/port, transport-authoritative scheme, non-socket Upgrade, socket GET without Upgrade, OPTIONS; valid navigation/connect controls |
+| C1-04 parser | Real Bandit TCP malformed/duplicate header cases never reach Query/Socket.connect; accepted ordinary browser navigation and upgrade exercise actual server |
+| C1-05 login | Correct credential+CSRF succeeds; missing/wrong CSRF fails even with secret; wrong credential fails; limiter exhaustion/recovery and table bounds; prelogin cookie cannot fix authenticated id |
+| C1-06 HTTP privacy | Unauthorized index/detail/root selectors never invoke Query; valid session sees only configured allowed roots; forbidden/unknown ref generic error, no path/root leakage |
+| C1-07 websocket privacy | Missing/forged cookie, CSRF or session and cross-root selectors fail before Query on mount, reconnect, event and refresh; valid session reads real data |
+| C1-08 expiry | Exact idle/absolute boundary, renewal and 128-session/8-view limits; automatic refresh never keeps idle alive; DOWN reclaims view capacity; invalid input does not allocate keys/atoms |
+| C1-09 revoke | Logout, Store restart, full application restart and explicit credential rotation refuse HTTP and open-view reads; controlled admission/result-vs-revoke races name permitted already-admitted delivery |
+| C1-10 projections | Real fixture list/summary/context, torn tail pending_repair exact, journal error/unknown host, deleted cache; journal bytes/head unchanged across every read/failure |
+| C1-11a lifetime | One-per-view/global capacity bound counts actual read workers through all spike cut points, retains occupied slot until worker DOWN, never blocks logout; unlink-only and premature-slot-release mutants fail controls |
+| C1-11b refusal | Actual max_children/per-view Registry refusal yields STALE/unavailable, never error page or queued controller, and exactly one1second retry; recovery then displays real data |
+| C1-11c ordering | Controlled OLD worker DOWN delayed from the controller: Registry cleanup alone cannot admit next read; read start is after controller DOWN observation; a premature-admission mutant fails |
+| C1-11d startup | Worker start acknowledgement precedes any Query/disk I/O; held read does not block starting/refusing another controller or logout; controller death before link/read gate admits no detached read |
+| C1-12 display | Real XSS canaries escaped, no executable journal HTML, pending-repair/unknown/stale labels and last-success timestamp accurate; no mutation route or inert controls |
+| C1-13 redaction | Login/token/session/path/exception/context canaries absent from unauthorized responses and captured HTTP/websocket/crash/status logs; authorized escaped context remains visible, not mistakenly tested as forbidden |
+| C1-14 browser | Headless real browser login/list/detail/live refresh/logout/reconnect; CSP and CSRF work with built assets; page scripts never execute XSS canary; disposable release server teardown and no retained credentials |
+
+A test that only expects an absent module is initial RED attribution, not sufficient
+oracle proof. Reuse real fixture data and apply differential controls where the
+behavior could pass a stub. Keep all stage exits, exact heads, process identities,
+assets/lock hashes and final browser traces free of credential disclosure.
+
+* Sequence and owner split
+1. Map and mechanism reviews are complete; peer F1/F2 are folded in this contract.
+   Codex supplies the private contract; Claude adopts it with actual TEST/DOC RED on
+   the B3 FINAL GO baseline. No new map-only re-review is required by these precisions.
+2. Before assigning product RED: run bounded lifecycle adapter spike and dependency/
+   asset/browser availability measurements; record exact result, no installed changes.
+3. Freeze reviewed map and C1 contract+RED in a new worktree from B3 FINAL GO;
+   Claude producer/Codex reviewer, or explicit inverse ownership if reassigned.
+4. Bounded GREEN, focused/static/security/browser evidence, frozen candidate; one
+   Codex canonical console gate and appropriate core preservation on that head.
+5. Independent final source/runtime review, HTML logical checkpoint and scoped
+   commits. Next mounted Commands contract starts under standing delegation.
+Push and installed startup remain distinct explicitly held operations. No new
+per-slice scope request is needed for this engineering sequence.
+
+* Closed seams and cut points for the RED implementation map
+The producer's RED mapping pins final function arities and closed result maps before
+GREEN. Use these entry points and semantics as the starting contract, not browser
+parameter shapes inferred from arbitrary framework structs:
+- Config.load/1 returns validated immutable server configuration or a closed config
+  error. It never accepts browser actor/root/credential/executor overrides.
+- Credential.setup/1 and load/1 accept a trusted configured file path; return :ok /
+  {:ok, digest} or closed errors. Setup never runs implicitly from Endpoint startup.
+- SessionStore.login/2 takes submitted credential plus server configuration/instance,
+  consumes bounded rate allowance, validates fixed digest, and returns an opaque id
+  or a closed invalid/rate_limited/capacity/unavailable result. No raw secret stored.
+- validate/3 distinguishes :observe (refresh/reconnect/result; no idle renewal) from
+  an explicit authenticated user action. register_view/3 validates atomically with
+  the max8 view slot and monitoring. revoke/2 invalidates before completion. Identity
+  fields come from trusted config/store, never from the opaque id's decoded shape.
+- ReadModel maps allowed root ids and run_ref to exactly the public Query functions.
+  It returns safe view data or one of unavailable/not_found/invalid/stale; sensitive
+  core detail is neither interpolated into a page nor attached to an exception log.
+- QueryJob admission/refusal and delivery carry correlation ids internal to the view.
+  Only the current controller/worker result may update that view, after session
+  revalidation. A stale or forged message cannot revive a revoked session or replace
+  another run's data. Internal identities are never exposed to the browser.
+- Disconnected HTTP render validates session and may show a loading shell; it does
+  not start an unowned async read. Connected mount registers the view before the
+  first Query admission. Expired/invalid sessions render no previously assigned data.
+- SessionStore restart revokes every current session; endpoint/query restarts must
+  not revive them. Pin application supervision order and connection teardown with
+  real process witnesses in C1-09/11, not inferred child-order prose. No new read is
+  admitted during unavailable store/registry/worker-supervisor state.
+- Login body/field size limits and finite route/event vocabularies must be explicit;
+  rate/session maps never key on arbitrary malformed input. The product README tells
+  the operator how to read its private credential file for login without printing
+  credentials through default setup/logging/URL/argv. Provider/harness secrets are
+  never reused. Disposable tests remove their credential files and profiles.
+
+* Completion boundary
+C1 completion means authenticated real read-only browsing and the above measured
+security/lifetime behavior. It does not complete the target LiveView control plane:
+policy-bound mounted Commands, review/attention/gate/operator actions, trace links,
+projection indexing/watch and installed packaging remain explicit subsequent tasks.

@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Core preservation stage: builds the ROOT production escript into a disposable build path and counts its
+# applications (must be 18). Any preexisting root artifact (bin/ai-orchestrator) is preserved: the backup is verified
+# before the build (or the stage fails before building), restored and verified after success AND after a build
+# failure, and on a restore failure the stage fails, keeps the backup and prints its path (never deletes the only
+# copy of the original bytes). Only the owned scratch directory is cleaned, and only after a verified restore.
+set -u
+here=$(cd "$(dirname "$0")/.." && pwd); root=$(cd "$here/.." && pwd); tag=elixir-1.20.4-otp-29.0.5
+artifact="$root/bin/ai-orchestrator"
+mkdir -p "$root/_build/$tag" || exit 1
+scratch=$(mktemp -d "$root/_build/$tag/verify-escript.XXXXXX") || exit 1
+backup="$scratch/preserved"
+had_artifact=0
+if [ -e "$artifact" ]; then
+  had_artifact=1
+  if ! cp -p "$artifact" "$backup" || ! cmp -s "$artifact" "$backup"; then
+    echo "core escript check: could not establish a verified backup of $artifact; nothing built"; rm -rf "$scratch"; exit 1
+  fi
+fi
+restore() { # returns 0 only after the original artifact is verifiably back (or absent when it was absent)
+  if [ "$had_artifact" = 1 ]; then
+    if cp -p "$backup" "$artifact" && cmp -s "$backup" "$artifact"; then return 0; fi
+    echo "core escript check: RESTORE FAILED; the original artifact bytes are kept at $backup (scratch retained)"; return 1
+  else
+    rm -f "$artifact"; return 0
+  fi
+}
+(cd "$root" && MIX_ENV=prod MIX_BUILD_PATH="$scratch/build" MIX_DEPS_PATH="$root/deps/$tag" mix escript.build) > "$scratch/build.log" 2>&1
+build_rc=$?
+if [ "$build_rc" != 0 ]; then
+  cat "$scratch/build.log"; echo "core escript build failed (exit $build_rc)"
+  if restore; then rm -rf "$scratch"; fi
+  exit 1
+fi
+n=$(python3 - "$artifact" <<'PY'
+import zipfile,io,re,sys
+d=open(sys.argv[1],"rb").read(); z=zipfile.ZipFile(io.BytesIO(d[d.find(b"PK\x03\x04"):]))
+print(len(set(m.group(1) for n in z.namelist() for m in [re.match(r"([^/]+)/ebin/",n)] if m)))
+PY
+)
+count_rc=$?
+echo "escript apps: $n"
+if ! restore; then exit 1; fi
+rm -rf "$scratch"
+[ "$count_rc" = 0 ] && [ "$n" = 18 ]

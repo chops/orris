@@ -1,0 +1,7 @@
+/_build/
+/deps/
+/priv/static/assets/phoenix.mjs
+/priv/static/assets/phoenix_live_view.esm.js
+/priv/static/assets/MANIFEST.sha256
+/erl_crash.dump
+__pycache__/

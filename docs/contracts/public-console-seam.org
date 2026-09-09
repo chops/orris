@@ -38,7 +38,7 @@ The CLI keeps its directory-based path, its error maps, exit codes, projection f
 - server_opts (server-only, never from a request): =root=, =budget_ms= (default 1_000; bounds the host observation legs
   after resolution and the verified read, A4), plus the CLI's seam keys (fs, id, clock, dispatch, gate, pane registry, operator).
 - Private tier =Prepare.Trusted= (not exported by the top): directory-based =validate/1=, =start/2=, =resume/2=, =cancel/2=,
-  =invoke(actor, prepared, executor, outcome, fsm_opts)= where =outcome= runs while the claim is held (A2).
+  =invoke(actor, prepared, executor, outcome)= where =outcome= runs while the claim is held (A2).
 
 * Rows (literal inventory: exact test names; RED rev2 successor of 71c2ff2 for review R1-R5)
 Controls, =test/contracts/public_console_seam_controls_test.exs= (C-0..C-9 are the historical baseline: they hold at

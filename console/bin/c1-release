@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Builds the production release into _build/<tag>/prod/rel/orris_console (console-owned paths; core untouched).
+set -eu
+here=$(cd "$(dirname "$0")/.." && pwd); cd "$here"
+tag=elixir-1.20.4-otp-29.0.5
+export MIX_BUILD_ROOT="$here/_build/$tag" MIX_DEPS_PATH="$here/deps/$tag"; unset MIX_BUILD_PATH
+bin/c1-assets
+MIX_ENV=prod mix deps.get
+MIX_ENV=prod mix release orris_console --overwrite
+# stable location for the acceptance row: _build/prod -> the toolchain-tagged build root
+ln -sfn "$tag/prod" "$here/_build/prod"
+ls -la "$here/_build/prod/rel/orris_console/bin/orris_console"
