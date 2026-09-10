@@ -18,6 +18,7 @@ defmodule AiOrchestrator.Lifecycle.HostDiagnosticsTest do
   alias AiOrchestrator.Test.GateDouble
   alias AiOrchestrator.Test.ScenarioHarness, as: H
   alias AiOrchestrator.Test.ScenarioHarness.OkDispatch
+  alias AiOrchestrator.Test.ScriptedDispatchReceipt
 
   @secret "SECRET_PAYLOAD_BYTES_9f3c"
   @now %Moment{unix: 1_788_264_900, wall_ts: "2026-08-31T12:15:00Z"}
@@ -25,6 +26,8 @@ defmodule AiOrchestrator.Lifecycle.HostDiagnosticsTest do
   defmodule WeirdDispatch do
     @moduledoc false
     @behaviour AiOrchestrator.Dispatch
+
+    use ScriptedDispatchReceipt
 
     @impl true
     def snapshot(_command, _opts), do: {:ok, %{"exists" => false}}
@@ -38,6 +41,8 @@ defmodule AiOrchestrator.Lifecycle.HostDiagnosticsTest do
   defmodule FakeStructDispatch do
     @moduledoc false
     @behaviour AiOrchestrator.Dispatch
+
+    use ScriptedDispatchReceipt
 
     @impl true
     def snapshot(_command, _opts), do: {:ok, %{"exists" => false}}
@@ -53,6 +58,8 @@ defmodule AiOrchestrator.Lifecycle.HostDiagnosticsTest do
     @moduledoc false
     @behaviour AiOrchestrator.Dispatch
 
+    use ScriptedDispatchReceipt
+
     @impl true
     def snapshot(_command, _opts), do: {:ok, %{"exists" => false}}
 
@@ -66,6 +73,8 @@ defmodule AiOrchestrator.Lifecycle.HostDiagnosticsTest do
     @moduledoc false
     @behaviour AiOrchestrator.Dispatch
 
+    use ScriptedDispatchReceipt
+
     @impl true
     def snapshot(_command, _opts), do: {:ok, %{"exists" => false}}
 
@@ -78,6 +87,8 @@ defmodule AiOrchestrator.Lifecycle.HostDiagnosticsTest do
   defmodule TrailingNewlineDispatch do
     @moduledoc false
     @behaviour AiOrchestrator.Dispatch
+
+    use ScriptedDispatchReceipt
 
     @stamp %Moment{unix: 1_788_264_900, wall_ts: "2026-08-31T12:15:00Z"}
 
@@ -95,6 +106,8 @@ defmodule AiOrchestrator.Lifecycle.HostDiagnosticsTest do
     @moduledoc false
     @behaviour AiOrchestrator.Dispatch
 
+    use ScriptedDispatchReceipt
+
     @impl true
     def snapshot(_command, _opts), do: {:ok, %{"exists" => false}}
 
@@ -107,6 +120,8 @@ defmodule AiOrchestrator.Lifecycle.HostDiagnosticsTest do
   defmodule InvalidErrorObserve do
     @moduledoc false
     @behaviour AiOrchestrator.Dispatch
+
+    use ScriptedDispatchReceipt
 
     @impl true
     def snapshot(_command, _opts), do: {:ok, %{"exists" => false}}
@@ -127,6 +142,8 @@ defmodule AiOrchestrator.Lifecycle.HostDiagnosticsTest do
     @moduledoc false
     @behaviour AiOrchestrator.Dispatch
 
+    use ScriptedDispatchReceipt
+
     def put(reason), do: :persistent_term.put({__MODULE__, :reason}, reason)
     def erase, do: :persistent_term.erase({__MODULE__, :reason})
     defp reason, do: :persistent_term.get({__MODULE__, :reason})
@@ -143,6 +160,8 @@ defmodule AiOrchestrator.Lifecycle.HostDiagnosticsTest do
   defmodule RejectingObserve do
     @moduledoc false
     @behaviour AiOrchestrator.Dispatch
+
+    use ScriptedDispatchReceipt
 
     @impl true
     def snapshot(_command, _opts), do: {:ok, %{"exists" => false}}

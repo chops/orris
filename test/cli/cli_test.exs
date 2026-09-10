@@ -10,6 +10,7 @@ defmodule AiOrchestrator.CLITest do
   alias AiOrchestrator.PaneRegistry.FileRegistry
   alias AiOrchestrator.Test.FaultFs
   alias AiOrchestrator.Test.GateDouble
+  alias AiOrchestrator.Test.ScriptedDispatchReceipt
 
   test "validate checks the run spec and plan in a run directory" do
     run_dir =
@@ -736,6 +737,7 @@ defmodule AiOrchestrator.CLITest do
 
   defmodule BlockingDispatch do
     @moduledoc false
+    use ScriptedDispatchReceipt
 
     def deliver(command, _opts) do
       {:ok,
@@ -775,6 +777,7 @@ defmodule AiOrchestrator.CLITest do
 
   defmodule RaisingDispatch do
     @moduledoc false
+    use ScriptedDispatchReceipt
 
     def snapshot(_command, _opts), do: {:ok, %{"exists" => false}}
 
@@ -784,6 +787,7 @@ defmodule AiOrchestrator.CLITest do
 
   defmodule BlockedDispatch do
     @moduledoc false
+    use ScriptedDispatchReceipt
 
     def deliver(command, _opts) do
       {:ok,

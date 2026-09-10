@@ -857,6 +857,8 @@ defmodule AiOrchestrator.Run.ServerFoundationRedTest do
     @moduledoc false
     alias AiOrchestrator.Dispatch.LocalPane
 
+    def capabilities(_opts), do: {:ok, ["delivery_reconcile"]}
+
     defdelegate snapshot(command, opts), to: LocalPane
     defdelegate observe(command, opts), to: LocalPane
 
@@ -865,6 +867,7 @@ defmodule AiOrchestrator.Run.ServerFoundationRedTest do
       {:ok, Map.put(result, "send_status", "queued")}
     end
 
+    # a gate runner that parks the executing process (the Server) until released by message
     def reconcile(_command, _opts) do
       outcome = if Seam.get(:polled), do: "delivered", else: "queued"
       Seam.put(:polled, true)
@@ -872,7 +875,6 @@ defmodule AiOrchestrator.Run.ServerFoundationRedTest do
     end
   end
 
-  # a gate runner that parks the executing process (the Server) until released by message
   defmodule HeldGate do
     @moduledoc false
     def runner(parent) do

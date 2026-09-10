@@ -64,6 +64,8 @@ defmodule AiOrchestrator.Effects.ExtractionRedTest do
     @moduledoc false
     alias AiOrchestrator.Dispatch.LocalPane
 
+    def capabilities(_opts), do: {:ok, ["delivery_reconcile"]}
+
     defdelegate snapshot(command, opts), to: LocalPane
     defdelegate observe(command, opts), to: LocalPane
 

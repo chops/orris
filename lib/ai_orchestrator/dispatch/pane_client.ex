@@ -63,7 +63,9 @@ defmodule AiOrchestrator.Dispatch.PaneClient do
     # that is not ok, or does not name version 2, authorizes nothing -- least of all a paste.
     case run_ap(["ping", "--protocol-version", "2"], Keyword.delete(opts, :input)) do
       {:ok, %{"ok" => true, "protocol_version" => 2, "capabilities" => tokens}} when is_list(tokens) ->
-        {:ok, Enum.filter(tokens, &is_binary/1)}
+        if AiOrchestrator.Dispatch.valid_capabilities?(tokens),
+          do: {:ok, tokens},
+          else: {:error, %{"reason" => "dispatch_capabilities_invalid"}}
 
       {:ok, %{"ok" => true, "protocol_version" => 2}} ->
         {:ok, []}

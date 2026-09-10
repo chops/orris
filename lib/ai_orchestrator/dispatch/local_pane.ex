@@ -178,32 +178,21 @@ defmodule AiOrchestrator.Dispatch.LocalPane do
     end
   end
 
-  # R1/R4: the daemon is asked what it can do before it is asked to do anything. An
-  # unknown token is not a fault -- capabilities are an open set -- only the absence of the
-  # one this client needs is.
-  defp proven(pane_client, opts) do
-    case pane_client.capabilities(Keyword.put(opts, :protocol_version, 2)) do
-      {:ok, tokens} when is_list(tokens) ->
-        if "delivery_reconcile" in tokens, do: :ok, else: {:error, preflight_refusal()}
+  # The declared capability is obtained from the daemon on this invocation. Unknown
+  # well-formed wire capabilities are additive; Dispatch validates the result before
+  # deciding whether its required capability is present.
+  @impl true
+  def capabilities(opts) do
+    pane_client = Keyword.get(opts, :pane_client, PaneClient)
 
-      {:error, _reason} = error ->
-        error
-
-      _other ->
-        {:error, preflight_refusal()}
+    with {:ok, tokens} <- pane_client.capabilities(Keyword.put(opts, :protocol_version, 2)) do
+      if AiOrchestrator.Dispatch.valid_capabilities?(tokens),
+        do: {:ok, Enum.filter(["delivery_reconcile"], &(&1 in tokens))},
+        else: {:error, %{"reason" => "dispatch_capabilities_invalid"}}
     end
   end
 
-  # D3: a named refusal at a named step. `capability` is kept for the adapter-level contract;
-  # `missing_capabilities` is what the reducer's attention detail carries to the operator.
-  defp preflight_refusal do
-    %{
-      "reason" => "dispatch_preflight_unsupported",
-      "detector" => "dispatch_preflight",
-      "capability" => "delivery_reconcile",
-      "missing_capabilities" => ["delivery_reconcile"]
-    }
-  end
+  defp proven(_pane_client, opts), do: AiOrchestrator.Dispatch.preflight(__MODULE__, opts)
 
   defp payload_hash(%{"payload_hash" => hash}) when is_binary(hash), do: {:ok, hash}
   defp payload_hash(_command), do: {:error, %{"reason" => "reconcile_payload_hash_missing"}}

@@ -230,6 +230,8 @@ defmodule AiOrchestrator.Run.CommandExecutorRedTest do
   # counts real deliveries through the pane adapter (a re-send after recovery would be a second count)
   defmodule CountingDispatch do
     @moduledoc false
+    def capabilities(_opts), do: {:ok, ["delivery_reconcile"]}
+
     defdelegate snapshot(command, opts), to: LocalPane
     defdelegate observe(command, opts), to: LocalPane
     defdelegate reconcile(command, opts), to: LocalPane
@@ -245,6 +247,8 @@ defmodule AiOrchestrator.Run.CommandExecutorRedTest do
   # path) and records what was durable for that assignment BEFORE any delegation; then it counts and delegates.
   defmodule PrefixCheckingDispatch do
     @moduledoc false
+    def capabilities(_opts), do: {:ok, ["delivery_reconcile"]}
+
     defdelegate snapshot(command, opts), to: LocalPane
     defdelegate observe(command, opts), to: LocalPane
     defdelegate reconcile(command, opts), to: LocalPane

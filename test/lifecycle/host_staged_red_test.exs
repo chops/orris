@@ -31,6 +31,8 @@ defmodule AiOrchestrator.Lifecycle.HostStagedRedTest do
   # ---- doubles ----
   defmodule CountingDispatch do
     @moduledoc false
+    def capabilities(_opts), do: {:ok, ["delivery_reconcile"]}
+
     def deliver(command, opts) do
       Agent.update(opts[:counter], &Map.update(&1, :deliver, 1, fn n -> n + 1 end))
       opts[:inner].deliver(command, opts[:inner_opts])

@@ -10,6 +10,8 @@ defmodule AiOrchestrator.CLIProvenanceTest do
     @moduledoc false
     @behaviour AiOrchestrator.Dispatch
 
+    use AiOrchestrator.Test.ScriptedDispatchReceipt
+
     @impl true
     def deliver(command, opts) do
       if pid = Keyword.get(opts, :test_pid), do: send(pid, {:delivered, command["assignment_id"]})

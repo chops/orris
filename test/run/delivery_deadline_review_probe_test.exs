@@ -13,6 +13,8 @@ defmodule AiOrchestrator.Run.DeliveryDeadlineReviewProbeTest do
 
   defmodule Adapter do
     @moduledoc false
+    def capabilities(_opts), do: {:ok, ["delivery_reconcile"]}
+
     def deliver(_, opts) do
       send(Keyword.fetch!(opts, :collector), :unexpected_deliver)
       {:error, %{"reason" => "unexpected"}}

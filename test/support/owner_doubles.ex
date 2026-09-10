@@ -26,9 +26,11 @@ defmodule AiOrchestrator.Test.OwnerDoubles do
 
   defmodule HoldingDispatch do
     @moduledoc false
+
     # deliver reports entry, waits for an instruction, then proceeds / raises / throws / exits with the sentinel
     alias AiOrchestrator.Dispatch.LocalPane
 
+    def capabilities(_opts), do: {:ok, ["delivery_reconcile"]}
     defdelegate snapshot(command, opts), to: LocalPane
     defdelegate observe(command, opts), to: LocalPane
     defdelegate reconcile(command, opts), to: LocalPane
@@ -45,12 +47,13 @@ defmodule AiOrchestrator.Test.OwnerDoubles do
       after
         30_000 -> exit(:deliver_never_instructed)
       end
+
+      # the C4 double with a controllable abandon (:ok | :error | :hang); every abandon is reported to the collector
     end
   end
 
   defmodule AbandonGate do
     @moduledoc false
-    # the C4 double with a controllable abandon (:ok | :error | :hang); every abandon is reported to the collector
     alias AiOrchestrator.Test.GateDouble
 
     def control(collector, mode), do: :persistent_term.put({__MODULE__, :control}, {collector, mode})

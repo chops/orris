@@ -17,6 +17,8 @@ defmodule AiOrchestrator.Lifecycle.HostTest do
     @moduledoc false
     @behaviour AiOrchestrator.Dispatch
 
+    use AiOrchestrator.Test.ScriptedDispatchReceipt
+
     @impl true
     def deliver(command, opts) do
       record(opts, {:dispatch, command["assignment_id"]})

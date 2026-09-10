@@ -11,6 +11,8 @@ defmodule AiOrchestrator.Lifecycle.RunFSMGateRetryTest do
     @moduledoc false
     @behaviour AiOrchestrator.Dispatch
 
+    use AiOrchestrator.Test.ScriptedDispatchReceipt
+
     @impl true
     def deliver(command, _opts) do
       {:ok,

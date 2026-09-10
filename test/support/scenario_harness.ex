@@ -12,6 +12,7 @@ defmodule AiOrchestrator.Test.ScenarioHarness do
   alias AiOrchestrator.Test.FixedClock
   alias AiOrchestrator.Test.FixedId
   alias AiOrchestrator.Test.GateDouble
+  alias AiOrchestrator.Test.ScriptedDispatchReceipt
 
   defmodule FakePaneClient do
     @moduledoc false
@@ -40,6 +41,8 @@ defmodule AiOrchestrator.Test.ScenarioHarness do
   defmodule OkDispatch do
     @moduledoc false
     @behaviour AiOrchestrator.Dispatch
+
+    use ScriptedDispatchReceipt
 
     @impl true
     def deliver(command, _opts) do
@@ -77,6 +80,8 @@ defmodule AiOrchestrator.Test.ScenarioHarness do
   defmodule BlockedDispatch do
     @moduledoc false
     @behaviour AiOrchestrator.Dispatch
+
+    use ScriptedDispatchReceipt
 
     @impl true
     def deliver(command, opts), do: OkDispatch.deliver(command, opts)

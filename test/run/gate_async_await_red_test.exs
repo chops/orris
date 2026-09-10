@@ -55,6 +55,8 @@ defmodule AiOrchestrator.Run.GateAsyncAwaitRedTest do
   # counts every adapter entry so the duplicate matrix can prove ZERO adapter starts (AR-M5)
   defmodule CountingDispatch do
     @moduledoc false
+    def capabilities(_opts), do: {:ok, ["delivery_reconcile"]}
+
     def deliver(command, opts), do: witness(:deliver, command, opts)
     def observe(command, opts), do: witness(:observe, command, opts)
     def reconcile(command, opts), do: witness(:reconcile, command, opts)

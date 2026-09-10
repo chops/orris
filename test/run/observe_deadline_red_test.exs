@@ -38,6 +38,8 @@ defmodule AiOrchestrator.Run.ObserveDeadlineRedTest do
   # failures on demand, no self-catching); every other dispatch method is the real LocalPane
   defmodule BlockingObserve do
     @moduledoc false
+    def capabilities(_opts), do: {:ok, ["delivery_reconcile"]}
+
     defdelegate deliver(command, opts), to: LocalPane
     defdelegate snapshot(command, opts), to: LocalPane
     defdelegate reconcile(command, opts), to: LocalPane
@@ -143,6 +145,8 @@ defmodule AiOrchestrator.Run.ObserveDeadlineRedTest do
   # a NON-Observe adapter that raises the public carrier with whatever diagnostic the test supplies (OG-M1)
   defmodule ForgedSnapshot do
     @moduledoc false
+    def capabilities(_opts), do: {:ok, ["delivery_reconcile"]}
+
     defdelegate deliver(command, opts), to: LocalPane
     defdelegate observe(command, opts), to: LocalPane
     defdelegate reconcile(command, opts), to: LocalPane

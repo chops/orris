@@ -29,6 +29,8 @@ defmodule AiOrchestrator.Run.DeliveryDeadlineBaselineTest do
   # deliver answers a scripted result; every other method is the real LocalPane
   defmodule ScriptedDeliver do
     @moduledoc false
+    def capabilities(_opts), do: {:ok, ["delivery_reconcile"]}
+
     defdelegate observe(command, opts), to: LocalPane
     defdelegate snapshot(command, opts), to: LocalPane
     defdelegate reconcile(command, opts), to: LocalPane
@@ -38,6 +40,8 @@ defmodule AiOrchestrator.Run.DeliveryDeadlineBaselineTest do
   # a NON-cooperative deliver: reports entry then blocks forever
   defmodule BlockingDeliver do
     @moduledoc false
+    def capabilities(_opts), do: {:ok, ["delivery_reconcile"]}
+
     defdelegate observe(command, opts), to: LocalPane
     defdelegate snapshot(command, opts), to: LocalPane
     defdelegate reconcile(command, opts), to: LocalPane
@@ -54,6 +58,8 @@ defmodule AiOrchestrator.Run.DeliveryDeadlineBaselineTest do
   # a real deliver whose receipt says the send is QUEUED, then a scripted reconcile answer
   defmodule QueuedThenScriptedReconcile do
     @moduledoc false
+    def capabilities(_opts), do: {:ok, ["delivery_reconcile"]}
+
     defdelegate observe(command, opts), to: LocalPane
     defdelegate snapshot(command, opts), to: LocalPane
 

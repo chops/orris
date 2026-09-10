@@ -12,25 +12,62 @@ defmodule AiOrchestrator.Dispatch do
   @callback deliver(map(), keyword()) :: {:ok, map()} | {:error, map()}
   @callback observe(map(), keyword()) :: {:ok, map()} | {:blocked, map()} | {:pending, map()} | {:error, map()}
 
-  # R1: delivery idempotency is part of dispatch semantics, not an optional adapter
-  # feature. An adapter that cannot ask what became of a send cannot be resumed against,
-  # because every resume would have to assume the prompt was never sent.
   @callback reconcile(map(), keyword()) :: {:ok, map()} | {:error, map()}
-  # Optional at the behaviour so a test double or a read-only adapter still compiles;
-  # preflight/1 is where an adapter that cannot reconcile is refused, by name.
   @optional_callbacks reconcile: 2
 
-  @doc """
-  D3: capability discovery is a named step with a named refusal, run before an adapter is
-  asked to do anything, so the reducer never discovers mid-conversation that it is holding
-  a half-finished dispatch it has no rule for.
-  """
-  @spec preflight(module()) :: :ok | {:error, map()}
-  def preflight(adapter) when is_atom(adapter) do
-    if Code.ensure_loaded?(adapter) and function_exported?(adapter, :reconcile, 2) do
-      :ok
-    else
-      {:error, %{"reason" => "dispatch_adapter_cannot_reconcile"}}
+  @doc "The adapter's declared capabilities; LocalPane obtains its live daemon proof here."
+  @callback capabilities(keyword()) :: {:ok, [String.t()]} | {:error, map()}
+
+  @doc "Validate declared reconciliation capability before a durable adapter invocation."
+  @spec preflight(module(), keyword()) :: :ok | {:error, map()}
+  def preflight(adapter, opts \\ []) do
+    case adapter.capabilities(opts) do
+      {:ok, tokens} when is_list(tokens) ->
+        cond do
+          not valid_capabilities?(tokens) -> refusal("dispatch_capabilities_invalid")
+          "delivery_reconcile" in tokens -> :ok
+          true -> unsupported()
+        end
+
+      {:error, _reason} ->
+        refusal("dispatch_capabilities_failed")
+
+      _other ->
+        refusal("dispatch_capabilities_invalid")
     end
+  rescue
+    error in UndefinedFunctionError ->
+      if error.module == adapter and error.function == :capabilities and error.arity == 1,
+        do: refusal("dispatch_adapter_cannot_reconcile"),
+        else: refusal("dispatch_capabilities_failed")
+
+    _error ->
+      refusal("dispatch_capabilities_failed")
+  catch
+    _kind, _reason -> refusal("dispatch_capabilities_failed")
+  end
+
+  @doc false
+  @spec valid_capabilities?(term()) :: boolean()
+  def valid_capabilities?(tokens) when is_list(tokens), do: Enum.all?(tokens, &capability_token?/1)
+  def valid_capabilities?(_tokens), do: false
+
+  # The wire does not pin a naming style. Reject malformed tokens, not future
+  # punctuation, case or Unicode spellings the adapter does not yet understand.
+  defp capability_token?(token) when is_binary(token),
+    do: token != "" and String.valid?(token) and not Regex.match?(~r/[\s\p{Cc}]/u, token)
+
+  defp capability_token?(_token), do: false
+
+  defp refusal(reason), do: {:error, %{"reason" => reason, "detector" => "dispatch_preflight"}}
+
+  defp unsupported do
+    {:error,
+     %{
+       "reason" => "dispatch_preflight_unsupported",
+       "detector" => "dispatch_preflight",
+       "capability" => "delivery_reconcile",
+       "missing_capabilities" => ["delivery_reconcile"]
+     }}
   end
 end

@@ -261,8 +261,8 @@ defmodule AiOrchestrator.Effects do
 
     closure =
       case intent do
-        %Effect.Dispatch{} -> fn -> module.deliver(command, dispatch_opts) end
-        %Effect.ReconcileSend{} -> fn -> module.reconcile(command, dispatch_opts) end
+        %Effect.Dispatch{} -> fn -> dispatch_admitted(module, :deliver, command, dispatch_opts) end
+        %Effect.ReconcileSend{} -> fn -> dispatch_admitted(module, :reconcile, command, dispatch_opts) end
       end
 
     case runner.(closure, %{deadline_unix: deadline}) do
@@ -903,7 +903,7 @@ defmodule AiOrchestrator.Effects do
   # A bijection with the shapes the reducer matches on; the host decides nothing. The only
   # additions are typed errors where an adapter returns a shape outside its behaviour.
   defp adapter(%Effect.Dispatch{command: command}, opts) do
-    dispatch_module(opts).deliver(command, dispatch_opts(opts))
+    dispatch_admitted(dispatch_module(opts), :deliver, command, dispatch_opts(opts))
   end
 
   @reconcile_outcomes ~w(delivered queued absent ambiguous conflict)
@@ -915,7 +915,7 @@ defmodule AiOrchestrator.Effects do
   end
 
   defp adapter(%Effect.ReconcileSend{command: command}, opts) do
-    dispatch_module(opts).reconcile(command, dispatch_opts(opts))
+    dispatch_admitted(dispatch_module(opts), :reconcile, command, dispatch_opts(opts))
   end
 
   # The host owns the wait: it sleeps until the deadline by its own clock and answers with
@@ -1165,6 +1165,15 @@ defmodule AiOrchestrator.Effects do
     case Keyword.get(opts, :prompt_root, Keyword.get(opts, :run_dir)) do
       root when is_binary(root) -> root
       _other -> raise ArgumentError, "prompt retention needs :prompt_root or :run_dir in the host options"
+    end
+  end
+
+  # Admission runs in the same closure as the adapter: a capability query consumes
+  # the existing delivery deadline and belongs to the same owner. Snapshot/Observe
+  # are read operations and do not gain a durable-send admission requirement.
+  defp dispatch_admitted(module, operation, command, opts) do
+    with :ok <- AiOrchestrator.Dispatch.preflight(module, opts) do
+      apply(module, operation, [command, opts])
     end
   end
 

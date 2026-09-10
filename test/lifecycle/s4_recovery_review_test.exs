@@ -37,6 +37,8 @@ defmodule AiOrchestrator.Lifecycle.S4RecoveryReviewTest do
 
   defmodule InvalidOutcomeDispatch do
     @moduledoc false
+    def capabilities(_opts), do: {:ok, ["delivery_reconcile"]}
+
     def deliver(command, opts) do
       {:ok, data} = ScenarioHarness.OkDispatch.deliver(command, opts)
       {:ok, Map.put(data, "send_status", "queued")}

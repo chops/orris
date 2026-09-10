@@ -38,6 +38,8 @@ defmodule AiOrchestrator.Run.DeliveryDeadlineRedTest do
   # a NON-cooperative deliver: reports entry with the command's identity, blocks until released
   defmodule BlockingDeliver do
     @moduledoc false
+    def capabilities(_opts), do: {:ok, ["delivery_reconcile"]}
+
     defdelegate observe(command, opts), to: LocalPane
     defdelegate snapshot(command, opts), to: LocalPane
 
@@ -75,6 +77,8 @@ defmodule AiOrchestrator.Run.DeliveryDeadlineRedTest do
   # a real queued deliver (LocalPane base, receipt says queued) then a NON-cooperative reconcile
   defmodule QueuedThenBlockingReconcile do
     @moduledoc false
+    def capabilities(_opts), do: {:ok, ["delivery_reconcile"]}
+
     defdelegate observe(command, opts), to: LocalPane
     defdelegate snapshot(command, opts), to: LocalPane
 
@@ -101,6 +105,8 @@ defmodule AiOrchestrator.Run.DeliveryDeadlineRedTest do
   # a real queued deliver then a scripted reconcile (proven-absent retry witness)
   defmodule QueuedThenScriptedReconcile do
     @moduledoc false
+    def capabilities(_opts), do: {:ok, ["delivery_reconcile"]}
+
     defdelegate observe(command, opts), to: LocalPane
     defdelegate snapshot(command, opts), to: LocalPane
 
@@ -173,6 +179,8 @@ defmodule AiOrchestrator.Run.DeliveryDeadlineRedTest do
   # a NON-Observe adapter that raises the public carrier with whatever diagnostic the test supplies (OG-M1)
   defmodule ForgedSnapshot do
     @moduledoc false
+    def capabilities(_opts), do: {:ok, ["delivery_reconcile"]}
+
     defdelegate deliver(command, opts), to: LocalPane
     defdelegate observe(command, opts), to: LocalPane
     defdelegate reconcile(command, opts), to: LocalPane

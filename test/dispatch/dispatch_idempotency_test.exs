@@ -286,8 +286,8 @@ defmodule AiOrchestrator.Dispatch.IdempotencyTest do
              """
     end
 
-    test "preflight admits an adapter that implements reconcile" do
-      assert :ok = Dispatch.preflight(LocalPane)
+    test "preflight admits LocalPane only after its declared live capability" do
+      assert :ok = Dispatch.preflight(LocalPane, pane_client: AiOrchestrator.Test.ScenarioHarness.FakePaneClient)
     end
 
     test "preflight refuses an adapter that cannot reconcile" do
