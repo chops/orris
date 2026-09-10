@@ -8,7 +8,7 @@ defmodule AiOrchestrator.Test.ScriptedDispatchReceiptTest do
     def deliver(_command, opts), do: Keyword.fetch!(opts, :result)
   end
 
-  @command %{"send_message_id" => "id", "pane_ref" => "%1", "payload_hash" => "hash"}
+  @command %{"send_message_id" => "id", "pane_ref" => "pane_fixture", "payload_hash" => "hash"}
 
   test "receipt observes the actual synthetic result and binds pane plus payload" do
     assert {:ok, %{"outcome" => "ambiguous"}} = Fixture.reconcile(@command, [])

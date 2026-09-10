@@ -208,7 +208,7 @@ defmodule C1.MutationPreservationTest do
     100644 blob 6f8544e74c5907bebfdba64381e9320b07fcd7e3\tmix.exs
     100644 blob 54b8c07475cf6c51b61b6ea63eade94966c0e27b\tmix.lock
     040000 tree 186b47fb436e9a51998df577bd93922431b7f3e7\tnative
-    040000 tree f8f8145d3a28e66e6d8dd34867b79e51fbea3f2b\ttest
+    040000 tree e1061927be91d1e991e2d39039f88247504db81e\ttest
     """
 
     {committed, 0} = System.cmd("git", ["ls-tree", "HEAD", "--"] ++ core_paths, cd: Harness.core_path())

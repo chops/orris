@@ -125,7 +125,7 @@ defmodule AiOrchestrator.Effects.DispatchCapabilityAdmissionTest do
       assert {:error, _} =
                LocalPane.deliver(
                  %{
-                   "pane_ref" => "%1",
+                   "pane_ref" => "pane_fixture",
                    "send_message_id" => "id"
                  },
                  Keyword.put(opts, :input_runner, fn _, _, _, _ -> flunk("malformed capability reached send") end)
