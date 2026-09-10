@@ -194,8 +194,8 @@ defmodule C1.MutationPreservationTest do
     assert smoke == Regex.replace(~r/^port=.*$/m, base_smoke, fn _ -> allocator end)
 
     # Reviewed content baseline: the published Elixir/Rust migration plus declared
-    # dispatch capabilities and explicit-root CLI discovery. Pin root entries so another core
-    # commit cannot silently pass. A later authorized core delivery must update
+    # dispatch capabilities, explicit-root CLI discovery and active-stop owner joins.
+    # Pin root entries so another core commit cannot silently pass. A later authorized core delivery must update
     # this snapshot explicitly in its review. Console files are outside the
     # snapshot, avoiding a self-referential commit id.
     core_paths = ~w(mix.exs mix.lock flake.nix flake.lock lib test bin native)
@@ -204,11 +204,11 @@ defmodule C1.MutationPreservationTest do
     040000 tree 00b964d79e561883217e9f96b45968faa8651761\tbin
     100644 blob cfbb9f900c6f1442d2552baa0063cff01b270413\tflake.lock
     100644 blob 19621e64b39eda66e1ba845d833a1f3c619bd511\tflake.nix
-    040000 tree 9c1fc0f676a0535843391a801497e71a41b764a2\tlib
+    040000 tree 6345c823a735ea03f087035c6fceb20bf32b4765\tlib
     100644 blob 6f8544e74c5907bebfdba64381e9320b07fcd7e3\tmix.exs
     100644 blob 54b8c07475cf6c51b61b6ea63eade94966c0e27b\tmix.lock
     040000 tree 186b47fb436e9a51998df577bd93922431b7f3e7\tnative
-    040000 tree 7a4f25e7aa58a579ddfafce83f08f283b0d2cd93\ttest
+    040000 tree a7794a36c89ae65af8dd68d573914fdd1399abf5\ttest
     """
 
     {committed, 0} = System.cmd("git", ["ls-tree", "HEAD", "--"] ++ core_paths, cd: Harness.core_path())
