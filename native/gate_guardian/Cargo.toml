@@ -1,0 +1,14 @@
+[package]
+name = "gate_guardian"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+libc = "=0.2.186"
+
+[features]
+testing = []
+
+[profile.release]
+panic = "abort"

@@ -34,5 +34,7 @@ Loopback HTTP only: the session cookie cannot be Secure; nothing is exposed beyo
 - bin/c1-release: production release under _build/prod (alias of the toolchain-tagged build root)
 - bin/c1-release-smoke: disposable bootstrap + config + release start/stop with a real HTTP check; every external operation runs as an owned process group under one monotonic deadline (SMOKE_BUDGET, default 60 s, with a bounded cleanup reserve); the release is started and stopped with an invocation-owned node name and a fresh cookie, the temp tree is removed only after every owned process is gone, logs kept under _build/verify-smoke
 - bin/c1-core-escript-check: the 18-application production escript of the ROOT built into a disposable path; a preexisting root artifact is preserved byte for byte
-- bin/c1-gate-controls: bounded failure controls for the gate scripts (crashed packaging runner, nonempty evidence refused, preserved artifact, owned release escalation, smoke success) against scratch copies with mocked tools
+- bin/c1-gate-controls: ExUnit failure controls for the gate scripts (crashed packaging runner, nonempty evidence refused, preserved artifact, owned release escalation, smoke success) against scratch copies with mocked tools
 - bin/c1-packaging-controls: C1-01c Boundary controls (negative/positive/clean exits)
+
+The gate controls also run under =mix test=. Archive inspection and smoke-port selection use Elixir/OTP; Python is not required.

@@ -1,0 +1,5 @@
+#!/usr/bin/env elixir
+{:ok, socket} = :gen_tcp.listen(0, ip: {127, 0, 0, 1}, active: false)
+{:ok, port} = :inet.port(socket)
+:ok = :gen_tcp.close(socket)
+IO.puts(port)

@@ -82,3 +82,5 @@ see [[file:docs/documentation-format.org][the documentation format policy]].
 :CUSTOM_ID: license
 :END:
 This project is licensed under the Apache License 2.0. See [[file:LICENSE][LICENSE]] for details.
+
+Implementation language policy: [[file:docs/language-policy.org][Elixir and Rust]].

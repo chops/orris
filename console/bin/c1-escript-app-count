@@ -1,0 +1,18 @@
+#!/usr/bin/env elixir
+# Inspect an escript archive through OTP, including its executable header.
+[path] = System.argv()
+{:ok, sections} = :escript.extract(String.to_charlist(path), [])
+{:archive, archive} = List.keyfind(sections, :archive, 0)
+{:ok, entries} = :zip.list_dir(archive)
+entries
+|> Enum.flat_map(fn
+  {:zip_file, name, _, _, _, _} ->
+    case String.split(List.to_string(name), "/") do
+      [app, "ebin" | _] -> [app]
+      _ -> []
+    end
+  _ -> []
+end)
+|> Enum.uniq()
+|> length()
+|> IO.puts()

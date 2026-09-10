@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Build the locked Rust guardian into a caller-owned destination. The production
+# and fault-injection feature builds have separate caches and never install globally.
+set -euo pipefail
+root=$(cd "$(dirname "$0")/.." && pwd)
+profile=production
+features=()
+if [[ "${1:-}" == --testing ]]; then profile=testing; features=(--features testing); shift; fi
+if [[ $# != 1 ]]; then echo 'usage: bin/build-guardian [--testing] DESTINATION' >&2; exit 2; fi
+RUSTFLAGS="${RUSTFLAGS:-} -D warnings" cargo build --quiet --locked --release --manifest-path "$root/native/gate_guardian/Cargo.toml" \
+  --target-dir "$root/_build/gate-guardian/$profile" "${features[@]}"
+cp "$root/_build/gate-guardian/$profile/release/gate_guardian" "$1"

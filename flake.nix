@@ -40,6 +40,9 @@
               pkgs.coreutils
               pkgs.git
               pkgs.gnugrep
+              pkgs.rustc
+              pkgs.cargo
+              pkgs.rustfmt
               pkgs.ripgrep
             ];
 

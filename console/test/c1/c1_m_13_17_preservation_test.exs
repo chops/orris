@@ -174,29 +174,47 @@ defmodule C1.MutationPreservationTest do
     for canary <- [root, run_dir, intent, inspect(op_ref)], do: refute(after_page.resp_body =~ canary)
   end
 
-  test "M-15 the console gate keeps its shape: bin/verify stage list unchanged, stage 11 compares the core paths, the release smoke is byte-identical to public a59d945, committed core paths equal a59d945" do
+  test "M-15 preserves gate stages, committed core state and the smoke script apart from its Elixir port helper" do
     verify = File.read!(Path.expand("../../bin/verify", __DIR__))
     # every numbered stage or record call, in order (record calls sit inside the packaging if/else on one line)
     stages = Regex.scan(~r/\b(?:stage|record) (\d\d-[a-z0-9-]+)/, verify) |> Enum.map(&List.last/1) |> Enum.uniq()
     assert stages == @verify_stages, "verify stages: #{inspect(stages)}"
     assert verify =~ ~s(git diff --quiet HEAD -- mix.exs mix.lock flake.nix flake.lock lib test bin)
 
-    smoke_sha =
-      Path.expand("../../bin/c1-release-smoke", __DIR__)
-      |> File.read!()
-      |> then(&:crypto.hash(:sha256, &1))
-      |> Base.encode16(case: :lower)
+    smoke = File.read!(Path.expand("../../bin/c1-release-smoke", __DIR__))
 
     {base_smoke, 0} =
       System.cmd("git", ["show", "a59d945be772061d1968fd6ea02449abe3ce9f81:console/bin/c1-release-smoke"],
         cd: Harness.core_path()
       )
 
-    assert smoke_sha == base_smoke |> then(&:crypto.hash(:sha256, &1)) |> Base.encode16(case: :lower)
-    core_paths = ~w(mix.exs mix.lock flake.nix flake.lock lib test bin)
-    diff_args = ["diff", "--stat", "a59d945be772061d1968fd6ea02449abe3ce9f81", "HEAD", "--"] ++ core_paths
-    {diff, 0} = System.cmd("git", diff_args, cd: Harness.core_path())
-    assert diff == "", "committed core paths differ from public a59d945:\n#{diff}"
+    # Charles authorized replacing the port allocator with Elixir. Keep every
+    # other byte of the reviewed smoke lifecycle pinned, including its cleanup.
+    allocator = "port=$(elixir \"$here/bin/c1-smoke-port\") || { echo \"could not allocate smoke port\"; exit 1; }"
+    assert smoke == Regex.replace(~r/^port=.*$/m, base_smoke, fn _ -> allocator end)
+
+    # Reviewed content baseline: public 2ad01fb plus the authorized Elixir/Rust
+    # migration. Pin root entries (including whole subtrees) so another core
+    # commit cannot silently pass. A later authorized core delivery must update
+    # this snapshot explicitly in its review. Console files are outside the
+    # snapshot, avoiding a self-referential commit id.
+    core_paths = ~w(mix.exs mix.lock flake.nix flake.lock lib test bin native)
+
+    expected = """
+    040000 tree 00b964d79e561883217e9f96b45968faa8651761\tbin
+    100644 blob cfbb9f900c6f1442d2552baa0063cff01b270413\tflake.lock
+    100644 blob 19621e64b39eda66e1ba845d833a1f3c619bd511\tflake.nix
+    040000 tree abb5fd94c998e9284bec053d07dc7cd28703c031\tlib
+    100644 blob 6f8544e74c5907bebfdba64381e9320b07fcd7e3\tmix.exs
+    100644 blob 54b8c07475cf6c51b61b6ea63eade94966c0e27b\tmix.lock
+    040000 tree 186b47fb436e9a51998df577bd93922431b7f3e7\tnative
+    040000 tree 12dc3f6b808281bf8977b02c0a7adfd43e5442aa\ttest
+    """
+
+    {committed, 0} = System.cmd("git", ["ls-tree", "HEAD", "--"] ++ core_paths, cd: Harness.core_path())
+    assert committed == expected, "committed core differs from the reviewed migration baseline:\n#{committed}"
+    {diff, 0} = System.cmd("git", ["diff", "--stat", "HEAD", "--"] ++ core_paths, cd: Harness.core_path())
+    assert diff == "", "console execution changed committed core paths:\n#{diff}"
   end
 
   test "M-16 configuration: operator id outside the actor grammar refuses startup; the seven limits default, bound and refuse out-of-range values (config_mutation_limits_invalid); the file accepts exactly them; seams never load" do

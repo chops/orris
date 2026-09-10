@@ -4,7 +4,7 @@
 * Implementation status
 Delivered: =AiOrchestrator.Gate.Execution= (=lib/ai_orchestrator/gate/execution.ex=) with =prepare/3=, =ack/2=,
 =release/3=, =await/2=, =expire/1=, =abandon/1=, =pass?/1= and =reconcile/4= as specified below, the claim file
-and publication path, the native =--probe= verb in =native/gate_guardian/gate_guardian.c=, and the v2
+and publication path, the native =--probe= verb in =native/gate_guardian/src/main.rs=, and the v2
 =gate_started= / =gate_failed= event schemas in the journal. Tests: =test/gate/gate_execution_test.exs= and
 =test/gate/gate_guardian_unit2_test.exs= (the barrier and FaultFs rows), with the reducer/Effects route covered
 by =gate-execution-wiring.org=. The =expire/1= primitive ships but has no lib caller: on the supervised route the

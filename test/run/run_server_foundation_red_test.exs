@@ -45,7 +45,7 @@ defmodule AiOrchestrator.Run.ServerFoundationRedTest do
 
   @host_src Path.expand("../../lib/ai_orchestrator/lifecycle/host.ex", __DIR__)
   @kill9 Path.expand("../fixtures/contracts/scenarios/kill9_resume", __DIR__)
-  @guardian_src Path.expand("../../native/gate_guardian/gate_guardian.c", __DIR__)
+  @guardian_src Path.expand("../../bin/build-guardian", __DIR__)
   @zero "sha256:" <> String.duplicate("ab", 32)
 
   # ---- the shared test seam (MUST-8): one named Agent, read from any process ----
@@ -2141,9 +2141,7 @@ defmodule AiOrchestrator.Run.ServerFoundationRedTest do
       bin = Path.join(dir, "gate_guardian")
 
       {"", 0} =
-        System.cmd("cc", ["-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-o", bin, @guardian_src],
-          stderr_to_stdout: true
-        )
+        System.cmd(@guardian_src, [bin], stderr_to_stdout: true)
 
       on_exit(fn -> File.rm_rf(dir) end)
       {:ok, helper: bin}

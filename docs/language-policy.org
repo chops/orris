@@ -1,0 +1,16 @@
+#+title: Implementation languages
+
+Orris application logic and test orchestration use Elixir and ExUnit.
+Where OS-level process control requires a native executable, use Rust rather than C.
+The guardian is a separate Rust port executable; it preserves the external command
+protocol and cleanup semantics consumed by the Elixir runtime. It is not a NIF.
+Shell remains for existing build/release entrypoints, and Nix pins the toolchain.
+Python test orchestration and the superseded Perl guardian experiment are retired.
+
+The Rust crate locks its libc dependency. Unsafe code is limited to OS interfaces
+and the single-threaded fork/exec path. The production build omits the testing
+feature; fault injection is compiled only into separately built test binaries.
+
+Validation includes the existing ExUnit guardian and lifecycle suites, Rust
+fact-reader tests on either OS, and supported-platform Nix builds. A macOS pass
+alone does not establish Linux behavior.

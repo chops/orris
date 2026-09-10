@@ -32,12 +32,7 @@ if [ "$build_rc" != 0 ]; then
   if restore; then rm -rf "$scratch"; fi
   exit 1
 fi
-n=$(python3 - "$artifact" <<'PY'
-import zipfile,io,re,sys
-d=open(sys.argv[1],"rb").read(); z=zipfile.ZipFile(io.BytesIO(d[d.find(b"PK\x03\x04"):]))
-print(len(set(m.group(1) for n in z.namelist() for m in [re.match(r"([^/]+)/ebin/",n)] if m)))
-PY
-)
+n=$(elixir "$here/bin/c1-escript-app-count" "$artifact")
 count_rc=$?
 echo "escript apps: $n"
 if ! restore; then exit 1; fi

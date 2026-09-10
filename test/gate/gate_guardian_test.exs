@@ -1,8 +1,8 @@
 defmodule AiOrchestrator.Gate.GateGuardianTest do
   @moduledoc """
-  The native gate guardian (native/gate_guardian/gate_guardian.c), the first bounded review
+  The native gate guardian (bin/build-guardian), the first bounded review
   unit of gate-process ownership (R4; scoped GO `m_1788579576677_gate_spike_scoped_go`).
-  Built here with the pinned toolchain's `cc` into a per-run scratch path so the contract
+  Built here with the pinned toolchain's Rust compiler into a per-run scratch path so the contract
   is exercised on the real OS; permanent build wiring is a separate, non-overlapping unit.
 
   Pinned protocol: docs/contracts/gate-guardian-protocol.org. Every fact asserted below is
@@ -13,7 +13,7 @@ defmodule AiOrchestrator.Gate.GateGuardianTest do
 
   @moduletag :native
 
-  @source Path.expand("../../native/gate_guardian/gate_guardian.c", __DIR__)
+  @source Path.expand("../../bin/build-guardian", __DIR__)
 
   setup_all do
     dir = Path.join(System.tmp_dir!(), "gate-guardian-build-#{System.unique_integer([:positive])}")
@@ -21,9 +21,7 @@ defmodule AiOrchestrator.Gate.GateGuardianTest do
     bin = Path.join(dir, "gate_guardian")
 
     {out, 0} =
-      System.cmd("cc", ["-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-DGATE_GUARDIAN_TESTING", "-o", bin, @source],
-        stderr_to_stdout: true
-      )
+      System.cmd(@source, ["--testing", bin], stderr_to_stdout: true)
 
     assert out == "" or not (out =~ "warning:"), "the helper must build without warnings: #{out}"
     on_exit(fn -> File.rm_rf(dir) end)
@@ -81,7 +79,7 @@ defmodule AiOrchestrator.Gate.GateGuardianTest do
   end
 
   test "TERM settles the group by force with proof; a lone TERM-ignoring leader is escalated without blocking", ctx do
-    port = prepare(ctx, ["/usr/bin/perl", "-e", "$|=1; $SIG{TERM}='IGNORE'; sleep 30"])
+    port = prepare(ctx, ["/bin/sh", "-c", "trap '' TERM; exec sleep 30"])
     %{pgid: pgid, worker: worker} = ready(port)
     "RELEASED" = release(port)
     Process.sleep(100)
@@ -365,44 +363,38 @@ defmodule AiOrchestrator.Gate.GateGuardianTest do
     assert group_gone?(pgid)
   end
 
-  @linux_probe Path.expand("../support/gate_guardian/linux_facts_probe.c", __DIR__)
+  test "Linux fact readers fail closed on malformed facts and I/O errors on either host OS" do
+    root = Path.expand("../..", __DIR__)
 
-  test "Linux /proc fact readers are strict: errors are unknown, pids must agree, numbers are digits only",
-       %{build_dir: build_dir} do
-    probe = Path.join(build_dir, "linux_facts_probe")
-
-    {out, 0} =
+    {output, status} =
       System.cmd(
-        "cc",
-        ["-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-I", Path.dirname(@source), "-o", probe, @linux_probe],
+        "cargo",
+        [
+          "test",
+          "--locked",
+          "--color",
+          "never",
+          "--manifest-path",
+          Path.join(root, "native/gate_guardian/Cargo.toml"),
+          "--bin",
+          "gate_guardian",
+          "facts::linux::tests::",
+          "--",
+          "--format",
+          "pretty"
+        ],
         stderr_to_stdout: true
       )
 
-    assert out == "", "the Linux branch must build without warnings on this host: #{out}"
-    {report, 0} = System.cmd(probe, [])
+    assert status == 0, output
 
-    assert report ==
-             Enum.join(
-               [
-                 "members_fread_error=-1",
-                 "members_readdir_error=-1",
-                 "members_vanished=0",
-                 "members_signed_pgid=-1",
-                 "members_good=1",
-                 "members_pgid_overflow=-1",
-                 "members_non_numeric_entry=0",
-                 "members_overlong_entry=0",
-                 "members_wrong_pid=-1",
-                 "members_malformed_prefix=-1",
-                 "members_pgid_zero=0",
-                 "identity_malformed_prefix=-1",
-                 "identity_wrong_pid_negative_ticks=-1",
-                 "identity_wrong_pid=-1",
-                 "identity_negative_ticks=-1",
-                 "identity_good=0 value=ticks:123"
-               ],
-               "\n"
-             ) <> "\n"
+    for name <- ~w(identity_rejects_wrong_pid_malformed_prefix_and_negative_ticks
+                   membership_rejects_signed_overflow_wrong_pid_and_malformed_facts
+                   arbitrary_comm_bytes_preserve_identity_and_membership
+                   read_and_enumeration_errors_are_unknown_but_disappearance_is_absence
+                   non_process_entries_are_ignored_and_reads_are_bounded) do
+      assert output =~ "test facts::linux::tests::#{name} ... ok", output
+    end
   end
 
   test "a NUL inside TERM is not a TERM, split or coalesced, and the guardian keeps its group", %{bin: bin, dir: dir} do

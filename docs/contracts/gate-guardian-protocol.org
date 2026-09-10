@@ -2,18 +2,19 @@
 #+PROPERTY: status delivered contract
 
 * Implementation status
-Delivered: =native/gate_guardian/gate_guardian.c= implements every record, command, bound, the =--timeout-ms=
-backstop, the =--probe= verb and the =-DGATE_GUARDIAN_TESTING= fault seam named below (=setsid_delay=,
+Delivered: =native/gate_guardian/src/main.rs= implements every record, command, bound, the =--timeout-ms=
+backstop, the =--probe= verb and the =testing= Cargo feature fault seam named below (=setsid_delay=,
 =members_fail=, =identity_short=, =go_after_deadline=, =probe_group_eperm=); =test/gate/gate_guardian_test.exs=
-and =test/gate/gate_guardian_unit2_test.exs= build it with =cc= into a scratch path and exercise the protocol.
+and =test/gate/gate_guardian_unit2_test.exs= build it with =bin/build-guardian= into a scratch path and exercise the protocol.
 The BEAM-side obligations listed at the end ship in =AiOrchestrator.Gate.Execution= (=gate-execution-claim.org=).
 Build wiring for a packaged binary is resolved at runtime through =Config.Runtime.resolve/1= (=gate_guardian=
 flag, =AI_ORCHESTRATOR_GATE_GUARDIAN=, local config), not by this document.
 
 Status: pinned protocol for the gate-process-ownership contracts. Source entry point:
-=native/gate_guardian/gate_guardian.c=, a single C file built with the pinned nixpkgs
-toolchain (=cc=); no external runtime dependency. Build wiring (Nix package / mix compiler)
-is a separate non-overlapping unit; the tests build it with =cc= into a scratch path.
+=native/gate_guardian/src/main.rs=, a Rust executable built with the pinned nixpkgs
+Rust toolchain and a locked =libc= crate. It links platform system libraries;
+no Python or Perl interpreter is required. Nix packages it, and =bin/build-guardian=
+supplies isolated test builds. No installed runtime is changed by a source build.
 
 * Invocation
 #+begin_example
@@ -53,12 +54,14 @@ EXIT/DEAD trailers: =settled=0|1 leftovers=N|unknown proof=gone|alive|unknown es
   never runs (its token read returns EOF).
 
 * Kernel identity
-- macOS: =sysctl KERN_PROC_PID= → =kinfo_proc.kp_proc.p_starttime=, printed =sec.usec= (6 digits).
-  Equivalent Darwin source, independently measured in review (libproc
-  =proc_pidinfo(PROC_PIDTBSDINFO)= → =pbi_start_tvsec=/=pbi_start_tvusec=; two same-second
-  processes 160 ms apart resolved): same kernel field; the helper keeps sysctl
-  because it needs no =-lproc= link. Its reference contract carries over: a nonexistent pid
-  is a named =identity= failure (=SETUP_FAILED class=identity=), bounds fail closed.
+- macOS: =proc_pidinfo(PROC_PIDTBSDINFO)= reads =pbi_start_tvsec=/=pbi_start_tvusec=,
+  the same kernel start timestamp used by the prior =sysctl= implementation.
+  Exact structure size, matching pid and microsecond range are required.
+  Group enumeration uses =proc_listpids(PROC_PGRP_ONLY)=; failed, partial or full
+  buffers are unknown, never an empty-group proof.
+  This interface returns pids filtered by the kernel, without the prior per-record
+  group recheck. An overcount prevents settlement; a final empty-group proof also
+  independently requires =kill(-pgid, 0)= to return =ESRCH=.
 - Linux: =/proc/<pid>/stat= field 22, printed =ticks:N=.
 - Recorded identity is (pid, pgid, start). A later process at the same pid with another
   start is a stranger and is never signalled by anyone; only the guardian signals its group.
@@ -68,7 +71,7 @@ EXIT/DEAD trailers: =settled=0|1 leftovers=N|unknown proof=gone|alive|unknown es
    =kill(pid,0)= (a zombie answers 0) and never with a reaping wait on a live child.
 2. Settle rounds (bounded, =--rounds= × =--settle-ms=): round 0 sends =TERM= to =-pgid= when
    forced; every later round sends =KILL=. The group is settled when the leader has exited
-   and the kernel enumerates no other member (macOS =KERN_PROC_PGRP=; Linux =/proc= scan of
+   and the kernel enumerates no other member (macOS =PROC_PGRP_ONLY=; Linux =/proc= scan of
    field 5). If enumeration is unprovable the result is =unknown=, never an empty set.
 3. Authority: the exact child stays UNREAPED through the rounds; it is reaped only after it
    is observed exited and either the group settled or the rounds are exhausted. After the
@@ -109,7 +112,7 @@ that an arbitrary blocking syscall completes on a timer. Output files are privat
 cap is a separate contract (redirection is not bounding).
 
 * Test seam
-Built with =-DGATE_GUARDIAN_TESTING= only (the tests; never the package), the guardian reads
+Built with =testing= Cargo feature only (the tests; never the package), the guardian reads
 =GATE_GUARDIAN_FAULT= (=setsid_delay=, =members_fail=, =identity_short=, =go_after_deadline=
 (the expiry check at the GO boundary reads as elapsed); for the =--probe= verb also
 =probe_group_eperm=, which makes =kill(-pgid, 0)= answer =EPERM=) to prove the

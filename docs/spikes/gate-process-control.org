@@ -1,136 +1,27 @@
-#+title: Gate process-control spike (test-only perl guardian prototype)
-#+PROPERTY: status test-only spike
+#+title: Retired process-control experiment
+#+PROPERTY: status retired
 
-* Implementation status
-This document is a test-only spike. Its perl guardian prototype ships as =test/support/gate_spike/helper.pl=
-and is driven by =test/gate/process_control_spike_test.exs= (=@moduletag :spike=, excluded by default in
-=test/test_helper.exs=; run with =mix test --include spike=). Nothing here is product code. The production
-guardian that superseded it is the C program =native/gate_guardian/gate_guardian.c= (=gate-guardian-protocol.org=):
-it resolves the items listed as open below (kernel-microsecond identity via =sysctl KERN_PROC_PID= on macOS and
-=/proc/<pid>/stat= on Linux, =waitid= leader observation, errno-decoded proof, bounded escalation rounds, a
-=--timeout-ms= backstop and a read-only =--probe= verb), and the durable claim / fsync barriers belong to
-=gate-execution-claim.org=. The packaging candidates named below were superseded by that C helper.
+The optional Perl guardian experiment was retired when the native guardian moved
+from C to Rust. The previous implementation and experiment remain in Git history.
+Neither Perl nor project-owned C source is used by the current guardian or its
+tests. Rust builds still require the platform linker and system libraries.
 
-Measured on a macOS host (Darwin 24); the Linux half is measured by the tagged spike test
-(=mix test --include spike=). No production code and no dependency, pin, or install change.
+* Preserved behavior and coverage
+| Experiment behavior | Current coverage |
+|---------------------+------------------|
+| Prepare identity before release; private command output | test/gate/gate_guardian_test.exs READY row |
+| Parent loss before GO prevents execution | Same suite, unreleased-command parent-loss row |
+| Real exit code; signal is not successful exit | Same suite, completion and signalled-worker rows |
+| Leader exit does not prove group completion | Same suite, whole-owned-group completion row |
+| Kernel-derived identity, read-only process facts | test/gate/gate_guardian_unit2_test.exs probe rows |
+| TERM-resistant worker requires bounded escalation | test/gate/gate_guardian_test.exs TERM row, now a shell fixture |
+| Failed or malformed process enumeration is unknown | Same suite M5; Rust fact-reader unit tests |
 
-* Mechanism measured (guardian, third revision)
-A GUARDIAN (=test/support/gate_spike/helper.pl=, perl + POSIX) launched as an OTP Port with
-=:spawn_executable= and an argv list -- no shell command string. Measured facts that forced
-the guardian shape: a Port-spawned child is already a process-group leader, so =setsid= fails
-in it (the first helper revision died with EPERM under the Port and only worked from a shell
-pipeline); and a cold pid/pgid lookup has a check-then-signal reuse window, so it is not
-authority to kill (a recorded caution from review). The guardian stays alive,
-forks the worker (which =setsid=s cleanly), holds the private control channel, forwards the
-one go-token, signals ITS OWN group on =TERM= and reports the proof, and on stdin EOF (parent
-gone) terminates the group it owns before exiting.
-1. worker =setsid= -> the worker leads a new session and process group; every descendant of the
-   gate command inherits the group (measured: =sh -c 'sleep & sleep; wait'= shows leader +
-   sh + two sleeps at one pgid).
-2. Identity published BEFORE anything runs: =IDENT guardian= worker= pgid== (prepare).
-3. Blocked start handshake: the worker waits on a private pipe; the guardian forwards the
-   one-time =GO= (release). Guardian stdin EOF -- the parent died -- terminates the group
-   and the worker never runs (measured: marker file never created). This is the fencing rule 1 asks for: absence of a start event never
-   proves no runnable command, but an unreleased process cannot run.
-4. Kernel identity is read from the OS, never taken from the helper's word:
-   =ps -p PID -o pid=,pgid=,lstart== (start time, second resolution) on macOS; on Linux
-   =/proc/<pid>/stat= field 22 (=starttime=, clock ticks since boot, exact). Recorded
-   identity = (pid, pgid, start); a later process at the same pid with a different start
-   is a stranger and is never signalled (rule 2).
-5. Group death: the guardian signals its own group (=TERM=, then =KILL= once), waits, and
-   reports =DEAD pgid= proven=1=; the test cross-checks ESRCH for the group AND zero members
-   by pgid. Leader exit alone is not proof (rule 2). Measured: leader + sh + two sleeps all
-   dead, group ESRCH, worker exit status (7) reported by the guardian, never invented.
-6. Reuse window, characterized: between an identity check and a signal to a cold-looked-up
-   pgid the pid or group can be reused; ESRCH afterwards proves only that nothing is there
-   now. The guardian removes the window for the live case (it signals its own child
-   relationship). Cold recovery with no guardian FAILS CLOSED to attention unless the
-   guardian recorded proven group death in the claim's operational file before it exited,
-   in which case the rerun at attempt+1 is lawful.
+The old six mock-ps parsing cases tested a mechanism the product no longer uses.
+The guardian reads OS facts directly; malformed input and I/O failures are covered
+in native/gate_guardian/src/facts.rs. Its Linux parser tests run on macOS too;
+that is parser evidence, not evidence of Linux kernel behavior.
 
-* What this mechanism does not give
-- Reconnect: a new Port cannot adopt the old Port's output/reaping authority. The design
-  never adopts: owner loss -> terminate the proven group -> rerun same =gate_run_id= at
-  attempt+1 (rule 2).
-- macOS start time is second-resolution via =ps= (agreed in review: not kernel-microsecond
-  identity). MEASURED on a macOS host (Darwin 24): the =sysctl= CLI does not expose the per-pid
-  =kern.proc.pid.<pid>= MIB there (=unknown oid=), so the =kinfo_proc= microsecond
-  =p_starttime= is reachable only through =sysctl(3)= or =proc_pidinfo= from compiled
-  code -- not from perl or the base tools. A kernel-microsecond identity on macOS therefore
-  requires a small C helper (Nix-built; a packaging change with its own ruling). Until
-  then the recorded identity is (pid, pgid, second-resolution start) and the residual is
-  a pid reused within the same second -- which the guardian design never signals anyway,
-  because authority is the guardian's own child relationship, not a pid lookup. Linux
-  =/proc/<pid>/stat= =starttime= is tick-exact and is the source measured by the tagged spike test.
-- Bounded output: the command's stdout/stderr are file-backed by the helper's argv
-  contract in production (=gates/<gate_run_id>.out=), not piped through the Port; the spike
-  does not measure output bounding.
-
-* Production packaging candidates (named, not adopted)
-- Ship the helper as =priv/gate/helper.pl= (perl is on both base systems; no Nix change).
-- Or a Nix-built C helper (=setsid= + =kinfo_proc= start time + token pipe) -- a packaging
-  change that needs its own ruling.
-
-* Crash-window barriers the lifecycle RED must pin (rule 1)
-before claim fsync | after claim fsync | after journal ack | during release | after
-release before observation -- each with a deterministic FaultFs barrier, and a prepared
-process cleaned up (terminated, proven dead) on failed persistence without release.
-
-* Third-revision corrections (review findings M1-M5)
-- M1 completion = whole owned group settled, never leader exit: after the worker exits the
-  guardian waits (bounded) for the group to empty, terminates and COUNTS leftovers, and only
-  then reports =EXIT ... group_settled=1 leftovers=k=. Measured with =sleep 2 & exit 0=.
-- M2 =WIFEXITED= vs =WIFSIGNALED= decoded: =EXIT signal=TERM= is a typed fact, never a
-  right-shifted zero. Measured with =kill -TERM $$=.
-- M3 worker-ready handshake: READY on a status pipe only after a successful =setsid=; the
-  guardian reports IDENT only after READY and fails closed (=SETUP_FAILED=) otherwise. The
-  50 ms sleep and the =getpgrp= fallback are gone.
-- M4 =kill(0, -pgid)= decoded by errno: ESRCH is the only "gone"; EPERM/other is =unknown= and
-  reported as such (=proven=unknown=). The test's =ps= membership fails closed on a =ps= error.
-- M5 authority boundary, stated precisely: the exact child is NOT reaped until the group is
-  settled and the final signal sent (=settle_and_reap=: signal -> bounded wait on members
-  minus the unreaped worker -> reap -> ESRCH check). Authority ENDS at that reap; reuse
-  safety is claimed only up to it and never from keeper lifetime alone.
-- Test repairs: =wait_until= asserts the condition (fail-closed bounded await); Linux
-  =/proc= identity is UNMEASURED (no Linux run yet); a session-escaping descendant
-  (=setsid= again) is outside any process-GROUP proof by definition.
-- Still open, disclosed: kernel-microsecond identity (compiled helper, own ruling); durable
-  claim/fsync barriers and output bounding (lifecycle unit, not the mechanism).
-
-* Fourth-revision corrections (review probe)
-- A lone leader that ignores TERM: the bounded escalation now includes the LEADER's own
-  liveness (settled = no other members AND leader observed exited -- zombie via =ps stat=
-  or ESRCH), so KILL is sent when the leader survives TERM; a blocking =waitpid= happens
-  only after the leader is observed exited. Measured with the ready-barrier probe
-  (=GATE_READY= then =sleep 30= with =$SIG{TERM}='IGNORE'=).
-- =ps= contract made exact and proven by a fake-=ps= matrix on PATH: exit 0 with every line
-  a decimal pid -> members; exactly exit 1 with empty output -> no match; anything else ->
-  unknown (=group_settled=0=, =proven=unknown=). Same rule in helper and test.
-
-* Prior art: erlexec (reference only, not adopted; no mix.exs change)
-Prior art: saleyn/erlexec (https://github.com/saleyn/erlexec), distributed under its upstream BSD-style
-license (https://github.com/saleyn/erlexec/blob/master/LICENSE); the left column paraphrases its README;
-erlexec is not a dependency of this project and no code from it is used.
-
-erlexec was suggested in review; README read, not measured. Point-by-point against the
-guardian's measured primitives:
-| Primitive                         | erlexec                                              | guardian spike (rev 4)                              |
-|-----------------------------------+------------------------------------------------------+-----------------------------------------------------|
-| argv without a shell              | list form runs the executable directly (full path)   | Port =:spawn_executable= + argv list                |
-| own process group                 | ={group, 0}= (gid = child pid); pty mode uses setsid | worker =setsid= after fork (Port child is a leader) |
-| group termination                 | =kill_group= sends 15 to the rest of the group       | guardian signals =-pgid=, leader liveness included  |
-| TERM -> KILL escalation           | default TERM then KILL, ={kill_timeout, Secs}=       | bounded escalation rounds (TERM, then KILL per round)|
-| signal-aware status               | ={exit_status, N}= decoded by =exec:status/1=        | =EXIT signal=NAME= vs =status=N= (WIFSIGNALED)      |
-| file-backed private output        | ={stdout, Path, [append, {mode, 8#600}]}=            | not measured here; production argv contract        |
-| cleanup on BEAM exit              | port program cleans children when the emulator exits | guardian settles its group on stdin EOF             |
-| adopt an external pid             | =exec:manage(OsPid, [monitor])=                      | never adopts (ruling 2)                             |
-What this README-only comparison does NOT establish (erlexec's source is unaudited): whether
-it supplies the durable prepare/record/release claim protocol (identity journaled before the
-go-token; stdin EOF before release = never ran), an unreaped-child authority boundary, or
-cold authority (no guardian -> fail closed unless proven death was recorded). Those remain
-this unit's own obligations regardless. Redirection to a file is private output, not a byte
-cap; output bounding is a separate contract. erlexec requires
-=SHELL= in the environment and its own port program (a C build), i.e. a runtime dependency
-and packaging -- a dependency decision reserved for its own review. If a bespoke helper stays, its behaviour
-list should be checked against this table; if a dependency is ever ruled in, erlexec is the
-candidate to measure first.
+The delivered protocol and its limits are in
+[[file:../contracts/gate-guardian-protocol.org][the guardian contract]]. In particular,
+settlement of an owned process group does not prove that an escaped descendant died.

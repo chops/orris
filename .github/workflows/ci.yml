@@ -49,6 +49,9 @@ jobs:
       - name: Verify
         run: nix develop --command bin/verify
 
+      - name: Verify console gate script controls with ExUnit
+        run: nix develop --command console/bin/c1-gate-controls
+
       - name: Evaluate supported Nix outputs
         run: nix flake check --no-build --all-systems
 

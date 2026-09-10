@@ -30,7 +30,7 @@ defmodule AiOrchestrator.Run.GateOwnershipBaselineTest do
 
   @moduletag :native
 
-  @source Path.expand("../../native/gate_guardian/gate_guardian.c", __DIR__)
+  @source Path.expand("../../bin/build-guardian", __DIR__)
   @run_id "run_gate_ownership"
   @gate "gr_0001"
   @far 1_700_000_600
@@ -62,7 +62,7 @@ defmodule AiOrchestrator.Run.GateOwnershipBaselineTest do
     bin = Path.join(dir, "gate_guardian")
 
     {"", 0} =
-      System.cmd("cc", ["-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-o", bin, @source], stderr_to_stdout: true)
+      System.cmd(@source, [bin], stderr_to_stdout: true)
 
     on_exit(fn -> File.rm_rf(dir) end)
     {:ok, helper: bin}

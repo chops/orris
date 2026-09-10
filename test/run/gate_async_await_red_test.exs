@@ -24,7 +24,7 @@ defmodule AiOrchestrator.Run.GateAsyncAwaitRedTest do
 
   @moduletag :native
 
-  @source Path.expand("../../native/gate_guardian/gate_guardian.c", __DIR__)
+  @source Path.expand("../../bin/build-guardian", __DIR__)
   @run_id "run_async_await"
   @gate "gr_0001"
   @now 1_700_000_000
@@ -170,7 +170,7 @@ defmodule AiOrchestrator.Run.GateAsyncAwaitRedTest do
     bin = Path.join(dir, "gate_guardian")
 
     {"", 0} =
-      System.cmd("cc", ["-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-o", bin, @source], stderr_to_stdout: true)
+      System.cmd(@source, [bin], stderr_to_stdout: true)
 
     _ = Tracked.start()
     on_exit(fn -> File.rm_rf(dir) end)

@@ -60,7 +60,7 @@ cleanup() {
 }
 trap cleanup EXIT
 run_owned "$(min 30 "$(left "$work_deadline")")" bin/c1-setup "$work/cred/console/credential" > "$logs/setup.log" 2>&1 || { echo "bootstrap failed or timed out"; exit 1; }
-port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
+port=$(elixir "$here/bin/c1-smoke-port") || { echo "could not allocate smoke port"; exit 1; }
 cat > "$work/console.json" <<CFG
 {"bind":"127.0.0.1","port":$port,"host":"127.0.0.1","scheme":"http","socket_mounts":["/live"],
  "credential_path":"$work/cred/console/credential","operator":{"id":"operator","root_ids":["alpha"]},

@@ -21,7 +21,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
 
   @moduletag :native
 
-  @source Path.expand("../../native/gate_guardian/gate_guardian.c", __DIR__)
+  @source Path.expand("../../bin/build-guardian", __DIR__)
   @run_id "run_fixture_0001"
   @deadline 1_700_000_600
   @now 1_700_000_000
@@ -43,9 +43,8 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
     File.mkdir_p!(dir)
     bin = Path.join(dir, "gate_guardian")
     seam = Path.join(dir, "gate_guardian_seam")
-    flags = ["-std=c11", "-O2", "-Wall", "-Wextra", "-Werror"]
-    {"", 0} = System.cmd("cc", flags ++ ["-o", bin, @source], stderr_to_stdout: true)
-    {"", 0} = System.cmd("cc", flags ++ ["-DGATE_GUARDIAN_TESTING", "-o", seam, @source], stderr_to_stdout: true)
+    {"", 0} = System.cmd(@source, [bin], stderr_to_stdout: true)
+    {"", 0} = System.cmd(@source, ["--testing", seam], stderr_to_stdout: true)
     on_exit(fn -> File.rm_rf(dir) end)
     {:ok, helper: bin, seam: seam}
   end

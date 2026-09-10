@@ -21,7 +21,7 @@ defmodule AiOrchestrator.Run.EffectOwnerNativeRedTest do
 
   @moduletag :native
   @moduletag timeout: 120_000
-  @source Path.expand("../../native/gate_guardian/gate_guardian.c", __DIR__)
+  @source Path.expand("../../bin/build-guardian", __DIR__)
   @operator %{"class" => "operator", "id" => "local_operator"}
   @now %Moment{wall_ts: "2026-09-06T08:00:00Z", unix: 1_788_681_600}
   @instance "sup_owner_native"
@@ -37,7 +37,7 @@ defmodule AiOrchestrator.Run.EffectOwnerNativeRedTest do
     bin = Path.join(dir, "gate_guardian")
 
     {"", 0} =
-      System.cmd("cc", ["-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-o", bin, @source], stderr_to_stdout: true)
+      System.cmd(@source, [bin], stderr_to_stdout: true)
 
     on_exit(fn -> File.rm_rf(dir) end)
     {:ok, helper: bin}

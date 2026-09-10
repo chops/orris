@@ -19,3 +19,6 @@ result-*
 /cover/
 /doc/
 /.fetch
+
+# Native Rust build output
+/native/gate_guardian/target/

@@ -10,16 +10,15 @@ defmodule AiOrchestrator.Gate.GateGuardianUnit2Test do
 
   @moduletag :native
 
-  @source Path.expand("../../native/gate_guardian/gate_guardian.c", __DIR__)
+  @source Path.expand("../../bin/build-guardian", __DIR__)
 
   setup_all do
     dir = Path.join(System.tmp_dir!(), "gate-guardian-u2-#{System.unique_integer([:positive])}")
     File.mkdir_p!(dir)
     bin = Path.join(dir, "gate_guardian")
     seam = Path.join(dir, "gate_guardian_seam")
-    flags = ["-std=c11", "-O2", "-Wall", "-Wextra", "-Werror"]
-    {"", 0} = System.cmd("cc", flags ++ ["-o", bin, @source], stderr_to_stdout: true)
-    {"", 0} = System.cmd("cc", flags ++ ["-DGATE_GUARDIAN_TESTING", "-o", seam, @source], stderr_to_stdout: true)
+    {"", 0} = System.cmd(@source, [bin], stderr_to_stdout: true)
+    {"", 0} = System.cmd(@source, ["--testing", seam], stderr_to_stdout: true)
     on_exit(fn -> File.rm_rf(dir) end)
     {:ok, bin: bin, seam: seam}
   end
