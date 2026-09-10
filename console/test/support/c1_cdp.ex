@@ -15,10 +15,13 @@ defmodule C1.CDP do
     end
   end
 
-  # the reviewed pinned browser identity per platform (Chrome for Testing 149, Playwright headless shell 1228)
+  # Chrome for Testing 149: the existing Playwright macOS shell and the upstream
+  # linux64 headless-shell archive pinned by the console qualification CI job.
   @pinned %{
     {:unix, :darwin} =>
-      {"Google Chrome for Testing 149.0.7827.55", "11e393326c7d20a7c56641a7c65def33ea9c280da3b0b74cf8563b07989a0ee3"}
+      {"Google Chrome for Testing 149.0.7827.55", "11e393326c7d20a7c56641a7c65def33ea9c280da3b0b74cf8563b07989a0ee3"},
+    {:unix, :linux} =>
+      {"Google Chrome for Testing 149.0.7827.55", "670ba079b75107746ba41abad131180a31a7c7219aa1bd4061fb471f4535d541"}
   }
 
   @doc "Measured identity of the browser at the setting, asserted equal to the pinned identity for this platform."

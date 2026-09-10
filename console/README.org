@@ -38,3 +38,18 @@ Loopback HTTP only: the session cookie cannot be Secure; nothing is exposed beyo
 - bin/c1-packaging-controls: C1-01c Boundary controls (negative/positive/clean exits)
 
 The gate controls also run under =mix test=. Archive inspection and smoke-port selection use Elixir/OTP; Python is not required.
+
+* Continuous integration
+The separate =Console qualification (Linux)= job runs the entire =console/bin/verify=
+pipeline on Ubuntu 22.04 x86_64 with the root flake's pinned Elixir/OTP toolchain.
+It fetches locked root dependencies for the disposable escript stage and keeps
+console dependencies/builds in their own paths. Chrome for Testing 149.0.7827.55
+is pinned by archive and executable SHA-256; the browser rows also enforce the
+executable identity. The browser sandbox remains enabled.
+
+Each run retains a =console-qualification-<sha>-<attempt>= artifact for 14 days,
+including commit/tree and runner identity, setup logs, the canonical summary,
+individual stage logs/exits, and release-smoke evidence, even after failure.
+The Actions job summary shows the stage results. This job is distinct from the
+core gate and the fast ExUnit gate-script controls. It qualifies disposable
+console fixtures on Linux; installed-service qualification remains separate.
