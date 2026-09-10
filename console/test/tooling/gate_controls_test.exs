@@ -244,6 +244,7 @@ defmodule OrrisConsole.GateControlsTest do
     rel = Path.join(root, "console/_build/#{@toolchain}/prod/rel/orris_console/bin/orris_console")
     script(rel, Keyword.get(opts, :release, release("exit #{Keyword.get(opts, :stop, 0)}")))
     script(Path.join(root, "mockbin/curl"), Keyword.get(opts, :curl, @curl))
+    if date = Keyword.get(opts, :date), do: script(Path.join(root, "mockbin/date"), date)
     File.mkdir_p!(Path.join(root, "test/fixtures/contracts/scenarios/kill9_resume"))
     File.write!(Path.join(root, "test/fixtures/contracts/scenarios/kill9_resume/events_pre_dispatch.jsonl"), "fixture")
     File.mkdir_p!(Path.join(root, "temps"))
@@ -291,6 +292,13 @@ defmodule OrrisConsole.GateControlsTest do
     if !Keyword.has_key?(opts, :setup),
       do: assert(File.exists?(Path.join(root, "pid")), "release fixture never started: #{output}")
 
+    for mark <- Keyword.get(opts, :required_marks, []) do
+      setup_log = File.read!(Path.join(root, "smoke-logs/setup.log"))
+
+      assert File.exists?(Path.join(root, mark)),
+             "required fixture #{mark} never started; runner: #{output}; setup: #{setup_log}"
+    end
+
     for mark <- ["pid", "kid"], {:ok, text} <- [File.read(Path.join(root, mark))] do
       refute alive?(String.to_integer(String.trim(text))), "#{mark} survived: #{output}"
       File.rename!(Path.join(root, mark), Path.join(root, mark <> ".joined"))
@@ -329,8 +337,25 @@ defmodule OrrisConsole.GateControlsTest do
   end
 
   test "R2 setup descendants are contained at the bound", %{root: root} do
-    setup = "#!/bin/sh\n/bin/sleep 60 &\necho $! > \"$KID_MARK\"\nwait\n"
-    assert_smoke(root, [setup: setup, budget: 2], false)
+    setup = "#!/bin/sh\n/bin/sleep 60 &\necho $! > \"$KID_MARK\"\necho SETUP_CHILD_STARTED\nwait\n"
+
+    # Cross one wall-clock second during the preamble deterministically. A two-second
+    # total budget minus the one-second cleanup reserve leaves no setup allowance.
+    # Use the ordinary eight-second fixture budget; run_owned must still bound the
+    # sixty-second child, and the monotonic elapsed check and JOIN witness stay live.
+    date = """
+    #!/bin/sh
+    if [ -f "$root/date.started" ]; then
+      echo 101
+    else
+      touch "$root/date.started"
+      echo 100
+    fi
+    """
+
+    {_env, output} = assert_smoke(root, [setup: setup, date: date, budget: 8, required_marks: ["kid"]], false)
+    assert output =~ "bootstrap failed or timed out"
+    assert File.read!(Path.join(root, "smoke-logs/setup.log")) =~ "SETUP_CHILD_STARTED"
     assert File.exists?(Path.join(root, "kid.joined"))
   end
 
