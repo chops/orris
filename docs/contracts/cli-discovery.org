@@ -41,7 +41,15 @@ Every invocation reads again; no process, ETS table or disk cache is retained.
 JSON preserves valid Unicode directory references with Jason encoding. Org
 encodes brackets, pipes, backslashes and control characters as visible hexadecimal
 escapes so a directory name cannot insert an Org link, table column or terminal
-control. Unsupported filename encodings produce a sanitized root error.
+control. Unsupported filename encodings produce a sanitized root error. Before
+Query filters membership, a lossless =:file.list_dir_all/1= enumeration checks
+every direct name; ordinary =File.ls/1= can silently omit raw names on Linux.
+This check walks the configured root physically, preserving symlink/parent
+components. It adds an observation, not an atomic filesystem snapshot.
+Filename handling assumes Elixir's required UTF8 native filename mode; a VM
+configured for Latin1 filenames is outside this qualification.
+Enumeration failures retain Query's root-error classification; they cannot
+produce a successful discovery result.
 
 * Limits and dependencies
 This is a one-shot journal inventory, not an atomic snapshot across directories.

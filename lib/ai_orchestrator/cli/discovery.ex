@@ -31,7 +31,7 @@ defmodule AiOrchestrator.CLI.Discovery do
     root = if Path.type(root) == :absolute, do: root, else: Path.join(Keyword.get(opts, :cwd, File.cwd!()), root)
     query_opts = opts |> Keyword.take([:fs]) |> Keyword.put(:root, root)
 
-    case Query.list_runs(query_opts) do
+    case list_runs(root, query_opts) do
       {:ok, %{runs: runs, skipped_outside_root: skipped}} ->
         if Enum.all?(runs, &String.valid?(&1.run_ref)) do
           view = %{
@@ -54,6 +54,25 @@ defmodule AiOrchestrator.CLI.Discovery do
     _ -> root_error("runs_root_unavailable")
   catch
     _, _ -> root_error("runs_root_unavailable")
+  end
+
+  defp list_runs(root, opts) do
+    # File.ls/1 uses list_dir/1, which silently omits raw filenames on Linux.
+    # Refuse these before Query can omit them and log their raw bytes.
+    case :file.list_dir_all(root) do
+      {:ok, names} ->
+        if Enum.all?(names, &String.valid?(IO.chardata_to_string(&1))),
+          do: Query.list_runs(opts),
+          else: {:error, %{clause: "runs_root_unavailable"}}
+
+      {:error, _reason} ->
+        # Preserve Query's root classification, but never accept a listing
+        # whose lossless observation failed.
+        case Query.list_runs(opts) do
+          {:error, _rejection} = error -> error
+          _unexpected_success -> {:error, %{clause: "runs_root_unavailable"}}
+        end
+    end
   end
 
   defp row(ref, opts) do
