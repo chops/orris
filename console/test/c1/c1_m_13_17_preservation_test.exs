@@ -193,8 +193,8 @@ defmodule C1.MutationPreservationTest do
     allocator = "port=$(elixir \"$here/bin/c1-smoke-port\") || { echo \"could not allocate smoke port\"; exit 1; }"
     assert smoke == Regex.replace(~r/^port=.*$/m, base_smoke, fn _ -> allocator end)
 
-    # Reviewed content baseline: public 2ad01fb plus the authorized Elixir/Rust
-    # migration. Pin root entries (including whole subtrees) so another core
+    # Reviewed content baseline: the published Elixir/Rust migration plus declared
+    # dispatch capabilities and explicit-root CLI discovery. Pin root entries so another core
     # commit cannot silently pass. A later authorized core delivery must update
     # this snapshot explicitly in its review. Console files are outside the
     # snapshot, avoiding a self-referential commit id.
@@ -204,15 +204,15 @@ defmodule C1.MutationPreservationTest do
     040000 tree 00b964d79e561883217e9f96b45968faa8651761\tbin
     100644 blob cfbb9f900c6f1442d2552baa0063cff01b270413\tflake.lock
     100644 blob 19621e64b39eda66e1ba845d833a1f3c619bd511\tflake.nix
-    040000 tree abb5fd94c998e9284bec053d07dc7cd28703c031\tlib
+    040000 tree dbb25f82d3ff37043162e441015dd098824df6f2\tlib
     100644 blob 6f8544e74c5907bebfdba64381e9320b07fcd7e3\tmix.exs
     100644 blob 54b8c07475cf6c51b61b6ea63eade94966c0e27b\tmix.lock
     040000 tree 186b47fb436e9a51998df577bd93922431b7f3e7\tnative
-    040000 tree 12dc3f6b808281bf8977b02c0a7adfd43e5442aa\ttest
+    040000 tree f8f8145d3a28e66e6d8dd34867b79e51fbea3f2b\ttest
     """
 
     {committed, 0} = System.cmd("git", ["ls-tree", "HEAD", "--"] ++ core_paths, cd: Harness.core_path())
-    assert committed == expected, "committed core differs from the reviewed migration baseline:\n#{committed}"
+    assert committed == expected, "committed core differs from the reviewed product baseline:\n#{committed}"
     {diff, 0} = System.cmd("git", ["diff", "--stat", "HEAD", "--"] ++ core_paths, cd: Harness.core_path())
     assert diff == "", "console execution changed committed core paths:\n#{diff}"
   end
