@@ -21,20 +21,7 @@ defmodule AiOrchestrator.Dispatch do
   @doc "Validate declared reconciliation capability before a durable adapter invocation."
   @spec preflight(module(), keyword()) :: :ok | {:error, map()}
   def preflight(adapter, opts \\ []) do
-    case adapter.capabilities(opts) do
-      {:ok, tokens} when is_list(tokens) ->
-        cond do
-          not valid_capabilities?(tokens) -> refusal("dispatch_capabilities_invalid")
-          "delivery_reconcile" in tokens -> :ok
-          true -> unsupported()
-        end
-
-      {:error, _reason} ->
-        refusal("dispatch_capabilities_failed")
-
-      _other ->
-        refusal("dispatch_capabilities_invalid")
-    end
+    opts |> adapter.capabilities() |> classify_capabilities()
   rescue
     error in UndefinedFunctionError ->
       if error.module == adapter and error.function == :capabilities and error.arity == 1,
@@ -46,6 +33,17 @@ defmodule AiOrchestrator.Dispatch do
   catch
     _kind, _reason -> refusal("dispatch_capabilities_failed")
   end
+
+  defp classify_capabilities({:ok, tokens}) when is_list(tokens) do
+    cond do
+      not valid_capabilities?(tokens) -> refusal("dispatch_capabilities_invalid")
+      "delivery_reconcile" in tokens -> :ok
+      true -> unsupported()
+    end
+  end
+
+  defp classify_capabilities({:error, _reason}), do: refusal("dispatch_capabilities_failed")
+  defp classify_capabilities(_other), do: refusal("dispatch_capabilities_invalid")
 
   @doc false
   @spec valid_capabilities?(term()) :: boolean()

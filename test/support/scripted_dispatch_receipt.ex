@@ -19,8 +19,8 @@ defmodule AiOrchestrator.Test.ScriptedDispatchReceipt do
         @impl true
       end
 
-      def reconcile(command, _opts), do: AiOrchestrator.Test.ScriptedDispatchReceipt.reconcile(__MODULE__, command)
-      @before_compile AiOrchestrator.Test.ScriptedDispatchReceipt
+      def reconcile(command, _opts), do: unquote(__MODULE__).reconcile(__MODULE__, command)
+      @before_compile unquote(__MODULE__)
     end
   end
 
@@ -33,7 +33,7 @@ defmodule AiOrchestrator.Test.ScriptedDispatchReceipt do
       end
 
       def deliver(command, opts) do
-        AiOrchestrator.Test.ScriptedDispatchReceipt.run(__MODULE__, command, fn -> super(command, opts) end)
+        unquote(__MODULE__).run(__MODULE__, command, fn -> super(command, opts) end)
       end
     end
   end
