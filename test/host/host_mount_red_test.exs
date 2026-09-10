@@ -256,6 +256,33 @@ defmodule AiOrchestrator.Host.MountRedTest do
     assert :none == RunLock.owner(SystemFs.new(), dir), "disk lock still present"
   end
 
+  # docs/contracts/core-startup-bound.org section 5: a FORCED reap (a killed owner, a stop during the startup leg)
+  # kills the Writer identity first, so its terminate never runs: "a forced stop is not a release". The exact
+  # observation is then the reclaimable one - the arbiter's record marked :down and the lock still on disk - which
+  # is what a fresh command reclaims (rows S-13a/b/c). An orderly stop of a running tree still releases
+  # (assert_released! above, MR-8c), so the two observations stay distinct and neither is relaxed.
+  defp assert_reclaimable!(dir, arb) do
+    wait_until(fn -> match?({:ok, %{state: :down}}, Ownership.status(dir, server: arb)) end)
+    assert match?({:ok, %{state: :down}}, Ownership.status(dir, server: arb)), "arbiter record not reclaimable"
+    assert match?({:ok, _held}, RunLock.owner(SystemFs.new(), dir)), "disk lock released by a forced reap"
+  end
+
+  # docs/contracts/core-startup-bound.org section 6: the direct owner -> Run.Supervisor link is REPLACED by the
+  # three-hop chain owner -> startup helper -> starter -> Run.Supervisor, which is the Host.stop arbitration's
+  # runtime evidence. The chain is true while blocked and while running, and false at a terminal owner.
+  defp chained?(owner, supervisor) do
+    Enum.any?(linked(owner), fn helper ->
+      Enum.any?(linked(helper), fn starter -> supervisor in linked(starter) end)
+    end)
+  end
+
+  defp linked(pid) do
+    case Process.info(pid, :links) do
+      {:links, links} -> Enum.filter(links, &is_pid/1)
+      nil -> []
+    end
+  end
+
   defp kill_join!(pid) do
     ref = Process.monitor(pid)
     Process.exit(pid, :kill)
@@ -290,9 +317,8 @@ defmodule AiOrchestrator.Host.MountRedTest do
       assert handle.owner == payload.owner
       assert_payload_exact!(payload, handle.owner)
       assert handle.owner in Enum.map(DynamicSupervisor.which_children(h.hsup), &elem(&1, 1))
-      # Run.Supervisor's parent link is the owner itself (single owner, no protocol process)
-      {:links, links} = Process.info(payload.supervisor, :links)
-      assert handle.owner in links
+      # Run.Supervisor's parent is the startup starter, reached from the owner through the three-hop chain
+      assert chained?(handle.owner, payload.supervisor)
       send(helper, {:release, ref})
       assert match?({:ok, %{}}, host().await(handle, @deadline))
     end
@@ -397,9 +423,9 @@ defmodule AiOrchestrator.Host.MountRedTest do
         kill_join!(handle.owner)
         assert_receive {:DOWN, ^hmon, :process, ^helper, _}, @deadline
         assert_all_down!(mons)
-        # the observation is exact, never relaxed: a suspended descendant that terminates on its parent's exit
-        # releases; a failed release would be a failure of this row, not a redefinition of it
-        assert_released!(d, h.arb)
+        # the observation is exact, never relaxed: the owner was KILLED, so the reaper's forced teardown kills the
+        # Writer identity first and the directory is left reclaimable, never released (section 5)
+        assert_reclaimable!(d, h.arb)
         assert {:error, %{clause: "run_host_owner_down"}} == host().await(handle, 500)
       end
     end
@@ -438,7 +464,9 @@ defmodule AiOrchestrator.Host.MountRedTest do
                )
 
         started = System.monotonic_time(:millisecond)
-        assert {:error, %{clause: "run_host_stop_unproven"}} == host().stop(handle, 2_000)
+        # the mounted owner is RESPONSIVE during its startup leg (rows S-6/S-9a), so the stop is acknowledged and
+        # completed inside the child shutdown instead of falling back to the silent-owner evidence path
+        assert {:ok, :stopped} == host().stop(handle, 2_000)
         assert System.monotonic_time(:millisecond) - started < 1_000 + 2_000 + @slack
         refute handle.owner in Enum.map(DynamicSupervisor.which_children(h.hsup), &elem(&1, 1))
         # while the hook is still held nothing about the lock is claimed: unproven stays unproven
@@ -447,12 +475,11 @@ defmodule AiOrchestrator.Host.MountRedTest do
       end
 
       # EVENTUAL outcome after the controlled release: the hook ran inside the private arbiter's acquire (the
-      # arbiter is the blocked process and survives the release), so the caller observes the lock and the
-      # arbiter's record itself: the half-started subtree, whose owner the supervisor already killed, unwinds
-      # through the Writer's terminate once the acquire returns
+      # arbiter is the blocked process and survives the release). The Writer was force-killed inside that blocked
+      # acquire, so its terminate never ran: the acquire the arbiter completes afterwards records a dead writer and
+      # the directory is left RECLAIMABLE, which is exactly what a fresh command reclaims (section 5)
       assert blocked == Process.whereis(h.arb)
-      wait_until(fn -> Ownership.status(dir, server: h.arb, acquire_timeout: 500) == :none end)
-      assert :none == RunLock.owner(SystemFs.new(), dir)
+      assert_reclaimable!(dir, h.arb)
       # responsive control on a SEPARATE isolated host: the hook is released before stop
       h2 = start_host!()
       other = dir <> "_released"
@@ -489,6 +516,8 @@ defmodule AiOrchestrator.Host.MountRedTest do
         on_exit(fn -> File.rm_rf!(d) end)
         h = start_host!()
 
+        # the shared teardown runs inside the startup reaper that HOLDS the identities (section 1), so the seam's
+        # "unobserved" marker is process-independent; the assertion itself is unchanged
         seam = fn pid, mon, timeout ->
           observed =
             receive do
@@ -497,17 +526,14 @@ defmodule AiOrchestrator.Host.MountRedTest do
               timeout -> false
             end
 
-          if Process.get(:unobserved) == pid, do: false, else: observed
+          if :persistent_term.get({__MODULE__, :unobserved}, nil) == pid, do: false, else: observed
         end
 
+        on_exit(fn -> :persistent_term.erase({__MODULE__, :unobserved}) end)
         handle = mount!(h, d, holding(self(), :subtree_started), join: seam)
         {_ref, payload, helper} = await_held!(:subtree_started)
         victim = if target == :helper, do: helper, else: payload.worker
-
-        :sys.replace_state(handle.owner, fn state ->
-          Process.put(:unobserved, victim)
-          state
-        end)
+        :persistent_term.put({__MODULE__, :unobserved}, victim)
 
         assert {:error, %{clause: "run_executor_teardown_incomplete", survivors: 1}} == host().stop(handle, @deadline)
         # the kill itself succeeded (control): the processes are gone even though the join was reported unobserved

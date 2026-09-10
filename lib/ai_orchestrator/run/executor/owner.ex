@@ -1,10 +1,17 @@
 defmodule AiOrchestrator.Run.Executor.Owner do
   @moduledoc """
-  The owned foreground harness of one command: a dedicated process that traps exits so it can be the
-  run supervisor's linked parent and see a failed start as a return value, starts the subtree, reports
-  `{:run_executor_started, owner, supervisor}` to the trace, calls the optional test barrier, awaits
-  the Server through an asynchronous request so the caller-death monitor stays responsive while work
-  is held, tears the subtree down and replies to the caller by a fresh reference.
+  The owned foreground harness of one command: a dedicated process that traps exits, fixes ONE absolute startup
+  deadline at its own birth, starts the subtree through the bounded `AiOrchestrator.Run.Executor.Startup` seam
+  (helper + starter; the starter is the run supervisor's linked parent and the only process that blocks), reports
+  `{:run_executor_started, owner, supervisor}` to the trace, calls the optional test barrier, awaits the Server
+  through an asynchronous request so the caller-death monitor stays responsive while work is held, tears the
+  subtree down through the same seam and replies to the caller by a fresh reference.
+
+  The startup leg (docs/contracts/core-startup-bound.org) is responsive in THIS process: it records the starter's
+  identity and grants its permit only inside the deadline, compares every completion with the deadline at
+  acceptance, and expires on its own when no completion arrives at all - `run_startup_timeout` carrying the
+  reason, the phase and the conditional ownership diagnostic. Its budgets come from the server-owned
+  `config.opts[:startup_budgets]` seam, never from a command.
 
   Every trappable failure of the owner's own work runs under one closed boundary: the subtree is torn
   down first with the latest known identities, then the caller receives the closed
@@ -25,20 +32,26 @@ defmodule AiOrchestrator.Run.Executor.Owner do
   alias AiOrchestrator.Contract.Diagnostic
   alias AiOrchestrator.Journal.Writer
   alias AiOrchestrator.Run
+  alias AiOrchestrator.Run.Executor.Startup
 
   @stop_timeout 15_000
   @join_timeout 5_000
   @owner_completion_timeout 60_000
   @close_timeout 15_000
 
-  @typedoc "Teardown budgets (ms); the foreground owner uses the module defaults, a hosted owner may inject seams."
-  @type budgets :: %{optional(:stop) => timeout(), optional(:join) => timeout(), optional(:close) => timeout()}
+  @typedoc """
+  Budgets in milliseconds; the foreground owner uses the module defaults, a hosted owner may inject seams. The keys
+  read here are `:stop`, `:join` and `:close`; `:startup` and `:ack` bound the startup leg
+  (`AiOrchestrator.Run.Executor.Startup`). Any other key is carried and ignored.
+  """
+  @type budgets :: %{optional(atom()) => term()}
   @typedoc "Join observation: whether `pid`'s DOWN (monitor `ref`) was observed within `timeout` ms."
   @type join_fn :: (pid(), reference(), timeout() -> boolean())
 
   @doc false
   @spec default_budgets() :: budgets()
-  def default_budgets, do: %{stop: @stop_timeout, join: @join_timeout, close: @close_timeout}
+  def default_budgets,
+    do: Map.merge(Startup.default_budgets(), %{stop: @stop_timeout, join: @join_timeout, close: @close_timeout})
 
   @spec run(map(), (atom(), map() -> :ok) | nil) :: {:ok, map()} | {:error, map()}
   def run(config, barrier) do
@@ -64,16 +77,15 @@ defmodule AiOrchestrator.Run.Executor.Owner do
   @handoff_budget 5_000
 
   defp own(caller, ref, config, barrier) do
+    # the ONE absolute deadline is fixed at this process's birth, before any other process exists
+    birth = System.monotonic_time(:millisecond)
     Process.flag(:trap_exit, true)
     caller_monitor = Process.monitor(caller)
     # the acknowledged identity handoff: the Server admits no effect before this process, the reaper, knows the worker
     config = Map.put(config, :owner_handoff, {self(), make_ref()})
 
-    result =
-      case start(config) do
-        {:ok, sup} -> owned(sup, config, barrier, caller_monitor)
-        {:error, rejection} -> {:error, rejection}
-      end
+    {:ok, startup} = Startup.begin(config, Map.put(startup_budgets(config), :birth, birth))
+    result = starting(startup, config, barrier, caller_monitor)
 
     # returning ends the owner normally (its DOWN is the caller's completion signal); no reply to a dead caller
     case result do
@@ -84,7 +96,64 @@ defmodule AiOrchestrator.Run.Executor.Owner do
     :ok
   end
 
-  @doc false
+  # server-owned seam: a caller cannot set it through Commands (the executor context is built by Run.Executor)
+  defp startup_budgets(config) do
+    supplied = config |> Map.get(:opts, []) |> Keyword.get(:startup_budgets, %{})
+    Map.merge(default_budgets(), supplied)
+  end
+
+  # ---- the responsive startup leg: identity/permit, acceptance against the absolute deadline, own expiry ----
+  defp starting(startup, config, barrier, caller_monitor) do
+    %{ref: ref, helper_monitor: helper_monitor, starter: starter} = startup
+
+    receive do
+      # the starter identity confirms what begin/2 already handed this owner; the permit is granted only inside
+      # the absolute deadline, and never before the owner holds that identity for cleanup
+      {:startup_identity, ^ref, ^starter} ->
+        case Startup.permit(startup) do
+          :ok -> starting(startup, config, barrier, caller_monitor)
+          {:error, :late_identity} -> {:error, Startup.timeout_result(Startup.await_report(startup))}
+        end
+
+      {:startup_started, ^ref, _completion} = completion ->
+        case Startup.accept(startup, completion) do
+          {:ok, sup, facts} -> owned(startup, sup, facts, config, barrier, caller_monitor)
+          {:error, rejection} -> refused(startup, rejection)
+        end
+
+      # a reap the helper performed on its own (a starter that refused an expired permit)
+      {:startup_aborted, ^ref, report} ->
+        Startup.join(startup)
+        {:error, Startup.timeout_result(report)}
+
+      {:DOWN, ^caller_monitor, :process, _caller, _reason} ->
+        _report = Startup.abort(startup, :caller_gone)
+        :caller_gone
+
+      # the helper died: the owner mirrors the reap through the starter it holds
+      {:DOWN, ^helper_monitor, :process, _helper, _reason} ->
+        _report = Startup.reap(startup)
+        {:error, %{clause: "run_executor_down"}}
+
+      {:startup_note, ^ref, _why} ->
+        starting(startup, config, barrier, caller_monitor)
+    after
+      max(startup.deadline - System.monotonic_time(:millisecond), 0) ->
+        # a real expiry: no completion at all reached this owner inside its own clock
+        {:error, Startup.timeout_result(Startup.abort(startup, :deadline))}
+    end
+  end
+
+  # a completion that lost on its own terms (a refused start, an unreachable Server): the seam is joined, the
+  # born root - if any - was already collected by the helper
+  defp refused(startup, rejection) do
+    _ = Startup.teardown(startup, teardown_budgets(startup))
+    {:error, rejection}
+  end
+
+  defp teardown_budgets(%{budgets: budgets}), do: Map.take(budgets, [:stop, :join, :join_fn])
+
+  @doc "The synchronous start the STARTER performs: the create attempt and the one `journal_exists` retry."
   @spec start_subtree(map()) :: {:ok, pid()} | {:error, map()}
   def start_subtree(config), do: start(config)
 
@@ -102,17 +171,20 @@ defmodule AiOrchestrator.Run.Executor.Owner do
 
   # the closed boundary: the subtree is owned from here on. The COMPLETE owned map (root + every child) is
   # established BEFORE any fallible work and is what teardown receives on every path - the catch scope must
-  # never see a root-only map (EA-M5). Facts acquisition itself falls back to root-only teardown.
-  defp owned(sup, config, barrier, caller_monitor) do
+  # never see a root-only map (EA-M5). Discovery happened in the starter, inside the same clock.
+  defp owned(startup, sup, facts, config, barrier, caller_monitor) do
     trace(config, {:run_executor_started, self(), sup})
+    {owned, result} = closed_work(startup, Map.put(facts, :supervisor, sup), config, barrier, caller_monitor)
+    finish(startup, owned, result)
+  end
 
-    case facts(sup) do
-      {:ok, facts} ->
-        {owned, result} = closed_work(Map.put(facts, :supervisor, sup), config, barrier, caller_monitor)
-        finish(owned, result)
-
-      :error ->
-        finish(%{supervisor: sup}, {:error, %{clause: "run_server_down"}})
+  # the reaper's own loss is a closed owner failure in EVERY phase, not only during the startup leg: without it
+  # nothing is left that can reap this subtree, and the teardown that follows performs the mirror duty (R2)
+  defp helper_lost?(monitor) do
+    receive do
+      {:DOWN, ^monitor, :process, _helper, _reason} -> true
+    after
+      0 -> false
     end
   end
 
@@ -120,14 +192,25 @@ defmodule AiOrchestrator.Run.Executor.Owner do
   # with the complete owned map already established; the map is extended by the registered worker BEFORE any
   # fallible call, and whatever escapes becomes the closed owner failure while the LATEST owned map (worker
   # included) is what teardown receives - never a root-only or pre-handoff map after acquisition (EA-M5, WG-M1)
-  defp closed_work(owned, config, barrier, caller_monitor) do
+  defp closed_work(startup, owned, config, barrier, caller_monitor) do
     {owned, registered} = handoff(owned, config)
+
+    if helper_lost?(startup.helper_monitor) do
+      {owned, {:error, %{clause: "run_executor_down"}}}
+    else
+      barriered(startup, owned, registered, barrier, caller_monitor)
+    end
+  end
+
+  defp barriered(startup, owned, registered, barrier, caller_monitor) do
+    # the reaper behind this owner learns the worker too: an owner death after the handoff reaps it as well
+    :ok = Startup.own(startup, Map.take(owned, [:worker]))
 
     result =
       try do
         acknowledge(owned, registered, barrier)
         :ok = call_barrier(barrier, :subtree_started, Map.put(owned, :owner, self()))
-        await(owned.server, caller_monitor)
+        await(owned.server, caller_monitor, startup.helper_monitor)
       catch
         kind, reason -> {:error, owner_failure(kind, reason)}
       end
@@ -160,10 +243,11 @@ defmodule AiOrchestrator.Run.Executor.Owner do
   # a finished command closes its Writer explicitly BEFORE the orderly stop, so the close legs (descriptor,
   # lock release) are observable: a failed close after a successful run is surfaced on the result as
   # close: {:error, rejection} (the command's own error still wins), never hidden by a silent shutdown
-  defp finish(owned, result) do
+  defp finish(startup, owned, result) do
     result = close_writer(owned, result)
+    :ok = Startup.own(startup, owned)
 
-    case teardown(owned) do
+    case Startup.teardown(startup, teardown_budgets(startup)) do
       :ok -> result
       {:error, incomplete} -> if result == :caller_gone, do: :caller_gone, else: {:error, incomplete}
     end
@@ -232,14 +316,15 @@ defmodule AiOrchestrator.Run.Executor.Owner do
     end
   end
 
-  # the await is an asynchronous request: a caller DOWN or a Server DOWN is handled while it is outstanding
-  defp await(server, caller_monitor) do
+  # the await is an asynchronous request: a caller DOWN, a Server DOWN or the loss of the reaper behind this owner
+  # is handled while it is outstanding
+  defp await(server, caller_monitor, helper_monitor) do
     request = :gen_statem.send_request(server, :await)
     server_monitor = Process.monitor(server)
-    await_loop(request, server, server_monitor, caller_monitor)
+    await_loop(request, server, server_monitor, caller_monitor, helper_monitor)
   end
 
-  defp await_loop(request, server, server_monitor, caller_monitor) do
+  defp await_loop(request, server, server_monitor, caller_monitor, helper_monitor) do
     receive do
       {:DOWN, ^caller_monitor, :process, _caller, _reason} ->
         :caller_gone
@@ -247,11 +332,14 @@ defmodule AiOrchestrator.Run.Executor.Owner do
       {:DOWN, ^server_monitor, :process, ^server, _reason} ->
         {:error, %{clause: "run_server_down"}}
 
+      {:DOWN, ^helper_monitor, :process, _helper, _reason} ->
+        {:error, %{clause: "run_executor_down"}}
+
       message ->
         case :gen_statem.check_response(message, request) do
           {:reply, result} -> result
           {:error, {_reason, _server}} -> {:error, %{clause: "run_server_down"}}
-          :no_reply -> await_loop(request, server, server_monitor, caller_monitor)
+          :no_reply -> await_loop(request, server, server_monitor, caller_monitor, helper_monitor)
         end
     end
   end
@@ -259,9 +347,8 @@ defmodule AiOrchestrator.Run.Executor.Owner do
   # ---- teardown protocol over every owned identity ----
   # orderly first: a bounded Supervisor.stop (children shut down in reverse order); then every owned process
   # still alive - the root or any descendant - is killed directly and joined under a bound; a survivor is
-  # reported, never equated with success. Root death is never taken as subtree closure.
-  defp teardown(owned), do: teardown(owned, default_budgets(), &joined?/3)
-
+  # reported, never equated with success. Root death is never taken as subtree closure. The startup seam runs
+  # this ONE implementation inside the reaper that holds the identities.
   @doc false
   @spec teardown(map(), budgets(), join_fn()) :: :ok | {:error, map()}
   def teardown(owned, budgets, join) do

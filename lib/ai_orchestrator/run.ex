@@ -21,6 +21,7 @@ defmodule AiOrchestrator.Run do
       DeadlineFence,
       Executor,
       Executor.Owner,
+      Executor.Startup,
       Recovery,
       Recovery.Exhaustion,
       Server,

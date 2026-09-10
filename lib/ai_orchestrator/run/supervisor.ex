@@ -48,11 +48,15 @@ defmodule AiOrchestrator.Run.Supervisor do
           optional(:open) => :create | :existing,
           optional(:admission) => :fresh | :retry_only | :restart_empty,
           optional(:command) => Command.t() | nil,
-          optional(:owner_handoff) => {pid(), reference()}
+          optional(:owner_handoff) => {pid(), reference()},
+          optional(:writer_birth) => {pid(), reference()},
+          optional(:writer_ack) => pos_integer()
         }
 
   # `owner_handoff` (executor path only) names the reaper the Server hands the worker's identity to before
-  # admitting any effect; absent in the standalone path.
+  # admitting any effect; absent in the standalone path. `writer_birth` / `writer_ack` (executor path only,
+  # docs/contracts/core-startup-bound.org) name the reaper the Writer announces its birth to before it acquires
+  # anything, and the acknowledgment bound; absent in the standalone path.
   # `open` decides whether the Writer creates the journal (`:create`, the default for `:run`) or opens an
   # existing one; `admission` is the explicit provenance of a second attempt (`:retry_only`: only an
   # already-accepted matching command may be admitted, never a fresh start); `command` is the authorized
@@ -89,6 +93,7 @@ defmodule AiOrchestrator.Run.Supervisor do
       |> Keyword.take([:fs, :clock, :ownership])
       |> Keyword.put(:create, Map.get(config, :open, default_open(config.mode)) == :create)
       |> Keyword.put(:lock, supervisor_instance: Keyword.fetch!(config.opts, :supervisor_instance))
+      |> birth_opts(config)
 
     children = [
       traced(:writer, Writer.child_spec({run_dir, writer_opts}), config),
@@ -142,6 +147,12 @@ defmodule AiOrchestrator.Run.Supervisor do
     id = Keyword.get(opts, :id, SystemId)
     %{config | opts: Keyword.put_new_lazy(opts, :supervisor_instance, &id.supervisor_instance/0)}
   end
+
+  # the executor's reaper acknowledges the Writer's birth before any acquire; the standalone path has no reaper
+  defp birth_opts(opts, %{writer_birth: {reaper, ref}} = config) when is_pid(reaper) and is_reference(ref),
+    do: opts |> Keyword.put(:birth, {reaper, ref}) |> Keyword.put(:ack, Map.get(config, :writer_ack, 5_000))
+
+  defp birth_opts(opts, _config), do: opts
 
   defp default_open(:run), do: :create
   defp default_open(_mode), do: :existing

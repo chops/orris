@@ -1,0 +1,212 @@
+#+TITLE: Core startup bound: bounded startup, owner death and truthful ownership for both run owners
+#+PROPERTY: status contract + IMPLEMENTED (test/run/core_startup_bound_red_test.exs, test/run/core_startup_bound_seam_red_test.exs); supersedes every contradicting statement of the MAP revisions rev1-rev4 under logs/core-startup-bound (two-hop chain, unconditional reclaimable, immediate lock release, self-reaping starter)
+#+PROPERTY: base 02804e0d662d27783643f49dfe3dd3b2f9677992 (successor of bc3fb42: R1-R3 corrections of the second RED review; b7d6b94 before it)
+
+* Implementation status
+IMPLEMENTED (the expected-RED phase of this contract closed at 884b619). The interface is
+=AiOrchestrator.Run.Executor.Startup=; the Writer's acknowledged birth is =Journal.Writer.init/1= with =birth:=/=ack:=,
+plumbed by =Run.Supervisor= from =writer_birth=/=writer_ack=; the foreground =Run.Executor.Owner= and the mounted
+=Host.RunOwner= consume the seam identically; =Host.stop='s runtime evidence is the three-hop chain of section 6.
+All 25 rows of =core_startup_bound_red_test.exs= and all 12 of =core_startup_bound_seam_red_test.exs= pass with no
+assertion weakened; the known-green controls stayed green throughout. The independent review of the first candidate
+(4096e5c) found four lifecycle defects, corrected here and covered by =core_startup_bound_r2_test.exs=: the forwarded
+supervisor exit matched the wrong reference; an already-dead reaper certified teardown; =begin/2= waited on a helper
+message before either owner armed its expiry; and the ownership diagnostic was predicted before the Writer kill. Three mounted-run neighbour rows that pinned the
+REPLACED topology or the pre-contract blocking =:starting= were updated to this contract and cite it: the owner/
+=Run.Supervisor= link fact (MR-1a, controls S4) is now the chain; a forced reap leaves the directory RECLAIMABLE rather
+than released (MR-6, MR-7, section 5); a mounted stop during the startup leg is acknowledged and completes (MR-7,
+rows S-6/S-9a). Installed runtime and publication remain outside this contract.
+
+* Scope
+The startup leg of ONE run subtree (=Run.Supervisor= -> =Journal.Writer= -> =Run.Server= -> =Work.Supervisor=) under
+either owner: the foreground =Run.Executor.Owner= (synchronous caller, =Owner.run/2=) and the mounted
+=Host.RunOwner=. In scope: everything from the owner's birth until the subtree is acknowledged as started (or the
+startup is abandoned), the owner's and helper's death during that leg, and what the owner reports about ownership
+afterwards. Out of scope: the ordinary run (its await stays indefinite), the post-result completion bound (60 s,
+unchanged), installed daemon/runtime, CLI routing, live cancellation, any lock deletion, automatic recovery, the
+blocked-acquire singleton limit (a blocked arbiter is =ownership_unavailable= for every caller: recorded, not solved).
+
+* 1. Vocabulary and processes
+- OWNER: the foreground owner process or the mounted =RunOwner=. It fixes ONE absolute monotonic startup deadline at
+  its own birth, before any other process exists: =deadline = birth + budgets.startup=.
+- STARTER: the only process that may block. It is the OTP parent of =Run.Supervisor=, retained for the whole run
+  (a returning parent ends the supervisor), released only by the teardown. It performs the synchronous start
+  (=Owner.start_subtree/1=, the =journal_exists= retry inside) and the DISCOVERY (=Owner.facts/1=) itself.
+- HELPER: the responsive reaper. Linked to and monitored by the owner; it ADOPTS the starter - links and monitors it
+  as its own first action, and hands it its config - so the starter holds nothing of any reaper's before that. The
+  owner spawns the starter UNLINKED inside =begin/2= and therefore never links to it, which is what lets =begin/2=
+  return without waiting for a message from either process (the amendment the R3 review finding required: an owner
+  must not have a birth gap in front of the clock it is about to arm). An unadopted starter announces nothing and
+  expires on the owner's own deadline.
+  It never makes a synchronous call. It acknowledges Writer births while the owner lives and, on the owner's DOWN
+  or an abort, reaps every known identity.
+- Interface (=AiOrchestrator.Run.Executor.Startup=, consumed identically by both owners; the OWNER handles identity,
+  permit, expiry and acceptance during the seam's own handshake, so both owners stay responsive and the owner-birth
+  deadline covers that interval):
+  - =begin(config, budgets)= -> ={:ok, startup}= with =startup = %{ref, helper, starter, deadline, budgets}=; it returns
+    at once after spawning the helper (linked+monitored to the caller) and the starter (UNLINKED, adopted by the
+    helper), awaiting no message from either; the deadline is
+    =birth + budgets.startup= where =birth= is the owner's own monotonic birth time passed in =budgets.birth= (default
+    =now=).
+  - Events to the owner: ={:startup_identity, ref, starter}= (the starter asks for its permit);
+    ={:startup_started, ref, {:ok, sup, facts} | {:error, rejection}}= (completion, delivered by the helper);
+    ={:startup_aborted, ref, report}= (a reap the helper performed on its own: owner DOWN); the worker handoff
+    ={:run_worker_registered, ref, worker, server}= is unchanged.
+  - =permit(startup)= -> =:ok= | ={:error, :late_identity}=: grants only while =now <= deadline= (and the owner's phase
+    is the handshake), otherwise denies and aborts through the helper; the owner records the starter before calling it.
+  - =accept(startup, completion_event)= -> ={:ok, sup, facts}= | ={:error, %{clause: "run_startup_timeout", why:
+    :late_result_after_deadline | :late_error_after_deadline, late_class, ownership, joined}}= | the completion's own
+    error: the acceptance-time comparison, collection and teardown of a late tree live here.
+  - =abort(startup, why)= -> report (expiry =:deadline=, =:caller_gone=, stop): the helper reaps and joins;
+    =reap(startup)= -> report: the owner's mirror duty after a helper DOWN (through the starter it holds);
+    =teardown(startup, budgets)= -> =:ok= | ={:error, %{clause: "run_executor_teardown_incomplete", survivors}}= at
+    a normal end (the helper runs the shared teardown, releases the starter, both joined).
+  - =default_budgets/0= = =%{startup: 45_000, ack: 5_000}=; =Owner.default_budgets/0= gains the same keys.
+  - Reports carry =%{why, phase, ownership, joined, survivors}=; =ownership= is the conditional diagnostic of section 5.
+- Budget seam (server-owned; a caller cannot set it through =Commands=): the foreground path reads
+  =config.opts[:startup_budgets]= (a Host option keyword entry like =:ownership=, dropped from no caller because the
+  executor context is built by =Run.Executor.prepare/2=), defaulting to =default_budgets/0=; the mounted path reads
+  =Host.mount/3= =budgets:= extended with =:startup= and =:ack=. =Owner.run/2= keeps its =(config, barrier)= shape and
+  its synchronous semantics; tests inject short budgets through these seams only.
+
+* 2. Identity before work (the permit)
+1. The starter sends ={:starter_identity, ref, self()}= to the owner and performs NO synchronous work until it holds
+   ={:permit, ref}=. While waiting it answers its helper's DOWN and the deadline (exit =:normal=, note to the owner,
+   nothing acquired).
+2. The owner records the starter FIRST (retained for cleanup), then grants the permit ONLY while its phase is
+   =:handshake= and =now <= deadline=; otherwise it sends ={:deny, ref}= and aborts startup as
+   =run_startup_timeout= with =why: :late_identity=.
+3. The starter re-checks the SAME absolute deadline when it consumes the permit, before any synchronous work; an
+   expired permit is refused (=:permit_expired=, exit =:normal=). A queued release consumed after the deadline is
+   not a release. Neither process trusts a queued message across the clock; both guards are required.
+4. After the permit the owner ALWAYS holds the starter identity and owns mirror cleanup through it.
+
+* 3. Writer birth acknowledgment
+=Journal.Writer.init/1= with =birth: {reaper, ref}= sends ={:run_writer_born, ref, self()}= to the reaper and WAITS
+for ={:run_writer_ack, ref}= BEFORE =acquire_lock=, bounded by =budgets.ack= (5 s). ={:run_writer_abort, ref}= or
+silence stops the Writer before any acquire (=writer_birth_aborted= / =writer_birth_unacknowledged= rejections, no
+registration, no lock). The reaper (helper) acknowledges only while the owner lives and the phase is
+=:handshake= or =:starting=. The worker handoff (=owner_handoff=) is unchanged and still targets the owner.
+
+* 4. Deadline authority
+- One clock: handshake, permit, start (both =journal_exists= attempts), discovery and the Writer ack all consume
+  =budgets.startup=. No inner discovery budget. =acquire_timeout= stays the Writer-internal inner seam.
+- Every completion (success or error) is compared with the absolute deadline at ACCEPTANCE by the owner; accepted
+  after the deadline -> =run_startup_timeout= with =why: :late_result_after_deadline | :late_error_after_deadline=
+  and =late_class= recorded; the born tree is collected and torn down. Accepted before -> the completion's own
+  class (=ownership_unavailable= from the inner seam included). Timer messages are wake-ups, never authority.
+- No completion at all -> the owner expires at the deadline (a real =after= / state timeout it arms from
+  =startup.deadline=), calls =abort(startup, :deadline)= and reports =run_startup_timeout= with =why: :deadline=, the
+  phase (=:handshake= | =:starting=), =ownership= and =joined=; the report is complete only after every join.
+- The 60 s post-result completion bound of =Owner.run/2= is unchanged and bounds only the owner's DOWN after its
+  reply; ordinary =Run.Server.await= stays indefinite.
+
+* 5. Teardown, survivors and the ownership diagnostic
+- Forced teardown (expiry, caller death, abort, stop or parent EXIT during startup) kills the Writer identities
+  FIRST (acknowledged and discovered), then the supervisor, then born children, then the starter; every kill is
+  joined under =budgets.join=; a survivor is reported as =run_executor_teardown_incomplete= with its count, never
+  as success. The run supervisor is FROZEN (scheduler-level suspension) for the Writer window only and killed under
+  that freeze: its own reaction to losing a child would otherwise race this accounting and collapse the identities
+  the report is about, so the diagnostic below could not rest on observed deaths. This is the same primitive the
+  =Host.stop= arbitration uses to make "read the evidence, then act" atomic.
+- The reaper's own death establishes NOTHING about the subtree: the starter traps that exit and goes on holding a
+  live =Run.Supervisor=. Every owner therefore performs the mirror duty on helper loss in EVERY live phase, and a
+  teardown whose helper is already gone - a monitor answering =:noproc= included - reaps through the starter and
+  reports what it joined. A missing reaper is never cleanup success. A supervisor-only or helper-only kill is insufficient (a trapping Writer blocked in a filesystem call
+  survives its parent's EXIT) and is never the product's mechanism.
+- Ownership diagnostic (=ownership:= on every abort/teardown report), observed within a bounded read (500 ms) that
+  never blocks the reaper, CONDITIONAL and never asserted: =:none= when no acquire happened (before the birth ack);
+  =:reclaimable= when a registered Writer was force-killed (arbiter registration =:down=, or =:live= with a dead
+  pid, which the arbiter reclaims on the same terms); =:unknown= when the observation is unavailable or failed.
+  The observation is taken AFTER the Writers are killed and joined, and a =:live= registration is reclaimable only
+  when it names a Writer this reap has itself joined dead; a registration naming any other identity is =:unknown=.
+  An intention to kill is not an observation, so the abort trace follows the deaths it reports and never precedes
+  them.
+  Placement: the foreground result map for ={:error, run_startup_timeout | run_executor_down}=; the trace message
+  ={:run_startup_aborted, owner, diagnostic}= for =:caller_gone= (no receiver); the retained terminal result of a
+  mounted owner (=Host.await/2=). =Host.stop/2='s public return shape is unchanged.
+- No automatic recovery leg inside teardown and no lock deletion: a forced stop is not a release. Recovery is a
+  FRESH command whose Writer reclaims through the arbiter under its own bounded startup; three precise classes:
+  empty journal -> =command_run_mismatch=; partial preamble -> =preamble_violation=; admitted run -> the command's
+  ordinary outcome (a cancel cancels). "Arbiter =:none= and disk =:none=" is the OBSERVED post-reclaim/close outcome
+  of that fresh command (its Writer reclaimed, worked and closed), not a guaranteed globally observable intermediate
+  state before the new Writer's work.
+
+* 6. Mounted owner, Host.stop witness, retained terminal
+- =Host.RunOwner= consumes the same =Startup=: its =:starting= state is responsive (=inspect/2= answers,
+  =stop_request= is acknowledged =:stopping= and torn down under the teardown budgets inside =child_shutdown_ms=,
+  waiters and timers are processed). Expiry -> terminal ={:error, run_startup_timeout}= retained; =await= answers
+  it; =stop= -> =:retained=. The requester's death never affects the run (mounted lifetime independent).
+- Host root shutdown during startup: the tree is gone at the root's stop return, never outliving the arbiter.
+- =Host.stop= arbitration witness: the direct owner -> =Run.Supervisor= link is replaced by the THREE-hop chain
+  owner -> helper -> starter -> =Run.Supervisor= (=$initial_call= witnesses), true while blocked and while running,
+  FALSE at terminal: the owner unlinks and joins helper and starter before entering =:terminal=, so a retained
+  owner holds no link to any owned identity. The arbitration keeps its shape (freeze the owner, re-read the chain
+  under the freeze, kill only a still-chained silent child of this host's supervisor); helper and starter act only
+  on the owner's DOWN, its abort or its teardown, none producible by a frozen owner; a retained result is never
+  destroyed on a sampled phase.
+
+* 7. Preserved invariants
+Indefinite =Run.Server.await=; synchronous foreground return through the owner's reply and caller monitor only (no
+link, no =trap_exit= change, no message consumed); worker-before-effect handoff and acknowledgment to the OWNER; one
+Writer per run directory; observed close evidence for ={:ok, map}=; =journal_exists= retry-only admission (both
+attempts inside the starter under one clock, byte-identical semantics); stamp/policy path; blocked append/close
+drains at the stop budget; the acquire leg's =acquire_timeout= seam (its class wins only when accepted before the
+outer deadline); =Host.stop= public shape; retention semantics.
+
+* 8. Rows (test/run/core_startup_bound_red_test.exs; the file names the assertion and the missing behaviour per row)
+| S-1 | foreground blocked open + caller death | every identity DOWN within startup + teardown budgets; :caller_gone; trace diagnostic :reclaimable; a subsequent fresh command observes arbiter :none + disk :none |
+| S-2 | foreground blocked open, caller alive | run_startup_timeout (why :deadline) accepted-time exact +- slack; identities DOWN; the next command reclaims, never second_live_writer |
+| S-3 | insufficiency controls (green) | supervisor-only / helper-only kill leaves a live-registered blocked Writer: the product must kill the Writer identity |
+| S-4 | acknowledged birth | Writer with birth: waits for the ack before acquire; abort -> no registration/lock; silent reaper -> writer_birth_unacknowledged at budgets.ack; ack -> acquired |
+| S-5 | late completions | success and error accepted after the deadline lose regardless of queue order; born trees and late workers collected; just-before controls succeed |
+| S-6 | mounted stop in :starting | :stopping acknowledged; {:ok, :stopped} within child_shutdown; report ownership :reclaimable |
+| S-7 | mounted root shutdown in :starting | tree gone at root stop return |
+| S-8 | mounted requester death | run proceeds to its result |
+| S-9 | mounted expiry | terminal {:error, run_startup_timeout} retained; await answers it; stop -> :retained |
+| S-10 | retry under one clock | two Writer startups, one deadline; retry semantics unchanged |
+| S-11 | inner vs outer | acquire_timeout's class only when accepted before the deadline; deadline-first otherwise |
+| S-12 | Host.stop witness | three-hop chain true while chained, false at terminal; arbitration under freeze; retained result preserved |
+| S-13 | recovery classes | empty journal -> command_run_mismatch; partial preamble -> preamble_violation; admitted run -> cancelled; each after an observed reclaim |
+| S-14 | no regression | owner_loss_generation, worker_green*, host_mount RED/controls, blocked append/close legs |
+| S-15 | owner death, three phases | before ack -> no lock, late birth aborted; after ack while open blocks -> reaped :reclaimable; after startup -> reaped incl. worker |
+| S-16 | acquire-blocked window | descendants reaped; diagnostic :unknown; singleton limit named |
+| S-17 | helper death | before the permit: the responsive starter exits, nothing acquired, owner run_executor_down with no starter; after the permit: the owner reaps via the starter |
+| S-18 | reap completeness | every known Writer identity killed and joined; census control empty |
+| S-19 | discovery responsiveness | owner death/abort while which_children cannot answer is reaped within the join budgets |
+| S-20 | real expiry | no completion -> run_startup_timeout at the owner-birth deadline; handshake and discovery inside the clock |
+| S-21 | identity permit | no work before the permit; permit only in :handshake before the deadline (late identity denied); permit re-validated at consumption (late consumption refused); queued release after the deadline is no release; all with no acquire |
+Controls in every row: the shared cleanup owner =test/support/startup_cleanup.ex= (=AiOrchestrator.Test.StartupCleanup=, test-only):
+one tracker per row (pids, filesystem gates, directories incl. the setup directory); =row/2= catches the body's outcome
+(rescue, exits, throws), runs =cleanup!/1= (gates released, every owned identity killed and joined with recorded
+survivors, a scoped census of run-tree processes born since the row's baseline: supervisor, Writer, RunOwner, Server,
+Work supervisor, Worker and any startup-seam process; directories removed only when nothing survived) and re-raises the
+original failure annotated; a body whose process is killed or times out is covered by the idempotent =on_exit= fallback
+running the same =cleanup!/1=. CO-1
+(failing body), CO-2 (body process killed externally, fallback by the surviving owner) and CO-2a (caught exit) prove it.
+
+* 9. Coverage matrix (executed RED = fails today on the named unmet behaviour through the real owners; control = pinned fact, green; blocked = cannot execute until P-1)
+| row | test (file: core_startup_bound_red_test.exs unless "seam") | exact assertion | class |
+| P-1 | prerequisite | Startup begin/2 permit/1 accept/2 abort/2 reap/1 teardown/2 default_budgets/0 exported; Owner.default_budgets/0 has :startup/:ack | prerequisite (once) |
+| S-1 | S-1 caller death, blocked open | owner/supervisor/Writer DOWN within the teardown window with the gate held; trace {:run_startup_aborted, owner, %{ownership: :reclaimable}} received | executed RED |
+| S-2/S-20 | S-2 caller alive, startup_budgets 300 ms | exact {:error, %{clause: run_startup_timeout, why: :deadline, ownership: :reclaimable}}; elapsed in [300, 300 + window]; every identity joined with the gate held | executed RED (names the absent budget seam) |
+| S-3 | raw-tree control | a trapping parent that starts Run.Supervisor directly and is killed leaves the blocked Writer alive and live-registered (link insufficiency, no reaper involved) | control |
+| S-4 | S-4a/b/c birth ack | real Writer with birth: announces before acquire; abort -> writer_birth_aborted, no registration; silence -> writer_birth_unacknowledged at the ack budget; ack -> acquired | executed RED (three cases) |
+| S-5 | seam S-5a/S-5b (late) + S-5c/S-5d (timely controls via the owner driver) | accept/2 after the deadline -> late_result / late_error with the tree collected; a timely success -> {:ok, sup, facts} and a normal teardown; a timely inner error (private arbiter blocked, acquire_timeout 200 ms) keeps ownership_unavailable | blocked |
+| S-6/S-12 | S-6 mounted stop in :starting | {:ok, :stopped} within child_shutdown; supervisor + Writer DOWN with the gate held | executed RED |
+| S-7 | S-7 root shutdown | supervisor + Writer DOWN at the root's stop return | executed RED |
+| S-8 | S-8 requester death | run reaches {:ok, _}; stop :ok | control |
+| S-9 | S-9a inspect; S-9b mounted expiry (budgets startup 300 ms) | phase :starting answered; Host.await -> {:error, %{clause: run_startup_timeout}} retained; Host.stop -> :ok (:retained) | executed RED |
+| S-10 | seam S-10 (owner-driven) | seed = a run COMPLETED through the real executor (32 lines); the second start's attempt 1 consumes 150 ms inside its [:exclusive] create before eexist, attempt 2 blocks in its append-open; the bounded owner DRIVER (test-only process implementing section 1: begin, one timer from startup.deadline, permit, accept, abort) aborts at the ABSOLUTE deadline (in [300, 450) ms from its birth: a reset-at-retry mutant aborts >= 450); joins under that clock | blocked |
+| S-11 | S-11 inner seam | acquire_timeout 500 ms -> ownership_unavailable (accepted before the outer deadline) | control |
+| S-12 | seam S-12 | chain owner->helper->starter->Run.Supervisor true while blocked and running; after teardown no links; mounted retained owner has no links and stop answers :ok | blocked |
+| S-13 | S-13a/b/c recovery classes | empty (0 lines) -> command_run_mismatch; partial preamble (kill inside write #4, first line on disk) -> preamble_violation; admitted -> {:ok, _}; each after observed arbiter :none / disk :none | control |
+| S-14 | neighbours | owner_loss_generation_red, worker_green_review_probes, worker_green_successor_probe, host_mount_red, host_mount_review_controls, host_baseline_control pass | control (run, attributed) |
+| S-15 | S-15a (owner/reaper dies BEFORE the birth ack: real Writer with birth:, the reaper relays the announcement as a causal witness, the announced Writer pid is tracked and monitored before the reaper is killed, and the Writer's own DOWN is required before release/cleanup -> writer_birth_aborted, no registration, no lock, no append-open), S-15b (after acquire), S-15c (after startup) | tree DOWN within the window with the gate held; product path, not the raw tree | executed RED |
+| S-16 | S-16 acquire-blocked | roles verified by chain traversal before the kill; descendants DOWN; report ownership :unknown | executed RED |
+| S-17 | seam S-17a/b (HELPER death, distinct from S-15a owner death) | before the permit: starter exits :normal, ownership :none, no starter in the report; after: reap/1 joins writer/supervisor/starter, :reclaimable. Test-owner convention: the test process acting as owner traps exits for the row and restores its flag (the helper is linked to its owner by contract, so its kill is an exit signal to the owner); production begin/2 never mutates a caller's flags and never removes the link | blocked |
+| S-18 | every row's after-block + S-18b | scoped census empty after cleanup, survivors fail the row; S-18b join seam returning false -> run_executor_teardown_incomplete with survivors > 0 | control / executed RED |
+| S-19 | S-19 discovery blocked | queued which_children witnessed (current_function + supervisor queue) before the kill; tree DOWN within the window | executed RED |
+| S-20 | see S-2/S-20 and S-9b | | executed RED |
+| S-21 | seam S-21a/b | late permit GRANT (permit/1 after the deadline -> {:error, :late_identity}, no acquire) and late permit CONSUMPTION (starter held past the deadline -> :permit_expired, no acquire). Disposition: the probe-only gate release of the MAP prototype is not a product phase and is not asserted; pre-identity owner loss is S-15a, helper loss is S-17 | blocked |
+| cleanup | CO-1, CO-2, CO-2a | CO-1 failing body over a blocked tree: annotated re-raise, no live owned process, inner AND outer directories removed; CO-2 body process killed externally (after-path impossible): the surviving owner's idempotent cleanup!/1 reaps everything and removes the directory, a second call answers :already; CO-2a caught exit: the after-path cleans | control |

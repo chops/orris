@@ -38,6 +38,8 @@ defmodule AiOrchestrator.Journal.Writer do
   @head_tmp "events.head.tmp"
   # Long enough for the close legs (descriptor close, lock tombstone, fsyncs).
   @shutdown 15_000
+  # The birth acknowledgment bound (docs/contracts/core-startup-bound.org, section 3).
+  @ack 5_000
 
   @type rejection :: %{required(:clause) => String.t(), optional(atom()) => term()}
   @type opened :: %{
@@ -179,11 +181,44 @@ defmodule AiOrchestrator.Journal.Writer do
     clock = Keyword.get(opts, :clock, SystemClock)
     ownership = Keyword.get(opts, :ownership, [])
 
-    with {:ok, lock} <- acquire_lock(run_dir, fs, opts, ownership),
+    with :ok <- birth(opts),
+         {:ok, lock} <- acquire_lock(run_dir, fs, opts, ownership),
          {:ok, state} <- locked_open(fs, clock, run_dir, lock, ownership, Keyword.get(opts, :create, false)) do
       {:ok, Map.put(state, :ownership, ownership)}
     else
       {:error, rejection} -> {:stop, {:shutdown, {:rejected, rejection}}}
+    end
+  end
+
+  # The acknowledged birth (docs/contracts/core-startup-bound.org, section 3): a writer started with
+  # `birth: {reaper, ref}` announces `{:run_writer_born, ref, self()}` to its reaper and acquires NOTHING until
+  # `{:run_writer_ack, ref}` arrives. `{:run_writer_abort, ref}`, the reaper's death or silence at the `ack`
+  # bound stops it with a named rejection: no registration, no lock, no descriptor.
+  defp birth(opts) do
+    case Keyword.get(opts, :birth) do
+      {reaper, ref} when is_pid(reaper) and is_reference(ref) ->
+        monitor = Process.monitor(reaper)
+        send(reaper, {:run_writer_born, ref, self()})
+
+        receive do
+          {:run_writer_ack, ^ref} ->
+            Process.demonitor(monitor, [:flush])
+            :ok
+
+          {:run_writer_abort, ^ref} ->
+            Process.demonitor(monitor, [:flush])
+            {:error, %{clause: "writer_birth_aborted"}}
+
+          {:DOWN, ^monitor, :process, ^reaper, _reason} ->
+            {:error, %{clause: "writer_birth_aborted"}}
+        after
+          Keyword.get(opts, :ack, @ack) ->
+            Process.demonitor(monitor, [:flush])
+            {:error, %{clause: "writer_birth_unacknowledged"}}
+        end
+
+      _absent ->
+        :ok
     end
   end
 

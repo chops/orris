@@ -6,9 +6,12 @@ defmodule AiOrchestrator.Host.RunOwner do
   parent's EXIT in `terminate/3`, and runs the ONE teardown implementation shared with the foreground owner
   (`AiOrchestrator.Run.Executor.Owner`).
 
-  States: `:starting` (the only synchronous phase: `Run.Supervisor.start_link` blocks this process),
-  `:handoff`, `:barrier_handoff`, `:barrier_subtree`, `:awaiting`, `:terminal`. Teardown runs inside the
-  handler or `terminate/3` that enters it (never observable as a state); `inspect/1` reports the last phase.
+  States: `:starting` (RESPONSIVE: the blocking start runs in the `AiOrchestrator.Run.Executor.Startup` seam's
+  starter, under ONE absolute deadline this owner fixes at its own birth), `:handoff`, `:barrier_handoff`,
+  `:barrier_subtree`, `:awaiting`, `:terminal`. Teardown runs inside the handler or `terminate/3` that enters it
+  (never observable as a state); `inspect/1` reports the last phase. An expiry with no completion, a completion
+  accepted after the deadline and a denied or late-consumed permit all end in a RETAINED terminal
+  `{:error, run_startup_timeout}` (docs/contracts/core-startup-bound.org).
 
   Waiters (`await`, `ready`, `stop`) are recorded with a monitor on the caller and a timer-driven deadline.
   A late identity message carrying this owner's handoff reference is retained under `:late` and swept at
@@ -22,8 +25,17 @@ defmodule AiOrchestrator.Host.RunOwner do
   alias AiOrchestrator.Host.Monitor
   alias AiOrchestrator.Journal.Ownership
   alias AiOrchestrator.Run.Executor.Owner
+  alias AiOrchestrator.Run.Executor.Startup
 
-  @default_budgets %{close: 15_000, stop: 15_000, join: 5_000, handoff: 5_000, helper_join: 1_000}
+  @default_budgets %{
+    close: 15_000,
+    stop: 15_000,
+    join: 5_000,
+    handoff: 5_000,
+    helper_join: 1_000,
+    startup: 45_000,
+    ack: 5_000
+  }
   @default_retention_ms 60_000
   @identity_roles [:supervisor, :server, :work, :writer, :worker]
 
@@ -74,6 +86,8 @@ defmodule AiOrchestrator.Host.RunOwner do
 
   @impl true
   def init(args) do
+    # the ONE absolute startup deadline is fixed at this process's birth, before any other process exists
+    birth = System.monotonic_time(:millisecond)
     Process.flag(:trap_exit, true)
     ref = make_ref()
     relay = Map.get(args, :handoff_relay)
@@ -86,6 +100,8 @@ defmodule AiOrchestrator.Host.RunOwner do
       barrier: args.barrier,
       host: args.host,
       ref: ref,
+      birth: birth,
+      startup: nil,
       owned: %{},
       task: nil,
       registered: nil,
@@ -104,27 +120,69 @@ defmodule AiOrchestrator.Host.RunOwner do
     {:ok, :starting, data, [{:next_event, :internal, :start}]}
   end
 
-  # ---- starting: the only synchronous phase; a :kill here collapses the subtree by links ----
+  # ---- starting: RESPONSIVE; the blocking start lives in the seam's starter under the owner's own deadline ----
   @impl true
   def handle_event(:internal, :start, :starting, data) do
-    case Owner.start_subtree(data.config) do
-      {:ok, sup} ->
-        case Owner.facts(sup) do
-          {:ok, facts} ->
-            data = %{data | owned: Map.put(facts, :supervisor, sup), phase: :handoff}
-            {:next_state, :handoff, data, [{:state_timeout, data.budgets.handoff, :handoff_budget}]}
+    {:ok, startup} = Startup.begin(data.config, startup_budgets(data))
 
-          :error ->
-            teardown_to(%{data | owned: %{supervisor: sup}}, {:error, %{clause: "run_server_down"}})
-        end
+    {:keep_state, %{data | startup: startup},
+     [{:state_timeout, max(startup.deadline - System.monotonic_time(:millisecond), 0), :startup_deadline}]}
+  end
 
-      {:error, rejection} ->
-        terminal(data, {:error, rejection})
+  # identity before work: the owner already holds the starter (begin/2); the permit is granted only inside the deadline
+  # the identity confirms the starter begin/2 already handed this owner; the permit is granted only inside the
+  # absolute deadline, and the owner holds that identity for cleanup either way
+  def handle_event(:info, {:startup_identity, ref, starter}, :starting, %{startup: %{ref: ref, starter: starter}} = data) do
+    case Startup.permit(data.startup) do
+      :ok -> :keep_state_and_data
+      {:error, :late_identity} -> expired(data, Startup.await_report(data.startup))
     end
   end
 
-  # ---- the subtree's EXIT (linked parent) in any live state ----
-  def handle_event(:info, {:EXIT, sup, _reason}, state, %{owned: %{supervisor: sup}} = data)
+  # every completion is compared with the absolute deadline HERE, at acceptance
+  def handle_event(:info, {:startup_started, ref, _completion} = completion, :starting, %{startup: %{ref: ref}} = data) do
+    case Startup.accept(data.startup, completion) do
+      {:ok, sup, facts} ->
+        data = %{data | owned: Map.put(facts, :supervisor, sup), phase: :handoff}
+        {:next_state, :handoff, data, [{:state_timeout, data.budgets.handoff, :handoff_budget}]}
+
+      {:error, %{clause: "run_startup_timeout"} = result} ->
+        terminal(%{data | startup: nil}, {:error, result})
+
+      {:error, rejection} ->
+        _ = Startup.teardown(data.startup, teardown_budgets(data))
+        terminal(%{data | startup: nil}, {:error, rejection})
+    end
+  end
+
+  # a reap the helper performed on its own (a starter that refused an expired permit)
+  def handle_event(:info, {:startup_aborted, ref, report}, :starting, %{startup: %{ref: ref}} = data) do
+    :ok = Startup.join(data.startup)
+    terminal(%{data | startup: nil}, {:error, Startup.timeout_result(report)})
+  end
+
+  # a real expiry: no completion at all reached this owner inside its own clock
+  def handle_event(:state_timeout, :startup_deadline, :starting, %{startup: startup} = data) when startup != nil,
+    do: expired(data, Startup.abort(startup, :deadline))
+
+  # The reaper died. Its death establishes nothing about the subtree - the starter traps that exit and goes on
+  # holding a live Run.Supervisor - so the owner performs its own mirror duty through the starter, in EVERY live
+  # phase and not merely during the startup leg (review R2). A helper that exits at the end of an orderly teardown
+  # never reaches here: that DOWN is consumed and its link dropped inside the seam's own join.
+  def handle_event(:info, {:DOWN, mon, :process, _helper, _reason}, state, %{startup: %{helper_monitor: mon}} = data)
+      when state != :terminal, do: teardown_to(data, {:error, %{clause: "run_executor_down"}})
+
+  # ---- the subtree's exit, forwarded by the starter that parents it, in any live state ----
+  # The reference carried here is the STARTUP generation, not the worker-handoff reference this owner minted in
+  # init/1; matching the wrong one silently ignored a real supervisor death and left a held barrier waiting for a
+  # tree that no longer existed (review R1). Both the generation and the supervisor identity must match, so a late
+  # or foreign forward can never tear down a live run.
+  def handle_event(
+        :info,
+        {:startup_subtree_exit, ref, sup, _reason},
+        state,
+        %{startup: %{ref: ref}, owned: %{supervisor: sup}} = data
+      )
       when state not in [:terminal, :starting], do: teardown_to(data, {:error, %{clause: "run_server_down"}})
 
   # ---- waiter bookkeeping: caller DOWN and timer-driven deadlines ----
@@ -140,6 +198,16 @@ defmodule AiOrchestrator.Host.RunOwner do
   end
 
   # ---- handoff: the worker identity is an EVENT stored by this process itself ----
+  # The Server produces the handoff while the subtree is starting, so a RESPONSIVE :starting owner can see it
+  # before it accepts the completion. That is the ORDINARY handoff arriving early, never a late identity: it is
+  # postponed and processed in :handoff exactly as it was when this state blocked (a startup that ends in
+  # :terminal instead re-delivers it there, where the identity is collected).
+  def handle_event(:info, {:run_worker_registered, ref, _worker, _server}, :starting, %{ref: ref}),
+    do: {:keep_state_and_data, [:postpone]}
+
+  def handle_event(:info, {:run_worker_absent, ref, _clause}, :starting, %{ref: ref}),
+    do: {:keep_state_and_data, [:postpone]}
+
   def handle_event(:info, {:run_worker_registered, ref, worker, server}, :handoff, %{ref: ref} = data) do
     data = %{data | owned: Map.put(data.owned, :worker, worker), registered: {ref, server}, phase: :barrier_handoff}
     {:next_state, :barrier_handoff, run_barrier(data, :handoff_received)}
@@ -298,6 +366,17 @@ defmodule AiOrchestrator.Host.RunOwner do
   def format_status(status), do: Map.merge(status, %{data: :redacted, state: Map.get(status, :state)})
 
   # ---- helpers ----
+  defp expired(data, report), do: terminal(%{data | startup: nil}, {:error, Startup.timeout_result(report)})
+
+  defp startup_budgets(%{budgets: budgets, birth: birth, join: join}) do
+    budgets
+    |> Map.take([:startup, :ack, :stop, :join])
+    |> Map.merge(%{birth: birth, join_fn: join})
+  end
+
+  defp teardown_budgets(%{budgets: budgets, join: join}),
+    do: budgets |> Map.take([:stop, :join]) |> Map.put(:join_fn, join)
+
   defp run_barrier(data, label) do
     owner = self()
     tref = make_ref()
@@ -368,7 +447,7 @@ defmodule AiOrchestrator.Host.RunOwner do
     data = %{data | phase: :tearing_down}
     data = kill_helper(data)
     owned = Map.take(data.owned, @identity_roles ++ [:late])
-    outcome = Owner.teardown(owned, data.budgets, data.join)
+    {outcome, data} = collapse(data, owned, result)
     # by construction, never by scheduling: a terminal owner holds no link to any owned identity, survivors
     # included (a survivor is a pid whose DOWN the join did not observe in time, never a process that can be
     # kept alive), so the stop arbitration's "linked run supervisor => not terminal" evidence is exact
@@ -387,6 +466,30 @@ defmodule AiOrchestrator.Host.RunOwner do
 
     terminal(data, result)
   end
+
+  # the ONE cleanup path over the startup seam: while the tree exists the helper runs the shared orderly
+  # teardown and releases the starter; before it exists (a stop or a parent EXIT during the startup leg) the
+  # helper reaps what was born and the starter is reaped with it
+  defp collapse(%{startup: nil} = data, owned, _result), do: {Owner.teardown(owned, data.budgets, data.join), data}
+
+  defp collapse(%{startup: startup} = data, owned, result) do
+    outcome =
+      if is_pid(owned[:supervisor]) do
+        :ok = Startup.own(startup, owned)
+        Startup.teardown(startup, teardown_budgets(data))
+      else
+        startup |> Startup.abort(abort_why(result)) |> incomplete()
+      end
+
+    {outcome, %{data | startup: nil}}
+  end
+
+  defp abort_why({:error, %{clause: "run_host_stopped"}}), do: :stop
+  defp abort_why({:error, %{clause: clause}}), do: {:owner_failure, clause}
+  defp abort_why(_result), do: :stop
+
+  defp incomplete(%{survivors: 0}), do: :ok
+  defp incomplete(%{survivors: n}), do: {:error, %{clause: "run_executor_teardown_incomplete", survivors: n}}
 
   # drain every queued identity matching this owner's reference, kill and join each; unobserved joins count
   defp sweep(ref, budgets, join, unobserved) do

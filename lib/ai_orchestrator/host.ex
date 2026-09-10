@@ -22,6 +22,7 @@ defmodule AiOrchestrator.Host do
   alias AiOrchestrator.Host.Supervisor, as: HostSupervisor
   alias AiOrchestrator.Journal.Ownership
   alias AiOrchestrator.Run.Executor, as: RunExecutor
+  alias AiOrchestrator.Run.Executor.Startup
   alias AiOrchestrator.Run.Supervisor, as: RunSupervisor
 
   @default_timeout 1_000
@@ -336,21 +337,37 @@ defmodule AiOrchestrator.Host do
     :exit, _ -> :unknown
   end
 
-  # runtime evidence: a linked process whose initial call is the run supervisor (set by proc_lib at spawn,
-  # before its init, so a Writer blocked in acquire still counts) is a subtree that has not been torn down
+  # runtime evidence: the startup chain owner -> helper -> starter -> Run.Supervisor, traversed by links and
+  # witnessed by each process's `$initial_call` (set by proc_lib at spawn, before any init, so a Writer blocked
+  # in acquire still counts). The chain is a subtree that has not been torn down. It is FALSE at a terminal
+  # owner, which unlinks and joins helper and starter before retaining its result
+  # (docs/contracts/core-startup-bound.org, section 6).
   defp subtree_linked?(owner) do
-    case Process.info(owner, :links) do
-      {:links, links} -> Enum.any?(links, &run_supervisor?/1)
-      nil -> false
+    Enum.any?(linked(owner), fn helper ->
+      seam?(helper, :helper_init) and
+        Enum.any?(linked(helper), fn starter ->
+          seam?(starter, :starter_init) and Enum.any?(linked(starter), &run_supervisor?/1)
+        end)
+    end)
+  end
+
+  defp linked(pid) do
+    case Process.info(pid, :links) do
+      {:links, links} -> Enum.filter(links, &is_pid/1)
+      nil -> []
     end
   end
 
-  defp run_supervisor?(pid) when is_pid(pid) do
+  defp initial_call(pid) when is_pid(pid) do
     case Process.info(pid, :dictionary) do
-      {:dictionary, dictionary} -> match?({:supervisor, RunSupervisor, _}, Keyword.get(dictionary, :"$initial_call"))
-      nil -> false
+      {:dictionary, dictionary} -> Keyword.get(dictionary, :"$initial_call")
+      nil -> nil
     end
   end
+
+  defp seam?(pid, function), do: match?({Startup, ^function, _}, initial_call(pid))
+
+  defp run_supervisor?(pid) when is_pid(pid), do: match?({:supervisor, RunSupervisor, _}, initial_call(pid))
 
   defp run_supervisor?(_port), do: false
 

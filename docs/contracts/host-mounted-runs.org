@@ -32,17 +32,24 @@ live cancellation of a mounted run, projection index and packaging stay outside.
 - Ownership loss cascades every mounted tree through the owners' =terminate/3=.
 
 * The owner: =AiOrchestrator.Host.RunOwner= (a =:gen_statem=)
-- It is the linked parent of =Run.Supervisor= (it calls =Run.Supervisor.start_link= from its =:starting= state). =init/1=
-  returns BEFORE that call: the supervisor's start acknowledgment never waits for the run.
+- It OWNS =Run.Supervisor= through the startup seam of docs/contracts/core-startup-bound.org: the seam's starter is the
+  supervisor's linked parent and the only process that blocks, so the chain is owner -> helper -> starter ->
+  =Run.Supervisor= (that contract's section 6 replaces the direct owner link this section stated before). =init/1=
+  returns BEFORE any start: the supervisor's start acknowledgment never waits for the run.
 - Identities are held in the owner's own data only: the supervisor/server/work/writer from =which_children= after start,
   the worker from the =run_worker_registered= handoff EVENT. There are no progress messages and no second holder.
 - The user barrier of a MOUNTED run executes in a linked+monitored helper process; its result is an event. Inside the
   barrier =self()= is the helper and =payload.owner= is the owner. This is a mounted-route semantic, stated here;
   the foreground barrier stays owner-resident (H-6a).
 - The PARENT's EXIT reaches =terminate/3= (OTP intercepts it; it is never an event) in every state; =terminate/3= runs the
-  teardown protocol of section 4 and answers waiters recorded before it began. A =:kill= collapses the subtree by links.
-- States: =:starting= (the only synchronous phase: while =Run.Supervisor.start_link= is blocked the owner is NOT responsive;
-  the gap ends when the Writer's acquire returns or fails, bounded by the Writer's acquire budget) -> =:handoff= (state
+  teardown protocol of section 4 and answers waiters recorded before it began. A =:kill= is collected by the seam's
+  reaper on the owner's DOWN (Writer identities first), not by link collapse: a forced reap leaves the run directory
+  reclaimable, never released (core-startup-bound.org section 5). The subtree's own death reaches this owner as the
+  starter's forwarded exit, matched on the STARTUP generation and the supervisor identity; and the loss of the seam's
+  reaper is itself a closed failure in every live phase, never a silent one.
+- States: =:starting= (RESPONSIVE: the blocking start runs in the seam's starter under ONE absolute owner-birth
+  deadline, so =inspect/2= answers and a stop is acknowledged and completed; core-startup-bound.org rows S-6/S-9a)
+  -> =:handoff= (state
   timeout = handoff budget) -> =:barrier_handoff= -> =:barrier_subtree= -> =:awaiting= -> =:terminal=; teardown is entered
   from any state by =terminate/3=, an owner failure, or the subtree's EXIT (=run_server_down=).
 - Privacy: =format_status= hides config, owned map and result; helper crashes are reported without run directory,
@@ -70,9 +77,10 @@ live cancellation of a mounted run, projection index and packaging stay outside.
   and is awaited for the whole shared bound (the request is sent once and KEPT across the probe and the continuing
   wait with =wait_response=, so a late acknowledgment is honoured; it is consumed only at arbitration). Evidence gathered while the owner is silent,
   (a) its =:sys= word (a suspended terminal owner still answers and is kept; any other reported phase is active/startup)
-  and (b) runtime evidence it cannot withhold, a live =Run.Supervisor= still LINKED to it (its =$initial_call=, set by
-  =proc_lib= before init, so a Writer blocked in acquire counts) proving the subtree is not torn down and nothing is
-  retained (exact by CONSTRUCTION: the owner unlinks every owned identity, teardown survivors included, before it
+  and (b) runtime evidence it cannot withhold, a live =Run.Supervisor= still CHAINED to it through the startup seam
+  (owner -> helper -> starter -> supervisor, each hop witnessed by =$initial_call=, set by =proc_lib= before init, so a
+  Writer blocked in acquire counts) proving the subtree is not torn down and nothing is
+  retained (exact by CONSTRUCTION: the owner unlinks every owned identity, the seam's helper and starter included, before it
   enters =:terminal=, so a terminal owner is never linked to a run supervisor whatever the scheduler does), NEVER authorises destruction before the bound: it only decides the fate of an owner STILL silent at the
   bound, and a sampled phase can therefore never be acted upon after it became obsolete. At the bound the owner is
   FROZEN (scheduler-level suspension, so it can neither answer nor transition while the decision is taken); a reply it

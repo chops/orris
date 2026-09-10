@@ -138,6 +138,19 @@ defmodule AiOrchestrator.Host.MountReviewControlsTest do
     assert :none == RunLock.owner(SystemFs.new(), dir)
   end
 
+  defp chained?(owner, supervisor) do
+    Enum.any?(linked(owner), fn helper ->
+      Enum.any?(linked(helper), fn starter -> supervisor in linked(starter) end)
+    end)
+  end
+
+  defp linked(pid) do
+    case Process.info(pid, :links) do
+      {:links, links} -> Enum.filter(links, &is_pid/1)
+      nil -> []
+    end
+  end
+
   defp wait_until(fun, tries \\ 750) do
     cond do
       fun.() -> :ok
@@ -647,14 +660,16 @@ defmodule AiOrchestrator.Host.MountReviewControlsTest do
     h = start_host!()
     handle = mount!(h, dir, holding(self(), :subtree_started))
     {ref, payload, helper} = await_held!(:subtree_started)
-    {:links, links} = Process.info(handle.owner, :links)
-    assert payload.supervisor in links, "the run supervisor is not linked to its owner"
+    # docs/contracts/core-startup-bound.org section 6: the arbitration's runtime evidence is the three-hop chain
+    # owner -> startup helper -> starter -> Run.Supervisor, which replaces the direct owner link
+    assert chained?(handle.owner, payload.supervisor), "the run supervisor is not chained to its owner"
     {:dictionary, dictionary} = Process.info(payload.supervisor, :dictionary)
     assert match?({:supervisor, Run.Supervisor, _}, Keyword.get(dictionary, :"$initial_call"))
     send(helper, {:release, ref})
     assert {:ok, _} = Host.await(handle, @deadline)
     {:links, links} = Process.info(handle.owner, :links)
     refute payload.supervisor in links
+    refute chained?(handle.owner, payload.supervisor)
     refute Enum.any?(links, &(is_pid(&1) and &1 != Process.whereis(h.hsup)))
     assert :ok == Host.stop(handle, 1_000)
   end
