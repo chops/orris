@@ -191,7 +191,7 @@ defmodule AiOrchestrator.Host do
   defp stop_wait(owner, mon, _agent, amon, ref, deadline) do
     receive do
       {:stop_outcome, ^ref, :retained} -> :ok
-      {:stop_outcome, ^ref, outcome} -> outcome
+      {:stop_outcome, ^ref, outcome} -> stop_completion(owner, mon, outcome, deadline)
       {:DOWN, ^mon, :process, ^owner, :killed} -> {:error, %{clause: "run_host_stop_unproven"}}
       {:DOWN, ^mon, :process, ^owner, _reason} -> stop_outcome_or_down(ref)
       {:DOWN, ^amon, :process, _agent, _reason} -> stop_wait_owner_only(owner, mon, ref, deadline)
@@ -204,9 +204,29 @@ defmodule AiOrchestrator.Host do
   defp stop_wait_owner_only(owner, mon, ref, deadline) do
     receive do
       {:stop_outcome, ^ref, :retained} -> :ok
-      {:stop_outcome, ^ref, outcome} -> outcome
+      {:stop_outcome, ^ref, outcome} -> stop_completion(owner, mon, outcome, deadline)
       {:DOWN, ^mon, :process, ^owner, :killed} -> {:error, %{clause: "run_host_stop_unproven"}}
       {:DOWN, ^mon, :process, ^owner, _reason} -> stop_outcome_or_down(ref)
+    after
+      left(deadline) -> {:error, %{clause: "run_host_stop_timeout"}}
+    end
+  end
+
+  # Only active teardown completions promise an owner that is gone. Silent-owner unproven
+  # evidence deliberately leaves the owner alive; retained outcomes are handled above.
+  defp stop_completion(owner, mon, {:ok, :stopped} = outcome, deadline), do: stop_join(owner, mon, outcome, deadline)
+
+  defp stop_completion(owner, mon, {:error, %{clause: "run_executor_teardown_incomplete"}} = outcome, deadline),
+    do: stop_join(owner, mon, outcome, deadline)
+
+  defp stop_completion(_owner, _mon, outcome, _deadline), do: outcome
+
+  # Joining the owner does not upgrade incomplete descendant teardown evidence. The
+  # original caller deadline still bounds the join, even when the stop agent is gone.
+  defp stop_join(owner, mon, outcome, deadline) do
+    receive do
+      {:DOWN, ^mon, :process, ^owner, :killed} -> {:error, %{clause: "run_host_stop_unproven"}}
+      {:DOWN, ^mon, :process, ^owner, _reason} -> outcome
     after
       left(deadline) -> {:error, %{clause: "run_host_stop_timeout"}}
     end
