@@ -59,6 +59,15 @@ a claim of measured runtime coverage on every platform.
 :PROPERTIES:
 :CUSTOM_ID: runtime-integration
 :END:
+To inspect journals under an explicit local runs root:
+
+#+begin_src sh
+ai-orchestrator list --root /path/to/runs --json
+#+end_src
+
+This reports verified journal status and pending repair without changing the runs.
+See [[file:docs/contracts/cli-discovery.org][explicit-root discovery]] for output and scope.
+
 Live pane operations require the separate Orrisd coordination runtime and an
 ~ap~ executable supporting the capability and receipt protocol required by
 [[file:docs/contracts/ipc-v2.org][the protocol v2 dispatch contract]], built on the

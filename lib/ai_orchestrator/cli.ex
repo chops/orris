@@ -10,11 +10,13 @@ defmodule AiOrchestrator.CLI do
       AiOrchestrator.PaneRegistry,
       AiOrchestrator.Prepare,
       AiOrchestrator.Projection,
+      AiOrchestrator.Query,
       AiOrchestrator.Run,
       AiOrchestrator.Spec
     ],
     exports: []
 
+  alias AiOrchestrator.CLI.Discovery
   alias AiOrchestrator.Journal.Fold
   alias AiOrchestrator.Prepare.Prepared
   alias AiOrchestrator.Prepare.Trusted
@@ -60,6 +62,14 @@ defmodule AiOrchestrator.CLI do
   def run(["status", run_dir], _opts), do: status_org(run_dir)
   def run(["list", "--json"], opts), do: list_json(opts)
   def run(["list"], opts), do: list_org(opts)
+
+  def run(["list" | args], opts) do
+    case Discovery.run(args, opts) do
+      :usage -> error(64, %{"reason" => "usage", "usage" => usage()})
+      result -> result
+    end
+  end
+
   def run(["cancel", run_dir], opts), do: cancel_run_dir(run_dir, opts)
   def run(_argv, _opts), do: error(64, %{"reason" => "usage", "usage" => usage()})
 
@@ -282,6 +292,7 @@ defmodule AiOrchestrator.CLI do
            ai-orchestrator run [--gate-guardian <path>] --resume <run-dir>
            ai-orchestrator status [--json] <run-dir>
            ai-orchestrator list [--json]
+           ai-orchestrator list --root <runs-root> [--json]
            ai-orchestrator cancel <run-dir>
     """
   end

@@ -1,0 +1,76 @@
+#+title: Explicit-root CLI journal discovery
+#+date: 2026-09-10
+
+* Operator entrypoint
+=ai-orchestrator list --root <runs-root> [--json]= lists the direct run directories
+under an explicitly selected root. =--json= may precede =--root=. Relative roots
+are relative to the invocation's working directory; symlink/parent components
+are resolved physically by the existing public Query boundary.
+
+The default Org table shows directory reference, durable run id, recorded status,
+last verified event sequence, whether repair is pending, and read errors. Recorded
+status does not establish whether a process is running. JSON returns:
+#+begin_src json
+{"runs":[{"run_ref":"alpha","run_id":"run_example","status":"blocked","last_seq":12,"pending_repair":true,"error":null}],"skipped_outside_root":0}
+#+end_src
+Rows are sorted by directory reference. Different directories with the same
+run id remain separate. A directory outside the physical root is skipped and
+counted; non-directories are omitted. No global scan or configuration is inferred.
+
+* Results and read semantics
+Successful root discovery exits 0, even when individual rows cannot be read.
+A failed row has null run_id, last_seq and pending_repair, status =invalid=,
+and error =journal_missing=, =journal_empty=, =journal_invalid= or =run_unavailable=.
+Unknown failures are sanitized; nested errors, filesystem paths, raw journal
+payloads, context, projections and free-form failure reasons are not returned.
+
+An explicitly missing root exits 74 with =runs_root_missing=; a directory that
+cannot be listed returns =runs_root_unreadable=; unexpected failures return
+=runs_root_unavailable=. These are JSON stderr reason maps, with empty stdout.
+Missing/duplicate flags, unknown options and positional extras exit 64.
+The existing =list=, =list --json= and directory-based status commands keep
+their existing output and behavior, including an empty implicit runs root.
+
+Query.list_runs chooses membership, then Query.run_summary supplies each row's
+facts from one verified journal-prefix read. If that read fails after discovery,
+the row is invalidated instead of retaining earlier status or identity. A torn
+tail can therefore show its verified prefix with pending_repair=true. No repair,
+receipt advancement, projection write, Writer, command or host observation runs.
+Every invocation reads again; no process, ETS table or disk cache is retained.
+
+JSON preserves valid Unicode directory references with Jason encoding. Org
+encodes brackets, pipes, backslashes and control characters as visible hexadecimal
+escapes so a directory name cannot insert an Org link, table column or terminal
+control. Unsupported filename encodings produce a sanitized root error.
+
+* Limits and dependencies
+This is a one-shot journal inventory, not an atomic snapshot across directories.
+Each valid run is read twice to preserve the existing public Query list shape;
+the displayed row comes entirely from the later summary. Filesystem reads have
+no hard wall-time or memory bound. Existing trusted stationary-filesystem
+assumptions apply: this does not add descriptor-level journal-leaf confinement
+or protection against a hostile concurrent rename.
+
+Persistent Projection.Index, multi-root aggregation, watch/replay/explain,
+console integration and installed qualification remain separate units. This
+operation does not depend on mounted start/resume, live transport or Ash.
+
+* Acceptance mapping
+=test/cli/cli_discovery_test.exs= exercises:
+- D1 explicit root selection, deterministic ordering, both flag orders and relative roots.
+- D2 legacy empty output and sanitized missing/unreadable explicit roots.
+- D3 projection independence and chained-byte corruption.
+- D4/D9 pending repair without changed files, bytes, receipts, locks or projections;
+  a read-only filesystem seam has no write callbacks.
+- D5 valid and corrupt siblings with closed per-row failures.
+- D6 direct/compound escaping links and physical symlink/parent traversal.
+- D7 duplicate durable identities, fresh invocations and failed second-read invalidation.
+- D8 private error/content canaries, inert Org output and unsupported filename encodings.
+  APFS rejects non-UTF8 fixture names with eilseq; on that platform the row checks
+  a rejected explicit path, while the invalid directory-name discovery case runs
+  on filesystems that permit it.
+- D10 malformed argv refusals.
+
+Existing CLI tests and the relevant public Query preservation, path and repair
+controls remain compatibility checks. This contract does not claim a full
+core gate, hosted CI, Linux filename qualification or installed-service result.
