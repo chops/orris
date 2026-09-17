@@ -23,13 +23,13 @@ record() { # record <name> <rc> <verdict-text>
   echo "$2" > "$OUT/$1.exit"; echo "$1: exit $2 $3" | tee -a "$OUT/SUMMARY.txt"; [ "$2" = 0 ] || fail=1
 }
 # 00 exact toolchain (the root's own check: Elixir version and the OTP_VERSION file) and the browser prerequisite
-stage 00-toolchain sh -c '
+stage 00-toolchain bash -p -c '
   required_elixir=1.20.4; required_otp=29.0.5
   actual_elixir=$(elixir -e "IO.write(System.version())")
   actual_otp=$(elixir -e "release = :erlang.system_info(:otp_release) |> List.to_string(); Path.join([List.to_string(:code.root_dir()), \"releases\", release, \"OTP_VERSION\"]) |> File.read!() |> String.trim() |> IO.write()")
   echo "Elixir $actual_elixir / OTP $actual_otp"
   [ "$actual_elixir" = "$required_elixir" ] && [ "$actual_otp" = "$required_otp" ]'
-stage 00-browser sh -c '[ -n "${C1_BROWSER:-}" ] && [ -x "$C1_BROWSER" ]'
+stage 00-browser bash -p -c '[ -n "${C1_BROWSER:-}" ] && [ -x "$C1_BROWSER" ]'
 # 01 locked dependencies and advisories
 stage 01-deps-locked mix deps.get --check-locked
 stage 02-hex-audit mix hex.audit
@@ -54,14 +54,14 @@ fi
 if [ "$pk_ok" = 1 ]; then record 06-packaging 0 "(runner $pk_rc; fresh exits 1/0/0; forbidden-reference diagnostic present)"; else record 06-packaging 1 "(runner $pk_rc; stale/missing/unexpected packaging evidence)"; fi
 # 07 pinned assets with manifest, production release, disposable release smoke (bootstrap + closed config + /login)
 stage 07-assets bin/c1-assets
-stage 07-assets-manifest sh -c 'cd priv/static/assets && shasum -a 256 -c MANIFEST.sha256'
+stage 07-assets-manifest bash -p -c 'cd priv/static/assets && sha256sum -c MANIFEST.sha256'
 stage 08-release bin/c1-release
 stage 09-release-smoke env SMOKE_LOG_DIR="$OUT/09-release-smoke.d" bin/c1-release-smoke
 # 10 full acceptance (all rows, browser included) under --warnings-as-errors
 stage 10-rows-wae mix test --warnings-as-errors
 # 11 core preservation: root source/lock unchanged versus the committed head; 18-application production escript built
 #    into a disposable build path with any preexisting root artifact preserved byte for byte (mode included)
-stage 11-core-unchanged sh -c 'cd "$root" && git diff --quiet HEAD -- mix.exs mix.lock flake.nix flake.lock lib test bin'
+stage 11-core-unchanged bash -p -c 'cd "$root" && git diff --quiet HEAD -- mix.exs mix.lock flake.nix flake.lock lib test bin'
 stage 12-core-escript-18 bin/c1-core-escript-check
 echo "verify: $([ $fail = 0 ] && echo PASS || echo FAIL)" | tee -a "$OUT/SUMMARY.txt"
 echo "evidence: $OUT"

@@ -24,4 +24,6 @@ mix compile --force --warnings-as-errors > "$out/positive-query.log" 2>&1; echo 
 rm -f lib/c1_probe.ex
 mix compile --force --warnings-as-errors > "$out/clean.log" 2>&1; echo $? > "$out/clean.exit"
 echo "negative-writer exit $(cat "$out/negative-writer.exit") (expected non-zero: forbidden reference); positive-query exit $(cat "$out/positive-query.exit") (expected 0); clean exit $(cat "$out/clean.exit")"
-grep -c "forbidden reference" "$out/negative-writer.log" | sed 's/^/forbidden-reference diagnostics: /'
+grep -c "forbidden reference" "$out/negative-writer.log" | while IFS= read -r count; do
+  printf 'forbidden-reference diagnostics: %s\n' "$count"
+done

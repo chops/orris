@@ -6,5 +6,6 @@ here=$(cd "$(dirname "$0")/.." && pwd); cd "$here"
 tag=elixir-1.20.4-otp-29.0.5; deps=${MIX_DEPS_PATH:-"$here/deps/$tag"}
 cp "$deps/phoenix/priv/static/phoenix.mjs" priv/static/assets/phoenix.mjs
 cp "$deps/phoenix_live_view/priv/static/phoenix_live_view.esm.js" priv/static/assets/phoenix_live_view.esm.js
-(cd priv/static/assets && shasum -a 256 app.js app.css phoenix.mjs phoenix_live_view.esm.js > MANIFEST.sha256)
+(cd priv/static/assets && sha256sum -c "$here/framework-assets.sha256.txt")
+(cd priv/static/assets && sha256sum app.js app.css phoenix.mjs phoenix_live_view.esm.js > MANIFEST.sha256)
 cat priv/static/assets/MANIFEST.sha256

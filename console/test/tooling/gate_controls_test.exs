@@ -28,8 +28,9 @@ defmodule OrrisConsole.GateControlsTest do
   end
 
   defp script(path, contents) do
+    bash = System.find_executable("bash") || flunk("Bash is required")
     File.mkdir_p!(Path.dirname(path))
-    File.write!(path, contents)
+    File.write!(path, "#!#{bash} -p\n" <> contents)
     File.chmod!(path, 0o755)
   end
 
@@ -41,6 +42,61 @@ defmodule OrrisConsole.GateControlsTest do
   end
 
   defp quote_sh(s), do: "'" <> String.replace(s, "'", "'\\''") <> "'"
+
+  # Binary fixture payloads exercise assembly and integrity, never browser execution.
+  defp asset_fixture(root) do
+    copy(root, "c1-assets")
+    console = Path.join(root, "console")
+    deps = Path.join(root, "asset-deps")
+    assets = Path.join(console, "priv/static/assets")
+    File.mkdir_p!(assets)
+    File.write!(Path.join(assets, "app.js"), <<0>>)
+    File.write!(Path.join(assets, "app.css"), "")
+
+    pins =
+      for {package, name, bytes} <- [
+            {"phoenix", "phoenix.mjs", <<0, 1, 2>>},
+            {"phoenix_live_view", "phoenix_live_view.esm.js", <<0, 3, 4>>}
+          ] do
+        path = Path.join([deps, package, "priv/static", name])
+        File.mkdir_p!(Path.dirname(path))
+        File.write!(path, bytes)
+        hash = :sha256 |> :crypto.hash(bytes) |> Base.encode16(case: :lower)
+        "#{hash}  #{name}\n"
+      end
+
+    File.write!(Path.join(console, "framework-assets.sha256.txt"), pins)
+    {console, deps, assets}
+  end
+
+  for mode <- [:matching, :corrupt, :missing_pin] do
+    test "framework asset assembly enforces independent pins: #{mode}", %{root: root} do
+      {console, deps, assets} = asset_fixture(root)
+
+      case unquote(mode) do
+        :matching -> :ok
+        :corrupt -> File.write!(Path.join(deps, "phoenix/priv/static/phoenix.mjs"), <<0, 255>>)
+        :missing_pin -> File.rm!(Path.join(console, "framework-assets.sha256.txt"))
+      end
+
+      {_output, status} =
+        System.cmd("bash", ["-p", "bin/c1-assets"],
+          cd: console,
+          env: [{"MIX_DEPS_PATH", deps}],
+          stderr_to_stdout: true
+        )
+
+      if unquote(mode) == :matching do
+        assert status == 0
+        assert File.read!(Path.join(assets, "phoenix.mjs")) == <<0, 1, 2>>
+        assert File.read!(Path.join(assets, "phoenix_live_view.esm.js")) == <<0, 3, 4>>
+        assert File.regular?(Path.join(assets, "MANIFEST.sha256"))
+      else
+        assert status != 0
+        refute File.exists?(Path.join(assets, "MANIFEST.sha256"))
+      end
+    end
+  end
 
   defp fixture(root, packaging_exit \\ 0) do
     for path <- [
@@ -59,7 +115,7 @@ defmodule OrrisConsole.GateControlsTest do
     end
 
     for name <- ["c1-assets", "c1-release", "c1-release-smoke"] do
-      script(Path.join(root, "console/bin/#{name}"), "#!/bin/sh\nexit 0\n")
+      script(Path.join(root, "console/bin/#{name}"), "exit 0\n")
     end
 
     records =
@@ -76,18 +132,18 @@ defmodule OrrisConsole.GateControlsTest do
 
     script(
       Path.join(root, "console/bin/c1-packaging-controls"),
-      "#!/bin/sh\nout=$1\nmkdir -p \"$out\"\n" <> records <> "\nexit #{packaging_exit}\n"
+      "out=$1\nmkdir -p \"$out\"\n" <> records <> "\nexit #{packaging_exit}\n"
     )
 
     real_elixir = System.find_executable("elixir")
 
     script(
       Path.join(root, "mockbin/elixir"),
-      "#!/bin/sh\ncase \"$*\" in *System.version*) printf 1.20.4;; *OTP_VERSION*) printf 29.0.5;; *) exec #{quote_sh(real_elixir)} \"$@\";; esac\n"
+      "case \"$*\" in *System.version*) printf 1.20.4;; *OTP_VERSION*) printf 29.0.5;; *) exec #{quote_sh(real_elixir)} \"$@\";; esac\n"
     )
 
-    for name <- ["git", "shasum", "browser"] do
-      script(Path.join(root, "mockbin/#{name}"), "#!/bin/sh\nexit 0\n")
+    for name <- ["git", "sha256sum", "browser"] do
+      script(Path.join(root, "mockbin/#{name}"), "exit 0\n")
     end
 
     entries = for i <- 1..18, do: {String.to_charlist("app#{i}/ebin/x.beam"), <<>>}
@@ -96,7 +152,7 @@ defmodule OrrisConsole.GateControlsTest do
 
     script(
       Path.join(root, "mockbin/mix"),
-      ~s{#!/bin/sh\ncase "$*" in *escript.build*) cp "$root/mock.escript" "$root/bin/ai-orchestrator";; esac\nexit 0\n}
+      ~s{case "$*" in *escript.build*) cp "$root/mock.escript" "$root/bin/ai-orchestrator";; esac\nexit 0\n}
     )
 
     [
@@ -111,7 +167,9 @@ defmodule OrrisConsole.GateControlsTest do
     # The wrapper becomes the script without creating another child. Its identity
     # is available to the outer cleanup even if an ExUnit assertion or timeout fires.
     result =
-      System.cmd("bash", ["-c", ~S(echo $$ > "$root/runner.pid"; exec bash "$1"), "gate-control", "bin/#{name}"],
+      System.cmd(
+        "bash",
+        ["-p", "-c", ~S(echo $$ > "$root/runner.pid"; exec bash -p "$1"), "gate-control", "bin/#{name}"],
         cd: Path.join(root, "console"),
         env: env,
         stderr_to_stdout: true
@@ -176,20 +234,18 @@ defmodule OrrisConsole.GateControlsTest do
       case unquote(injection) do
         :backup ->
           script(Path.join(root, "mockbin/cp"), ~S"""
-          #!/bin/sh
           case "$3" in */preserved) exit 42;; esac
           exec /bin/cp "$@"
           """)
 
         :restore ->
           script(Path.join(root, "mockbin/cp"), ~S"""
-          #!/bin/sh
           case "$2" in */preserved) exit 42;; esac
           exec /bin/cp "$@"
           """)
 
         :build ->
-          script(Path.join(root, "mockbin/mix"), "#!/bin/sh\necho BUILD_FAILED >&2\nexit 1\n")
+          script(Path.join(root, "mockbin/mix"), "echo BUILD_FAILED >&2\nexit 1\n")
       end
 
       assert {output, rc} = run(root, "c1-core-escript-check", env)
@@ -209,7 +265,6 @@ defmodule OrrisConsole.GateControlsTest do
   end
 
   @curl ~S"""
-  #!/bin/sh
   prev=""; out=""; hdr=""; w=0
   for a in "$@"; do case "$prev" in -o) out=$a;; -D) hdr=$a;; -w) w=1;; esac; prev=$a; done
   [ -f "$STOPPED_MARK" ] && exit 7
@@ -223,7 +278,6 @@ defmodule OrrisConsole.GateControlsTest do
     child_line = if child, do: "/bin/sleep 60 & echo $! > \"$KID_MARK\"", else: ""
 
     """
-    #!/bin/sh
     case "$1" in
     start) echo $$ > "$PID_MARK"; dirname "$ORRIS_CONSOLE_CONFIG_FILE" > "$WORK_MARK"
       echo "${RELEASE_NODE:-default}|${RELEASE_COOKIE:-default}" > "$PID_MARK.start-identity"
@@ -240,7 +294,7 @@ defmodule OrrisConsole.GateControlsTest do
     env = fixture(root)
     copy(root, "c1-release-smoke")
     copy(root, "c1-smoke-port")
-    script(Path.join(root, "console/bin/c1-setup"), Keyword.get(opts, :setup, "#!/bin/sh\nexit 0\n"))
+    script(Path.join(root, "console/bin/c1-setup"), Keyword.get(opts, :setup, "exit 0\n"))
     rel = Path.join(root, "console/_build/#{@toolchain}/prod/rel/orris_console/bin/orris_console")
     script(rel, Keyword.get(opts, :release, release("exit #{Keyword.get(opts, :stop, 0)}")))
     script(Path.join(root, "mockbin/curl"), Keyword.get(opts, :curl, @curl))
@@ -310,7 +364,7 @@ defmodule OrrisConsole.GateControlsTest do
   end
 
   test "C-3 failed HTTP and stop are contained", %{root: root} do
-    assert_smoke(root, [stop: 1, curl: "#!/bin/sh\nprintf 000\nexit 7\n"], false)
+    assert_smoke(root, [stop: 1, curl: "printf 000\nexit 7\n"], false)
   end
 
   test "C-4 successful smoke cleans up its release and retains logs", %{root: root} do
@@ -323,12 +377,12 @@ defmodule OrrisConsole.GateControlsTest do
   end
 
   test "R2 hanging HTTP client is bounded", %{root: root} do
-    assert_smoke(root, [curl: "#!/bin/sh\nexec /bin/sleep 60\n"], false)
+    assert_smoke(root, [curl: "exec /bin/sleep 60\n"], false)
   end
 
   test "R2 partial startup fails and cleans up", %{root: root} do
-    early = ~s{#!/bin/sh\ncase "$1" in start) echo $$ > "$PID_MARK"; exit 3;; stop) exit 0;; esac\n}
-    assert_smoke(root, [release: early, curl: "#!/bin/sh\nexit 7\n"], false)
+    early = ~s{case "$1" in start) echo $$ > "$PID_MARK"; exit 3;; stop) exit 0;; esac\n}
+    assert_smoke(root, [release: early, curl: "exit 7\n"], false)
   end
 
   test "R2 release descendants are contained when stop fails", %{root: root} do
@@ -337,14 +391,13 @@ defmodule OrrisConsole.GateControlsTest do
   end
 
   test "R2 setup descendants are contained at the bound", %{root: root} do
-    setup = "#!/bin/sh\n/bin/sleep 60 &\necho $! > \"$KID_MARK\"\necho SETUP_CHILD_STARTED\nwait\n"
+    setup = "/bin/sleep 60 &\necho $! > \"$KID_MARK\"\necho SETUP_CHILD_STARTED\nwait\n"
 
     # Cross one wall-clock second during the preamble deterministically. A two-second
     # total budget minus the one-second cleanup reserve leaves no setup allowance.
     # Use the ordinary eight-second fixture budget; run_owned must still bound the
     # sixty-second child, and the monotonic elapsed check and JOIN witness stay live.
     date = """
-    #!/bin/sh
     if [ -f "$root/date.started" ]; then
       echo 101
     else
