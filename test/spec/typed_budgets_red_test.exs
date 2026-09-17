@@ -17,14 +17,17 @@ defmodule AiOrchestrator.Spec.TypedBudgetsRedTest do
   @canary "TYPED-BUDGETS-PRIVATE-CANARY"
   @fields ["max_attempts_default", "restart_attempts", "max_wall_clock_s", "gate_attempts"]
 
-  # the corpus outcomes MEASURED on the unchanged RunSpec at 306c629 (path, schema_version, outcome); one fixture is
-  # a JSON array (the journal negative), refused by shape; one carries version 99
+  # Historical corpus outcomes were measured on RunSpec at 306c629 (path, schema_version, outcome).
+  # The two expected-artifact fixtures copy valid_linear's spec bytes and inherit its expected outcome;
+  # those entries are not new runtime measurements. One fixture is a JSON array; one carries version 99.
   @measured [
     {"test/fixtures/contracts/journals/reject_data_required_fields/spec.json", :list, "invalid_run_spec_shape"},
     {"test/fixtures/contracts/plans/invalid_cycle/spec.json", 1, "ok"},
     {"test/fixtures/contracts/plans/invalid_duplicate_ids/spec.json", 1, "ok"},
     {"test/fixtures/contracts/plans/invalid_effort_hint_value/spec.json", 1, "ok"},
+    {"test/fixtures/contracts/plans/invalid_empty_expected_artifacts/spec.json", 1, "ok"},
     {"test/fixtures/contracts/plans/invalid_missing_dep/spec.json", 1, "ok"},
+    {"test/fixtures/contracts/plans/invalid_multiple_expected_artifacts/spec.json", 1, "ok"},
     {"test/fixtures/contracts/plans/invalid_nonpositive_timeout/spec.json", 1, "ok"},
     {"test/fixtures/contracts/plans/invalid_paths_outside_roots/spec.json", 1, "ok"},
     {"test/fixtures/contracts/plans/invalid_stretch_overlap/spec.json", 1, "ok"},
@@ -76,7 +79,7 @@ defmodule AiOrchestrator.Spec.TypedBudgetsRedTest do
       assert {:error, %{clause: "invalid_run_spec_shape"}} = RunSpec.validate(Map.delete(@v1, "schema_version"))
     end
 
-    test "V-1d every fixture spec keeps its MEASURED outcome; no historical fixture is v2; the corpus is complete" do
+    test "V-1d every fixture spec keeps its pinned outcome; no historical fixture is v2; the corpus is complete" do
       assert Enum.map(@measured, &elem(&1, 0)) == @fixture_specs, "the fixture corpus changed: re-measure"
 
       for {path, version, expected} <- @measured do

@@ -31,6 +31,7 @@ defmodule AiOrchestrator.Spec.Plan do
          :ok <- validate_timeouts(plan),
          :ok <- validate_duplicate_ids(plan),
          :ok <- validate_missing_deps(plan),
+         :ok <- validate_expected_artifacts(plan),
          :ok <- validate_agent_roles(plan, validated_spec),
          :ok <- validate_allowed_paths(plan, validated_spec),
          :ok <- validate_dag(plan),
@@ -127,6 +128,22 @@ defmodule AiOrchestrator.Spec.Plan do
   end
 
   defp validate_missing_deps(_plan), do: {:error, %{clause: "invalid_run_plan_shape"}}
+
+  defp validate_expected_artifacts(%{"work_items" => work_items}) do
+    case Enum.find(work_items, &invalid_expected_artifacts?/1) do
+      nil -> :ok
+      %{"id" => id} -> {:error, %{clause: "expected_artifact_cardinality", field: id}}
+    end
+  end
+
+  defp invalid_expected_artifacts?(%{"expected_artifacts" => [artifact]}) when is_binary(artifact) and artifact != "",
+    do: false
+
+  # The reducer observes one artifact. Leave malformed field types to the existing schema check.
+  defp invalid_expected_artifacts?(%{"id" => id, "expected_artifacts" => artifacts})
+       when is_binary(id) and is_list(artifacts), do: Enum.all?(artifacts, &is_binary/1)
+
+  defp invalid_expected_artifacts?(_work_item), do: false
 
   defp validate_agent_roles(%{"work_items" => work_items}, %{"agents" => agents}) do
     roles = MapSet.new(agents, & &1["role"])
