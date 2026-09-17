@@ -212,7 +212,9 @@ defmodule AiOrchestrator.Run.DeliveryDeadlineBaselineTest do
           }
 
           answer =
-            if attempt > 0, do: Map.merge(answer, %{"delivery_attempt" => attempt, "status" => outcome}), else: answer
+            if attempt > 0,
+              do: Map.merge(answer, %{"delivery_attempt" => attempt, "status" => stored_status(outcome)}),
+              else: answer
 
           {:ok, answer}
 
@@ -221,6 +223,11 @@ defmodule AiOrchestrator.Run.DeliveryDeadlineBaselineTest do
           fault
       end
     end
+
+    # A stored absence is the not_delivered status (ipc-v2.org "Reconcile replies"); the
+    # other outcomes this authority answers are their own stored status.
+    defp stored_status("absent"), do: "not_delivered"
+    defp stored_status(outcome), do: outcome
 
     def send(pane_ref, prompt, opts) do
       collector = Keyword.fetch!(opts, :collector)

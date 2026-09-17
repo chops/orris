@@ -162,6 +162,7 @@ defmodule AiOrchestrator.Dispatch.LocalPane do
          :ok <- versioned(response, :reconcile, send_message_id, pane_ref),
          :ok <- bound(response, send_message_id, pane_ref),
          {:ok, outcome} <- validate_outcome(response),
+         :ok <- stored_view(response, outcome),
          :ok <- same_payload_as(response, payload_hash),
          {:ok, attempt} <- delivery_attempt(response, outcome) do
       {:ok,
@@ -231,6 +232,25 @@ defmodule AiOrchestrator.Dispatch.LocalPane do
   defp send_answered(reply, message_id, pane_ref) do
     with :ok <- versioned(reply, :send, message_id, pane_ref), do: bound(reply, message_id, pane_ref)
   end
+
+  @stored_statuses ~w(pending queued delivered not_delivered ambiguous)
+
+  # NS-42 rules 7 / 9: a reconcile answer that carries a stored status speaks for one
+  # immutable attempt, and the contract fixes what each stored status answers: not_delivered
+  # answers absent, pending answers ambiguous (the attempt's owner was not seen to finish
+  # inside the daemon's bounded wait), and queued, delivered and ambiguous answer themselves.
+  # A status outside that closed set is not a receipt this adapter reads, and an outcome
+  # that disagrees with its status is refused rather than trusted either way: in particular
+  # a pending or queued attempt can never answer absent, because absent is the one word that
+  # admits a paste and ownership uncertainty is never proof of non-delivery. A conflict
+  # carries no view at all, so a status beside it is outside the shape.
+  defp stored_view(%{"status" => status}, outcome) do
+    if status in @stored_statuses and outcome_of(status) == outcome,
+      do: :ok,
+      else: {:error, %{"reason" => "reconcile_view_invalid"}}
+  end
+
+  defp stored_view(_no_view, _outcome), do: :ok
 
   # NS-42 rule 5: reconciliation binds the payload, so a receipt view that names a different
   # payload than the one this command journaled is not an answer about this send, whatever
@@ -306,6 +326,7 @@ defmodule AiOrchestrator.Dispatch.LocalPane do
   defp duplicate_view(_view), do: {:error, %{"reason" => "duplicate_view_invalid"}}
 
   defp outcome_of("pending"), do: "ambiguous"
+  defp outcome_of("not_delivered"), do: "absent"
   defp outcome_of(status), do: status
 
   @impl true
