@@ -181,7 +181,7 @@ defmodule AiOrchestrator.Run.DeadlineFenceRedTest do
       run_id: "run_fixture_0001",
       gate_run_id: "gr_0001",
       attempt: 1,
-      command_argv: ["/bin/sh", "-c", "true"],
+      command_argv: ["/bin/bash", "-c", "true"],
       repo_root: run_dir,
       run_dir: run_dir,
       deadline_unix: deadline_unix,

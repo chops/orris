@@ -70,7 +70,7 @@ defmodule AiOrchestrator.Contracts.ProductionEscriptTest do
     File.cp!(@fixture, Path.join(run_dir, "events.jsonl"))
     stderr = Path.join(build.evidence, "launch.stderr")
     script = ~s("$0" cancel "$1" 2>"$2")
-    {out, status} = System.cmd("sh", ["-c", script, build.artifact, run_dir, stderr])
+    {out, status} = System.cmd("bash", ["-c", script, build.artifact, run_dir, stderr])
     File.write!(Path.join(build.evidence, "launch.stdout"), out)
     File.write!(Path.join(build.evidence, "launch.exit"), Integer.to_string(status))
     assert status == 0, "probe command failed (exit #{status}): #{tail(out)}\nstderr: #{tail(File.read!(stderr))}"

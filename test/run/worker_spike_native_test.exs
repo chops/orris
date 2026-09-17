@@ -223,7 +223,7 @@ defmodule AiOrchestrator.Run.WorkerSpikeNativeTest do
     {pid, cap, _mon} = born!(ctx, reporting_barrier(self(), :none), 1)
 
     {{:ok, %Observation.GatePrepared{started: started}}, identity} =
-      prepare!(pid, cap, 1, prepare_effect(ctx.run_dir, ["/bin/sh", "-c", "echo ran >> ran"]))
+      prepare!(pid, cap, 1, prepare_effect(ctx.run_dir, ["/bin/bash", "-c", "echo ran >> ran"]))
 
     persisted = persist_started!(ctx.run_dir, started)
 
@@ -248,7 +248,8 @@ defmodule AiOrchestrator.Run.WorkerSpikeNativeTest do
 
     send(
       pid,
-      {:execute, cap, 1, ref, prepare_effect(ctx.run_dir, ["/bin/sh", "-c", "echo ran >> ran; sleep 30"]), [receipt: nil]}
+      {:execute, cap, 1, ref, prepare_effect(ctx.run_dir, ["/bin/bash", "-c", "echo ran >> ran; sleep 30"]),
+       [receipt: nil]}
     )
 
     assert_receive {:identity, identity}, 10_000
@@ -271,7 +272,10 @@ defmodule AiOrchestrator.Run.WorkerSpikeNativeTest do
     # a NEW owner retrying the same attempt is refused by the existing claim: the delivered outcome is closed, not a
     # forced GO
     {pid2, cap2, _} = born!(ctx, reporting_barrier(self(), :none), 2)
-    assert {:ok, observation} = execute!(pid2, cap2, 2, prepare_effect(ctx.run_dir, ["/bin/sh", "-c", "echo ran >> ran"]))
+
+    assert {:ok, observation} =
+             execute!(pid2, cap2, 2, prepare_effect(ctx.run_dir, ["/bin/bash", "-c", "echo ran >> ran"]))
+
     assert %Observation.GatePrepareFailed{} = observation
     assert ran_lines(ctx.run_dir) == 0
   end
@@ -282,7 +286,7 @@ defmodule AiOrchestrator.Run.WorkerSpikeNativeTest do
     {pid, cap, mon} = born!(ctx, reporting_barrier(self(), :after_ack), 1)
 
     {{:ok, %Observation.GatePrepared{started: started}}, identity} =
-      prepare!(pid, cap, 1, prepare_effect(ctx.run_dir, ["/bin/sh", "-c", "echo ran >> ran; sleep 30"]))
+      prepare!(pid, cap, 1, prepare_effect(ctx.run_dir, ["/bin/bash", "-c", "echo ran >> ran; sleep 30"]))
 
     persisted = persist_started!(ctx.run_dir, started)
     ref = make_ref()
@@ -315,7 +319,7 @@ defmodule AiOrchestrator.Run.WorkerSpikeNativeTest do
     {pid, cap, mon} = born!(ctx, reporting_barrier(self(), :after_go), 1)
 
     {{:ok, %Observation.GatePrepared{started: started}}, identity} =
-      prepare!(pid, cap, 1, prepare_effect(ctx.run_dir, ["/bin/sh", "-c", "echo ran >> ran; sleep 30"]))
+      prepare!(pid, cap, 1, prepare_effect(ctx.run_dir, ["/bin/bash", "-c", "echo ran >> ran; sleep 30"]))
 
     persisted = persist_started!(ctx.run_dir, started)
     ref = make_ref()

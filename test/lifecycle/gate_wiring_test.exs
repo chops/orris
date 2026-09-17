@@ -931,7 +931,7 @@ defmodule AiOrchestrator.Lifecycle.GateWiringTest do
 
   defp helper_of(:not_executable, run_dir) do
     path = Path.join(run_dir, "not-executable")
-    File.write!(path, "#!/bin/sh\nexit 0\n")
+    File.write!(path, "#!/bin/bash\nexit 0\n")
     File.chmod!(path, 0o644)
     path
   end
@@ -1013,7 +1013,7 @@ defmodule AiOrchestrator.Lifecycle.GateWiringTest do
     test "a real run: prepare, commit gate_started v2 through the Writer, Ack, release, evidence, gate_passed v1; the legacy runner never runs",
          %{helper: helper} do
       run_dir = tmp_run_dir()
-      spec = real_gates(H.spec("gated_run_seed"), ["/bin/sh", "-c", "echo gate-out; exit 0"], run_dir)
+      spec = real_gates(H.spec("gated_run_seed"), ["/bin/bash", "-c", "echo gate-out; exit 0"], run_dir)
 
       result =
         with_writer(run_dir, [], fn sink ->
@@ -1051,7 +1051,7 @@ defmodule AiOrchestrator.Lifecycle.GateWiringTest do
       spec =
         real_gates(
           H.spec("gated_run_seed"),
-          ["/bin/sh", "-c", "echo ran > #{Path.join(run_dir, "ran")}; exit 0"],
+          ["/bin/bash", "-c", "echo ran > #{Path.join(run_dir, "ran")}; exit 0"],
           run_dir
         )
 
@@ -1116,7 +1116,7 @@ defmodule AiOrchestrator.Lifecycle.GateWiringTest do
         ] do
       test "#{label} is journaled attention gate_helper_missing; the legacy runner never runs" do
         run_dir = tmp_run_dir()
-        spec = real_gates(H.spec("gated_run_seed"), ["/bin/sh", "-c", "exit 0"], run_dir)
+        spec = real_gates(H.spec("gated_run_seed"), ["/bin/bash", "-c", "exit 0"], run_dir)
         helper = helper_of(unquote(kind), run_dir)
 
         result =
@@ -1137,7 +1137,7 @@ defmodule AiOrchestrator.Lifecycle.GateWiringTest do
     test "the CLI routes the resolved helper (environment) to the Host: a run with AI_ORCHESTRATOR_GATE_GUARDIAN set journals gate_started v2",
          %{helper: helper} do
       run_dir = tmp_run_dir()
-      spec = real_gates(H.spec("gated_run_seed"), ["/bin/sh", "-c", "exit 0"], run_dir)
+      spec = real_gates(H.spec("gated_run_seed"), ["/bin/bash", "-c", "exit 0"], run_dir)
       File.write!(Path.join(run_dir, "spec.json"), Jason.encode!(spec))
       File.write!(Path.join(run_dir, "plan.json"), Jason.encode!(H.plan("gated_run_seed")))
       env = %{"AI_ORCHESTRATOR_GATE_GUARDIAN" => helper}
@@ -1159,7 +1159,7 @@ defmodule AiOrchestrator.Lifecycle.GateWiringTest do
     test "the CLI accepts the literal --gate-guardian flag: the flag names the helper and outranks the environment",
          %{helper: helper} do
       run_dir = tmp_run_dir()
-      spec = real_gates(H.spec("gated_run_seed"), ["/bin/sh", "-c", "exit 0"], run_dir)
+      spec = real_gates(H.spec("gated_run_seed"), ["/bin/bash", "-c", "exit 0"], run_dir)
       File.write!(Path.join(run_dir, "spec.json"), Jason.encode!(spec))
       File.write!(Path.join(run_dir, "plan.json"), Jason.encode!(H.plan("gated_run_seed")))
       # the environment names a helper that is NOT executable; only the flag names the real one
@@ -1193,7 +1193,7 @@ defmodule AiOrchestrator.Lifecycle.GateWiringTest do
       spec =
         real_gates(
           H.spec("gated_run_seed"),
-          ["/bin/sh", "-c", ~s{[ "$(ls gates/*.claim.* | wc -l)" -gt 1 ] && exit 0; sleep 30 & sleep 30}],
+          ["/bin/bash", "-c", ~s{[ "$(ls gates/*.claim.* | wc -l)" -gt 1 ] && exit 0; sleep 30 & sleep 30}],
           run_dir
         )
 
@@ -1256,7 +1256,7 @@ defmodule AiOrchestrator.Lifecycle.GateWiringTest do
     test "cold crash window after the committed start, before GO: the barrier is recorded, the owner dies, settlement is observed, then resume reconciles dead and completes at attempt 2 under the original deadline",
          %{helper: helper} do
       run_dir = tmp_run_dir()
-      spec = real_gates(H.spec("gated_run_seed"), ["/bin/sh", "-c", "exit 0"], run_dir)
+      spec = real_gates(H.spec("gated_run_seed"), ["/bin/bash", "-c", "exit 0"], run_dir)
       parent = self()
 
       barrier = fn

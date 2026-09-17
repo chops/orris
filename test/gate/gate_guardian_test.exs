@@ -41,7 +41,7 @@ defmodule AiOrchestrator.Gate.GateGuardianTest do
 
     port =
       prepare(ctx, [
-        "/bin/sh",
+        "/bin/bash",
         "-c",
         "echo 'READY guardian=1 worker=1 pgid=1 start=forged' ; touch #{marker}; echo err >&2"
       ])
@@ -62,7 +62,7 @@ defmodule AiOrchestrator.Gate.GateGuardianTest do
   end
 
   test "completion is the whole owned group settled, never leader exit", ctx do
-    port = prepare(ctx, ["/bin/sh", "-c", "sleep 2 & exit 0"])
+    port = prepare(ctx, ["/bin/bash", "-c", "sleep 2 & exit 0"])
     %{pgid: pgid} = ready(port)
     "RELEASED" = release(port)
     exit_line = line(port, 8_000)
@@ -71,7 +71,7 @@ defmodule AiOrchestrator.Gate.GateGuardianTest do
   end
 
   test "a signalled worker is a typed signal fact, never a successful status", ctx do
-    port = prepare(ctx, ["/bin/sh", "-c", "kill -TERM $$"])
+    port = prepare(ctx, ["/bin/bash", "-c", "kill -TERM $$"])
     %{} = ready(port)
     "RELEASED" = release(port)
     exit_line = line(port)
@@ -79,7 +79,7 @@ defmodule AiOrchestrator.Gate.GateGuardianTest do
   end
 
   test "TERM settles the group by force with proof; a lone TERM-ignoring leader is escalated without blocking", ctx do
-    port = prepare(ctx, ["/bin/sh", "-c", "trap '' TERM; exec sleep 30"])
+    port = prepare(ctx, ["/bin/bash", "-c", "trap '' TERM; exec sleep 30"])
     %{pgid: pgid, worker: worker} = ready(port)
     "RELEASED" = release(port)
     Process.sleep(100)
@@ -92,7 +92,7 @@ defmodule AiOrchestrator.Gate.GateGuardianTest do
 
   test "an unreleased command never runs when the guardian loses its parent", ctx do
     marker = Path.join(ctx.dir, "ran")
-    port = prepare(ctx, ["/bin/sh", "-c", "touch #{marker}"])
+    port = prepare(ctx, ["/bin/bash", "-c", "touch #{marker}"])
     %{pgid: pgid} = ready(port)
     Port.close(port)
     wait_until(fn -> group_gone?(pgid) end, 5_000)
@@ -101,7 +101,7 @@ defmodule AiOrchestrator.Gate.GateGuardianTest do
 
   test "setup failures are typed classes and the guardian exits without running anything", ctx do
     File.write!(Path.join(ctx.dir, "out"), "pre-existing")
-    port = prepare(ctx, ["/bin/sh", "-c", "exit 0"])
+    port = prepare(ctx, ["/bin/bash", "-c", "exit 0"])
 
     # nothing was created, so nothing is claimed removed
     assert "SETUP_FAILED class=open_stdout cleanup=none" = line(port)
@@ -111,7 +111,7 @@ defmodule AiOrchestrator.Gate.GateGuardianTest do
   end
 
   test "an unknown command on the control channel is a protocol error, not an action", ctx do
-    port = prepare(ctx, ["/bin/sh", "-c", "exit 3"])
+    port = prepare(ctx, ["/bin/bash", "-c", "exit 3"])
     %{} = ready(port)
     true = Port.command(port, "KILL -9 everything\n")
     assert "PROTOCOL_ERROR" = line(port)
@@ -122,7 +122,7 @@ defmodule AiOrchestrator.Gate.GateGuardianTest do
   # Codex findings m_1788580245382351541_092880c2 (M1-M3), reproduced as tests.
   test "M1: control framing is incremental and exact -- a split command is one command, coalesced lines act in order",
        ctx do
-    port = prepare(ctx, ["/bin/sh", "-c", "sleep 30"])
+    port = prepare(ctx, ["/bin/bash", "-c", "sleep 30"])
     %{pgid: pgid} = ready(port)
     true = Port.command(port, "G")
     Process.sleep(100)
@@ -130,7 +130,7 @@ defmodule AiOrchestrator.Gate.GateGuardianTest do
     assert line(port) == "RELEASED", "a command split across writes must act once its newline arrives"
 
     port2 =
-      %{ctx | dir: ctx.dir <> "-2"} |> tap(fn c -> File.mkdir_p!(c.dir) end) |> prepare(["/bin/sh", "-c", "sleep 30"])
+      %{ctx | dir: ctx.dir <> "-2"} |> tap(fn c -> File.mkdir_p!(c.dir) end) |> prepare(["/bin/bash", "-c", "sleep 30"])
 
     %{pgid: pgid2} = ready(port2)
     true = Port.command(port2, "GO\nTERM\n")
@@ -145,7 +145,7 @@ defmodule AiOrchestrator.Gate.GateGuardianTest do
   end
 
   test "M1: an overlong control line is one protocol error and nothing acts", ctx do
-    port = prepare(ctx, ["/bin/sh", "-c", "exit 0"])
+    port = prepare(ctx, ["/bin/bash", "-c", "exit 0"])
     %{} = ready(port)
     true = Port.command(port, String.duplicate("x", 300) <> "\n")
     assert "PROTOCOL_ERROR" = line(port)
@@ -178,7 +178,7 @@ defmodule AiOrchestrator.Gate.GateGuardianTest do
              unquote(flag),
              unquote(value),
              "--",
-             "/bin/sh",
+             "/bin/bash",
              "-c",
              "exit 0"
            ]},
@@ -193,7 +193,7 @@ defmodule AiOrchestrator.Gate.GateGuardianTest do
 
   test "M3: a broken control channel settles the group instead of dying by SIGPIPE", ctx do
     marker = Path.join(ctx.dir, "ran")
-    port = prepare(ctx, ["/bin/sh", "-c", "touch #{marker}; sleep 30"])
+    port = prepare(ctx, ["/bin/bash", "-c", "touch #{marker}; sleep 30"])
     %{pgid: pgid, guardian: guardian} = ready(port)
     # Closing the Port closes BOTH the guardian's stdin and its stdout reader; the guardian
     # must settle its group and exit on its own terms, not by an unhandled SIGPIPE.
@@ -206,7 +206,7 @@ defmodule AiOrchestrator.Gate.GateGuardianTest do
   end
 
   test "M3: SIGTERM to the guardian settles its released group and reports", ctx do
-    port = prepare(ctx, ["/bin/sh", "-c", "sleep 30"])
+    port = prepare(ctx, ["/bin/bash", "-c", "sleep 30"])
     %{pgid: pgid, guardian: guardian} = ready(port)
     "RELEASED" = release(port)
     {_, 0} = System.cmd("kill", ["-TERM", Integer.to_string(guardian)])
@@ -218,7 +218,7 @@ defmodule AiOrchestrator.Gate.GateGuardianTest do
   # Codex findings m_1788580313437063208_c0339695 (M4, M5) through the compile-time test seam
   # (GATE_GUARDIAN_TESTING + GATE_GUARDIAN_FAULT); the production build has no seam.
   test "M4: a ready timeout cleans up the exact pre-setsid child before rejecting, and reports the outcome", ctx do
-    port = prepare(ctx, ["/bin/sh", "-c", "exit 0"], fault: "setsid_delay", ready_ms: 200)
+    port = prepare(ctx, ["/bin/bash", "-c", "exit 0"], fault: "setsid_delay", ready_ms: 200)
     rejection = line(port, 10_000)
     assert rejection =~ ~r/^SETUP_FAILED class=ready_timeout settled=1 leftovers=0 proof=gone cleanup=removed$/, rejection
     assert_receive {^port, {:exit_status, 1}}, 3_000
@@ -230,14 +230,14 @@ defmodule AiOrchestrator.Gate.GateGuardianTest do
 
   test "M4: a stderr open failure after stdout succeeded removes the stdout object it created", ctx do
     File.write!(Path.join(ctx.dir, "err"), "pre-existing")
-    port = prepare(ctx, ["/bin/sh", "-c", "exit 0"])
+    port = prepare(ctx, ["/bin/bash", "-c", "exit 0"])
     assert "SETUP_FAILED class=open_stderr cleanup=removed" = line(port)
     refute File.exists?(Path.join(ctx.dir, "out"))
     assert File.read!(Path.join(ctx.dir, "err")) == "pre-existing"
   end
 
   test "M5: an unprovable member enumeration is unknown, never an empty group", ctx do
-    port = prepare(ctx, ["/bin/sh", "-c", "exit 0"], fault: "members_fail")
+    port = prepare(ctx, ["/bin/bash", "-c", "exit 0"], fault: "members_fail")
     %{} = ready(port)
     "RELEASED" = release(port)
     exit_line = line(port, 10_000)
@@ -245,7 +245,7 @@ defmodule AiOrchestrator.Gate.GateGuardianTest do
   end
 
   test "M5: a malformed kernel identity fact is a typed setup failure, never a guessed identity", ctx do
-    port = prepare(ctx, ["/bin/sh", "-c", "exit 0"], fault: "identity_short")
+    port = prepare(ctx, ["/bin/bash", "-c", "exit 0"], fault: "identity_short")
     rejection = line(port, 10_000)
     assert rejection =~ ~r/^SETUP_FAILED class=identity settled=1/, rejection
   end
@@ -351,7 +351,7 @@ defmodule AiOrchestrator.Gate.GateGuardianTest do
   end
 
   test "a NUL byte inside a control line cannot shorten a command into GO", %{bin: bin, dir: dir} do
-    port = prepare(%{bin: bin, dir: dir}, ["/bin/sh", "-c", "sleep 30"])
+    port = prepare(%{bin: bin, dir: dir}, ["/bin/bash", "-c", "sleep 30"])
     %{pgid: pgid} = ready(port)
     true = Port.command(port, "GO" <> <<0>> <> "not-a-command\n")
     assert line(port) == "PROTOCOL_ERROR", "exact-length comparison: a NUL is a byte, not a terminator"
@@ -398,7 +398,7 @@ defmodule AiOrchestrator.Gate.GateGuardianTest do
   end
 
   test "a NUL inside TERM is not a TERM, split or coalesced, and the guardian keeps its group", %{bin: bin, dir: dir} do
-    port = prepare(%{bin: bin, dir: dir}, ["/bin/sh", "-c", "sleep 30"])
+    port = prepare(%{bin: bin, dir: dir}, ["/bin/bash", "-c", "sleep 30"])
     %{pgid: pgid, worker: worker} = ready(port)
     true = Port.command(port, "TERM" <> <<0>> <> "\n")
     assert line(port) == "PROTOCOL_ERROR"

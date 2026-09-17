@@ -130,7 +130,7 @@ defmodule AiOrchestrator.Gate.GateGuardianUnit2Test do
   describe "--timeout-ms (backstop from the guardian's own start)" do
     test "with a delayed GO, the deadline still elapses from start: DEAD reason=deadline arrives early after release",
          %{bin: bin, dir: dir} do
-      port = start(bin, dir, ["--timeout-ms", "1500"], ["/bin/sh", "-c", "sleep 30"])
+      port = start(bin, dir, ["--timeout-ms", "1500"], ["/bin/bash", "-c", "sleep 30"])
       assert "READY " <> _ = line(port)
       Process.sleep(1_000)
       true = Port.command(port, "GO\n")
@@ -145,7 +145,7 @@ defmodule AiOrchestrator.Gate.GateGuardianUnit2Test do
 
     test "a deadline that elapses before GO settles the still-blocked worker and reports deadline, not parent_gone",
          %{bin: bin, dir: dir} do
-      port = start(bin, dir, ["--timeout-ms", "300"], ["/bin/sh", "-c", "echo ran > ran; sleep 30"])
+      port = start(bin, dir, ["--timeout-ms", "300"], ["/bin/bash", "-c", "echo ran > ran; sleep 30"])
       assert "READY " <> _ = line(port)
       assert "DEAD reason=deadline" <> _ = line(port, 3_000)
       refute File.exists?(Path.join(dir, "ran")), "never released"
@@ -169,7 +169,7 @@ defmodule AiOrchestrator.Gate.GateGuardianUnit2Test do
         "2"
       ]
 
-      args = args ++ ["--timeout-ms", "600000", "--", "/bin/sh", "-c", "echo ran > ran; sleep 30"]
+      args = args ++ ["--timeout-ms", "600000", "--", "/bin/bash", "-c", "echo ran > ran; sleep 30"]
       env = [{~c"GATE_GUARDIAN_FAULT", ~c"go_after_deadline"}]
 
       port =

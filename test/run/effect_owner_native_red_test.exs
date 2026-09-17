@@ -26,7 +26,7 @@ defmodule AiOrchestrator.Run.EffectOwnerNativeRedTest do
   @now %Moment{wall_ts: "2026-09-06T08:00:00Z", unix: 1_788_681_600}
   @instance "sup_owner_native"
   @owned [:event_sink, :run_dir, :run_lock_path, :tail_repair, :requested_by, :cancel_reason, :recovery_reason]
-  @argv ["/bin/sh", "-c", "echo ran >> ran; echo ran; sleep 3"]
+  @argv ["/bin/bash", "-c", "echo ran >> ran; echo ran; sleep 3"]
 
   defp worker, do: Module.concat(["AiOrchestrator", "Run", "Worker"])
   defp require_worker!, do: assert(Code.ensure_loaded?(worker()), "AiOrchestrator.Run.Worker does not exist")
@@ -357,7 +357,10 @@ defmodule AiOrchestrator.Run.EffectOwnerNativeRedTest do
   # ---- N-0 control: the real gate through the executor path, one GO, completed ----
   test "control: N-0 a real gate through the executor completes with exactly one GO", %{dir: dir, helper: helper} do
     ctx = context(dir, helper, :none)
-    ctx = Keyword.put(ctx, :spec, real_gates(H.spec("gated_run_seed"), ["/bin/sh", "-c", "echo ran >> ran; exit 0"], dir))
+
+    ctx =
+      Keyword.put(ctx, :spec, real_gates(H.spec("gated_run_seed"), ["/bin/bash", "-c", "echo ran >> ran; exit 0"], dir))
+
     ctx = Keyword.put(ctx, :spec_hash, sha(ctx[:spec]))
     invoke!("start", start_args(ctx), ctx)
     {_identity, _executing} = track_ready!()

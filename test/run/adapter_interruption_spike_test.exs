@@ -372,7 +372,7 @@ defmodule AiOrchestrator.Run.AdapterInterruptionSpikeTest do
     def handle_call({:allocate, key, seconds, opts}, _from, state) do
       :persistent_term.put(key, :allocating)
       args = ["-c", "echo $$; exec sleep #{seconds}"]
-      port = Port.open({:spawn_executable, "/bin/sh"}, [:binary, :stream, :exit_status, args: args])
+      port = Port.open({:spawn_executable, "/bin/bash"}, [:binary, :stream, :exit_status, args: args])
       state = %{state | ports: Map.put(state.ports, key, port)}
       # the seam receives the record state directly (it runs inside the authority: no self-call); a two-way
       # acknowledged barrier lives in the seam function itself (fail-closed, never timeout-released)
@@ -599,7 +599,7 @@ defmodule AiOrchestrator.Run.AdapterInterruptionSpikeTest do
     fn ->
       :ok = GenServer.call(authority, {:allocating, key})
       args = ["-c", "echo $$; exec sleep #{seconds}"]
-      port = Port.open({:spawn_executable, "/bin/sh"}, [:binary, :stream, args: args])
+      port = Port.open({:spawn_executable, "/bin/bash"}, [:binary, :stream, args: args])
 
       record =
         receive do

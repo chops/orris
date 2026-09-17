@@ -1,4 +1,4 @@
-{ lib, rustPlatform }:
+{ lib, rustPlatform, bash }:
 
 rustPlatform.buildRustPackage {
   pname = "ai-orchestrator-gate-guardian";
@@ -11,6 +11,7 @@ rustPlatform.buildRustPackage {
   # Fault injection is compiled only in the separately built testing feature.
   env.RUSTFLAGS = "-D warnings";
   doCheck = true;
+  nativeCheckInputs = [ bash ];
   doInstallCheck = true;
   installCheckPhase = ''
     if output="$("$out/bin/gate_guardian")"; then

@@ -40,7 +40,7 @@ defmodule AiOrchestrator.Dispatch.PaneClientTest do
     File.mkdir_p!(temp_dir)
 
     File.write!(fake_ap, """
-    #!/bin/sh
+    #!/bin/bash
     body=$(cat)
     if [ "$body" = "Do the work" ]; then
       printf '%s\\n' '{"sent":true,"stdin_verified":true}'

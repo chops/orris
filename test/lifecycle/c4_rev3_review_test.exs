@@ -10,7 +10,7 @@ defmodule C4Rev3ReviewTest do
     script =
       "read command; printf '%s\\n' 'DEAD reason=command kind=unknown settled=0 leftovers=unknown proof=unknown escaped=unknown'"
 
-    port = Port.open({:spawn_executable, "/bin/sh"}, [:binary, :exit_status, {:line, 1024}, {:args, ["-c", script]}])
+    port = Port.open({:spawn_executable, "/bin/bash"}, [:binary, :exit_status, {:line, 1024}, {:args, ["-c", script]}])
 
     try do
       Execution.abandon(%{port: port, opts: []})

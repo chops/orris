@@ -271,7 +271,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
   describe "prepare" do
     test "publishes the claim durably: identity, 0700 dir, 0600 regular claim with exact keys, started_data v2, worker blocked",
          %{run_dir: run_dir, opts: opts} do
-      req = request(run_dir, ["/bin/sh", "-c", "echo ran > ran; sleep 30"])
+      req = request(run_dir, ["/bin/bash", "-c", "echo ran > ran; sleep 30"])
       assert {:ok, prepared} = Execution.prepare(fs(), req, opts)
       identity = Execution.identity(prepared)
       :ok = track(identity)
@@ -316,7 +316,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
 
     test "an expired deadline is refused before anything is spawned or claimed", %{run_dir: run_dir, opts: opts} do
       Process.put(:gate_exec_now, @deadline)
-      req = request(run_dir, ["/bin/sh", "-c", "echo ran > ran; sleep 30"])
+      req = request(run_dir, ["/bin/bash", "-c", "echo ran > ran; sleep 30"])
       assert match?({:error, %{clause: "deadline_expired"}}, Execution.prepare(fs(), req, opts))
       assert File.ls!(run_dir) == []
     end
@@ -339,7 +339,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
       claim_path = Path.join(gates, "gr_0001.claim.1")
       File.write!(claim_path, ~s({"schema":"ai-orchestrator/gate-claim","schema_version":1,"foreign":true}\n))
       before = File.read!(claim_path)
-      req = request(run_dir, ["/bin/sh", "-c", "echo ran > ran; sleep 30"])
+      req = request(run_dir, ["/bin/bash", "-c", "echo ran > ran; sleep 30"])
       result = Execution.prepare(fs(), req, opts)
 
       assert match?(
@@ -381,7 +381,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
         opts: opts
       } do
         fake = Path.join(run_dir, "fake_helper")
-        File.write!(fake, "#!/bin/sh\n" <> unquote(script) <> "\n")
+        File.write!(fake, "#!/bin/bash\n" <> unquote(script) <> "\n")
         File.chmod!(fake, 0o700)
         req = request(run_dir, ["/bin/sleep", "30"])
         result = Execution.prepare(fs(), req, [{:helper, fake}, {:ready_ms, 1000} | Keyword.delete(opts, :helper)])
@@ -399,7 +399,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
     test "one owner-harness transaction with a real Writer: prepare, append, ack, release, await, then close",
          %{run_dir: run_dir, opts: opts} do
       w = open_writer(run_dir)
-      req = request(run_dir, ["/bin/sh", "-c", "echo out-line; echo err-line >&2; exit 3"])
+      req = request(run_dir, ["/bin/bash", "-c", "echo out-line; echo err-line >&2; exit 3"])
       assert {:ok, prepared} = Execution.prepare(fs(), req, opts)
       :ok = track(Execution.identity(prepared))
       assert {:ok, persisted} = Writer.append(w, started_event(prepared, 1))
@@ -424,7 +424,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
 
     test "a Writer append that fails before writing (seq_mismatch) yields no Ack; the handle is abandoned with proof",
          %{run_dir: run_dir, opts: opts} do
-      req = request(run_dir, ["/bin/sh", "-c", "echo ran > ran; sleep 30"])
+      req = request(run_dir, ["/bin/bash", "-c", "echo ran > ran; sleep 30"])
       assert {:ok, prepared} = Execution.prepare(fs(), req, opts)
       identity = Execution.identity(prepared)
       :ok = track(identity)
@@ -449,7 +449,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
 
       w = open_writer(run_dir, fs: fault_fs)
       :counters.put(armed, 1, 1)
-      req = request(run_dir, ["/bin/sh", "-c", "echo ran > ran; sleep 30"])
+      req = request(run_dir, ["/bin/bash", "-c", "echo ran > ran; sleep 30"])
       assert {:ok, prepared} = Execution.prepare(fs(), req, opts)
       identity = Execution.identity(prepared)
       :ok = track(identity)
@@ -469,7 +469,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
           {"wrong gate_run_id", {:put, ["data", "gate_run_id"], "gr_0002"}},
           {"wrong attempt", {:put, ["data", "attempt"], 2}},
           {"wrong deadline", {:put, ["data", "deadline_unix"], 1_700_000_601}},
-          {"wrong command_argv", {:put, ["data", "command_argv"], ["/bin/sh", "-c", "true"]}},
+          {"wrong command_argv", {:put, ["data", "command_argv"], ["/bin/bash", "-c", "true"]}},
           {"wrong stdout_path", {:put, ["data", "stdout_path"], "gates/gr_0001.2.out"}},
           {"wrong stderr_path", {:put, ["data", "stderr_path"], "gates/gr_0001.2.err"}},
           {"wrong claim_hash", {:put, ["data", "execution", "claim_hash"], "sha256:" <> String.duplicate("0", 64)}},
@@ -482,7 +482,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
           {"unstamped (no writer)", {:delete, "prev_line_sha256"}}
         ] do
       test "an ack with #{label} is refused and cannot release", %{run_dir: run_dir, opts: opts} do
-        req = request(run_dir, ["/bin/sh", "-c", "echo ran > ran; sleep 30"])
+        req = request(run_dir, ["/bin/bash", "-c", "echo ran > ran; sleep 30"])
         assert {:ok, prepared} = Execution.prepare(fs(), req, opts)
         :ok = track(Execution.identity(prepared))
         assert {:ok, persisted} = journaled(prepared, run_dir, 1)
@@ -495,7 +495,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
 
     test "an Ack built for another prepared handle (stale binding) cannot release this one",
          %{run_dir: run_dir, opts: opts} do
-      req = request(run_dir, ["/bin/sh", "-c", "echo ran > ran; sleep 30"])
+      req = request(run_dir, ["/bin/bash", "-c", "echo ran > ran; sleep 30"])
       assert {:ok, first} = Execution.prepare(fs(), req, opts)
       :ok = track(Execution.identity(first))
       assert {:ok, persisted} = journaled(first, run_dir, 1)
@@ -510,7 +510,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
 
     test "an in-memory event never yields an Ack: only the writer's stamped result does",
          %{run_dir: run_dir, opts: opts} do
-      req = request(run_dir, ["/bin/sh", "-c", "echo ran > ran; sleep 30"])
+      req = request(run_dir, ["/bin/bash", "-c", "echo ran > ran; sleep 30"])
       assert {:ok, prepared} = Execution.prepare(fs(), req, opts)
       :ok = track(Execution.identity(prepared))
       in_memory = started_event(prepared, 1)
@@ -520,7 +520,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
     end
 
     test "expiry between ack and release refuses the go-token and abandons with proof", %{run_dir: run_dir, opts: opts} do
-      {prepared, ack} = acked(run_dir, ["/bin/sh", "-c", "echo ran > ran; sleep 30"], opts)
+      {prepared, ack} = acked(run_dir, ["/bin/bash", "-c", "echo ran > ran; sleep 30"], opts)
       Process.put(:gate_exec_now, @deadline)
       result = Execution.release(prepared, ack)
       assert match?({:error, %{clause: "deadline_expired", settle: %{settled: true, proof: "gone"}}}, result)
@@ -529,7 +529,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
     end
 
     test "a broken clock at release means no go-token", %{run_dir: run_dir, opts: opts} do
-      {prepared, ack} = acked(run_dir, ["/bin/sh", "-c", "echo ran > ran; sleep 30"], opts)
+      {prepared, ack} = acked(run_dir, ["/bin/bash", "-c", "echo ran > ran; sleep 30"], opts)
       result = Execution.release(prepared, ack, clock: BrokenClock)
       assert match?({:error, %{clause: "clock_unavailable", settle: %{settled: true}}}, result)
       refute File.exists?(Path.join(run_dir, "ran"))
@@ -543,7 +543,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
 
       File.write!(
         fake,
-        "#!/bin/sh\nprintf 'READY guardian=1 worker=2 pgid=2 start=1.000000\\n'\nread cmd\nprintf 'DEAD reason=command settled=maybe\\n'\n"
+        "#!/bin/bash\nprintf 'READY guardian=1 worker=2 pgid=2 start=1.000000\\n'\nread cmd\nprintf 'DEAD reason=command settled=maybe\\n'\n"
       )
 
       File.chmod!(fake, 0o700)
@@ -557,7 +557,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
 
   describe "await" do
     test "a signaled worker reports the signal and no invented exit status", %{run_dir: run_dir, opts: opts} do
-      {prepared, ack} = acked(run_dir, ["/bin/sh", "-c", "kill -9 $$"], opts)
+      {prepared, ack} = acked(run_dir, ["/bin/bash", "-c", "kill -9 $$"], opts)
       assert {:ok, running} = Execution.release(prepared, ack)
       assert {:exit, outcome} = Execution.await(running, opts)
       assert %{"kind" => "signaled", "signal" => 9, "settled" => true} = outcome
@@ -568,7 +568,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
 
     test "exit 0 with an unknown group is never a pass", %{run_dir: run_dir, seam: seam} do
       opts = [helper: seam, settle_ms: 200, rounds: 2, clock: Clock, env: [{"GATE_GUARDIAN_FAULT", "members_fail"}]]
-      {prepared, ack} = acked(run_dir, ["/bin/sh", "-c", "exit 0"], opts)
+      {prepared, ack} = acked(run_dir, ["/bin/bash", "-c", "exit 0"], opts)
       assert {:ok, running} = Execution.release(prepared, ack)
       assert {:exit, outcome} = Execution.await(running, opts)
       assert %{"exit_status" => 0, "settled" => false, "leftovers" => "unknown"} = outcome
@@ -579,7 +579,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
       run_dir: run_dir,
       opts: opts
     } do
-      {prepared, ack} = acked(run_dir, ["/bin/sh", "-c", "sleep 30 & sleep 30"], opts)
+      {prepared, ack} = acked(run_dir, ["/bin/bash", "-c", "sleep 30 & sleep 30"], opts)
       identity = Execution.identity(prepared)
       assert {:ok, running} = Execution.release(prepared, ack)
       harness = self()
@@ -595,7 +595,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
 
     test "the guardian backstop settles a running group when the owner is alive but stuck, reported as backstop",
          %{run_dir: run_dir, opts: opts} do
-      {prepared, ack} = acked(run_dir, ["/bin/sh", "-c", "sleep 30 & sleep 30"], opts, %{deadline_unix: @now + 1})
+      {prepared, ack} = acked(run_dir, ["/bin/bash", "-c", "sleep 30 & sleep 30"], opts, %{deadline_unix: @now + 1})
       identity = Execution.identity(prepared)
       assert {:ok, running} = Execution.release(prepared, ack)
       assert wait_until(fn -> dead?(identity) end, 8_000), "the guardian settled the group with nobody asking"
@@ -608,7 +608,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
       run_dir: run_dir,
       opts: opts
     } do
-      {prepared, ack} = acked(run_dir, ["/bin/sh", "-c", "trap '' TERM; sleep 30 & wait"], opts)
+      {prepared, ack} = acked(run_dir, ["/bin/bash", "-c", "trap '' TERM; sleep 30 & wait"], opts)
       identity = Execution.identity(prepared)
       assert {:ok, running} = Execution.release(prepared, ack)
       Process.put(:gate_exec_now, @deadline)
@@ -618,7 +618,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
     end
 
     test "unreadable output is a closed output_unreadable, never an invented hash", %{run_dir: run_dir, opts: opts} do
-      {prepared, ack} = acked(run_dir, ["/bin/sh", "-c", "exit 0"], opts)
+      {prepared, ack} = acked(run_dir, ["/bin/bash", "-c", "exit 0"], opts)
       assert {:ok, running} = Execution.release(prepared, ack)
       out = Path.join(run_dir, "gates/gr_0001.1.out")
       assert wait_for_file(out)
@@ -639,7 +639,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
            %{run_dir: run_dir, opts: opts} do
         fault_fs = FaultFs.new()
         FaultFs.inject(fault_fs, unquote(op), 1, {:error, :eio})
-        req = request(run_dir, ["/bin/sh", "-c", "echo ran > ran; sleep 30"])
+        req = request(run_dir, ["/bin/bash", "-c", "echo ran > ran; sleep 30"])
         result = Execution.prepare(fault_fs, req, opts)
 
         assert match?(
@@ -667,7 +667,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
          %{run_dir: run_dir, opts: opts} do
       fault_fs = FaultFs.new()
       FaultFs.inject(fault_fs, :dir_sync, 1, {:error, :eio})
-      req = request(run_dir, ["/bin/sh", "-c", "echo ran > ran; sleep 30"])
+      req = request(run_dir, ["/bin/bash", "-c", "echo ran > ran; sleep 30"])
       result = Execution.prepare(fault_fs, req, opts)
 
       assert match?(
@@ -696,7 +696,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
       fault_fs = FaultFs.new()
       FaultFs.inject(fault_fs, :dir_sync, 1, {:error, :eio})
       FaultFs.inject(fault_fs, :dir_sync, 2, {:error, :eio})
-      req = request(run_dir, ["/bin/sh", "-c", "echo ran > ran; sleep 30"])
+      req = request(run_dir, ["/bin/bash", "-c", "echo ran > ran; sleep 30"])
       result = Execution.prepare(fault_fs, req, opts)
       assert match?({:error, %{clause: "claim_unpublished", stage: "dir_sync", cleanup: "removed_unsynced"}}, result)
       refute File.exists?(Path.join(run_dir, "gates/gr_0001.claim.1"))
@@ -707,7 +707,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
       fault_fs = FaultFs.new()
       FaultFs.inject(fault_fs, :dir_sync, 1, {:error, :eio})
       FaultFs.inject(fault_fs, :rm, fn [name] -> name == "gr_0001.claim.1" end, {:error, :eacces})
-      req = request(run_dir, ["/bin/sh", "-c", "echo ran > ran; sleep 30"])
+      req = request(run_dir, ["/bin/bash", "-c", "echo ran > ran; sleep 30"])
       result = Execution.prepare(fault_fs, req, opts)
 
       assert match?(
@@ -728,7 +728,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
          %{run_dir: run_dir, opts: opts} do
       fault_fs = FaultFs.new()
       FaultFs.inject(fault_fs, :rm, fn [name] -> String.ends_with?(name, ".tmp") end, {:error, :eacces})
-      req = request(run_dir, ["/bin/sh", "-c", "echo ran > ran; sleep 30"])
+      req = request(run_dir, ["/bin/bash", "-c", "echo ran > ran; sleep 30"])
       result = Execution.prepare(fault_fs, req, opts)
 
       assert {:error, %{clause: "claim_unpublished", stage: "rm_temp", cleanup: "cleanup_required", residue: [residue]}} =
@@ -753,7 +753,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
       end
 
       FaultFs.inject(fault_fs, :sync, 1, {:error, :eio})
-      req = request(run_dir, ["/bin/sh", "-c", "sleep 30"])
+      req = request(run_dir, ["/bin/bash", "-c", "sleep 30"])
       result = Execution.prepare(fault_fs, req, [{:barrier, barrier} | opts])
       identity = expect(:identity)
       :ok = track(identity)
@@ -788,7 +788,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
         {:error, :eio}
       )
 
-      req = request(run_dir, ["/bin/sh", "-c", "sleep 30"])
+      req = request(run_dir, ["/bin/bash", "-c", "sleep 30"])
       result = Execution.prepare(fault_fs, req, opts)
 
       assert match?(
@@ -830,7 +830,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
 
       {pid, ref} =
         owner(fn ->
-          Execution.prepare(fs(), request(run_dir, ["/bin/sh", "-c", "echo ran > ran; sleep 30"]), [
+          Execution.prepare(fs(), request(run_dir, ["/bin/bash", "-c", "echo ran > ran; sleep 30"]), [
             {:barrier, barrier} | opts
           ])
         end)
@@ -862,7 +862,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
 
       {pid, ref} =
         owner(fn ->
-          Execution.prepare(fault_fs, request(run_dir, ["/bin/sh", "-c", "echo ran > ran; sleep 30"]), [
+          Execution.prepare(fault_fs, request(run_dir, ["/bin/bash", "-c", "echo ran > ran; sleep 30"]), [
             {:barrier, barrier} | opts
           ])
         end)
@@ -893,7 +893,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
 
       {pid, ref} =
         owner(fn ->
-          Execution.prepare(fs(), request(run_dir, ["/bin/sh", "-c", "echo ran > ran; sleep 30"]), [
+          Execution.prepare(fs(), request(run_dir, ["/bin/bash", "-c", "echo ran > ran; sleep 30"]), [
             {:barrier, barrier} | opts
           ])
         end)
@@ -924,7 +924,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
       {pid, ref} =
         owner(fn ->
           assert {:ok, prepared} =
-                   Execution.prepare(fs(), request(run_dir, ["/bin/sh", "-c", "echo ran > ran; sleep 30"]), opts)
+                   Execution.prepare(fs(), request(run_dir, ["/bin/bash", "-c", "echo ran > ran; sleep 30"]), opts)
 
           assert {:ok, persisted} = journaled(prepared, run_dir, 1)
           assert {:ok, ack} = Execution.ack(prepared, persisted)
@@ -952,7 +952,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
       {pid, ref} =
         owner(fn ->
           {:ok, prepared} =
-            Execution.prepare(fs(), request(run_dir, ["/bin/sh", "-c", "echo started > marker; sleep 30"]), opts)
+            Execution.prepare(fs(), request(run_dir, ["/bin/bash", "-c", "echo started > marker; sleep 30"]), opts)
 
           assert {:ok, persisted} = journaled(prepared, run_dir, 1)
           assert {:ok, ack} = Execution.ack(prepared, persisted)
@@ -977,7 +977,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
           {:ok, prepared} =
             Execution.prepare(
               fs(),
-              request(run_dir, ["/bin/sh", "-c", "echo started > marker; sleep 30 & sleep 30"]),
+              request(run_dir, ["/bin/bash", "-c", "echo started > marker; sleep 30 & sleep 30"]),
               opts
             )
 
@@ -1012,7 +1012,9 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
 
       {pid, ref} =
         owner(fn ->
-          assert {:ok, prepared} = Execution.prepare(fs(), request(run_dir, ["/bin/sh", "-c", "echo done; exit 0"]), opts)
+          assert {:ok, prepared} =
+                   Execution.prepare(fs(), request(run_dir, ["/bin/bash", "-c", "echo done; exit 0"]), opts)
+
           assert {:ok, persisted} = journaled(prepared, run_dir, 1)
           assert {:ok, ack} = Execution.ack(prepared, persisted)
           assert {:ok, running} = Execution.release(prepared, ack)
@@ -1029,7 +1031,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
   end
 
   @orphan_program """
-  #!/bin/sh
+  #!/bin/bash
   trap '' TERM
   echo $$ > "$1"
   i=0
@@ -1047,7 +1049,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
   # (bounded) for readiness written AFTER the child's trap, then exits 0
   defp orphan_launcher(script, ready) do
     [
-      "/bin/sh",
+      "/bin/bash",
       "-c",
       ~S|"$0" "$1" & i=0; while [ ! -s "$1" ] && [ "$i" -lt 50 ]; do i=$((i + 1)); sleep 0.1; done; exit 0|,
       script,
@@ -1345,7 +1347,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
         data = Execution.started_data(prepared)
         :ok = Execution.abandon(prepared)
         fake = Path.join(run_dir, "fake_probe")
-        File.write!(fake, "#!/bin/sh\n" <> unquote(script) <> "\n")
+        File.write!(fake, "#!/bin/bash\n" <> unquote(script) <> "\n")
         File.chmod!(fake, 0o700)
         verdict = Execution.reconcile(fs(), run_dir, expected_from(data), Keyword.put(opts, :helper, fake))
         assert match?({:error, %{clause: "probe_invalid"}}, verdict), unquote(label)
@@ -1369,7 +1371,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
         data = Execution.started_data(prepared)
         :ok = Execution.abandon(prepared)
         fake = Path.join(run_dir, "fake_probe")
-        File.write!(fake, "#!/bin/sh\n" <> unquote(script) <> "\n")
+        File.write!(fake, "#!/bin/bash\n" <> unquote(script) <> "\n")
         File.chmod!(fake, 0o700)
         verdict = Execution.reconcile(fs(), run_dir, expected_from(data), Keyword.put(opts, :helper, fake))
         assert match?({:error, %{clause: "probe_invalid"}}, verdict), unquote(label)
@@ -1394,7 +1396,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
       } do
         fake = Path.join(run_dir, "fake_helper")
         pid_path = Path.join(run_dir, "fake_helper.pid")
-        File.write!(fake, ~s(#!/bin/sh\nprintf '%s\\n' "$$" > "$HELPER_PID"\n) <> unquote(script) <> "\n")
+        File.write!(fake, ~s(#!/bin/bash\nprintf '%s\\n' "$$" > "$HELPER_PID"\n) <> unquote(script) <> "\n")
         File.chmod!(fake, 0o700)
         parent = self()
         tag = make_ref()
@@ -1441,7 +1443,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
       ready_path = Path.join(run_dir, "native_ready")
 
       File.write!(wrapper, """
-      #!/bin/sh
+      #!/bin/bash
       "$REAL_GUARDIAN" "$@" | {
         IFS= read -r ready
         printf '%s\\n' "$ready" > "$READY_RECORD"
@@ -1479,7 +1481,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
 
       File.write!(
         fake,
-        "#!/bin/sh\nprintf 'READY guardian=1 worker=2 pgid=2 start=1.000000\\n'\nread cmd\nprintf 'RELEASED\\n'\n" <>
+        "#!/bin/bash\nprintf 'READY guardian=1 worker=2 pgid=2 start=1.000000\\n'\nread cmd\nprintf 'RELEASED\\n'\n" <>
           "printf 'EXIT kind=exited status=999 settled=1 leftovers=0 proof=gone escaped=unknown\\n'\nread cmd\n" <>
           "printf 'DEAD reason=command kind=unknown settled=1 leftovers=lots proof=gone escaped=unknown\\n'\n"
       )
@@ -1507,7 +1509,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
       :ok = Execution.abandon(prepared)
       marker = Path.join(run_dir, "probe-ran")
       fake = Path.join(run_dir, "fake_probe")
-      File.write!(fake, "#!/bin/sh\ntouch #{marker}\nprintf 'PROBE leader=gone start=- group=gone members=0\\n'\n")
+      File.write!(fake, "#!/bin/bash\ntouch #{marker}\nprintf 'PROBE leader=gone start=- group=gone members=0\\n'\n")
       File.chmod!(fake, 0o700)
       probing = Keyword.put(opts, :helper, fake)
       expected = expected_from(data)
@@ -1558,7 +1560,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
       File.mkdir_p!(target)
       File.chmod!(target, 0o755)
       File.ln_s!(target, Path.join(run_dir, "gates"))
-      result = Execution.prepare(fs(), request(run_dir, ["/bin/sh", "-c", "echo ran > ran; sleep 30"]), opts)
+      result = Execution.prepare(fs(), request(run_dir, ["/bin/bash", "-c", "echo ran > ran; sleep 30"]), opts)
       assert match?({:error, %{clause: "claim_unpublished", stage: "gates_dir", field: "type", cleanup: "none"}}, result)
       assert Bitwise.band(File.stat!(target).mode, 0o777) == 0o755, "the target's mode is untouched"
       assert File.ls!(target) == [], "nothing was written through the link"
@@ -1588,7 +1590,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
       opts: opts
     } do
       # 8100 bytes is a lawful single argument, but the widest claim it yields exceeds the reader bound
-      req = request(run_dir, ["/bin/sh", "-c", String.duplicate("x", 8_100)])
+      req = request(run_dir, ["/bin/bash", "-c", String.duplicate("x", 8_100)])
       assert match?({:error, %{clause: "invalid_request", field: "size"}}, Execution.claim_document(req))
       assert match?({:error, %{clause: "invalid_request", field: "size"}}, Execution.prepare(fs(), req, opts))
       assert File.ls!(run_dir) == []
@@ -1600,11 +1602,11 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
     } do
       accepted =
         Enum.find(Enum.reverse(Enum.to_list(7_000..8_100//25)), fn n ->
-          match?({:ok, _}, Execution.claim_document(request(run_dir, ["/bin/sh", "-c", String.duplicate("y", n)])))
+          match?({:ok, _}, Execution.claim_document(request(run_dir, ["/bin/bash", "-c", String.duplicate("y", n)])))
         end)
 
       assert is_integer(accepted)
-      req = request(run_dir, ["/bin/sh", "-c", String.duplicate("y", accepted)])
+      req = request(run_dir, ["/bin/bash", "-c", String.duplicate("y", accepted)])
       assert {:ok, prepared} = Execution.prepare(fs(), req, opts)
       :ok = track(Execution.identity(prepared))
       data = Execution.started_data(prepared)
@@ -1621,7 +1623,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
     } do
       fault_fs = FaultFs.new()
       FaultFs.inject(fault_fs, :chmod, fn [name, _] -> String.ends_with?(name, ".tmp") end, {:error, :eperm})
-      result = Execution.prepare(fault_fs, request(run_dir, ["/bin/sh", "-c", "sleep 30"]), opts)
+      result = Execution.prepare(fault_fs, request(run_dir, ["/bin/bash", "-c", "sleep 30"]), opts)
       assert match?({:error, %{clause: "claim_unpublished", stage: "chmod", cleanup: "removed"}}, result)
       trace = FaultFs.trace(fault_fs)
       open_index = Enum.find_index(trace, &match?({:open, _, _}, &1))
@@ -1633,7 +1635,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
       fault_fs = FaultFs.new()
       FaultFs.inject(fault_fs, :write, 1, {:error, :eio})
       FaultFs.inject(fault_fs, :rm, fn [name] -> String.ends_with?(name, ".tmp") end, {:error, :eacces})
-      result = Execution.prepare(fault_fs, request(run_dir, ["/bin/sh", "-c", "sleep 30"]), opts)
+      result = Execution.prepare(fault_fs, request(run_dir, ["/bin/bash", "-c", "sleep 30"]), opts)
 
       assert {:error, %{clause: "claim_unpublished", stage: "write", cleanup: "cleanup_required", residue: [residue]}} =
                result
@@ -1648,7 +1650,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
     } do
       fault_fs = FaultFs.new()
       FaultFs.inject(fault_fs, :rm, fn [name] -> String.ends_with?(name, ".tmp") end, {:error, :eacces})
-      result = Execution.prepare(fault_fs, request(run_dir, ["/bin/sh", "-c", "sleep 30"]), opts)
+      result = Execution.prepare(fault_fs, request(run_dir, ["/bin/bash", "-c", "sleep 30"]), opts)
 
       assert {:error,
               %{
@@ -1681,7 +1683,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
 
       File.write!(
         fake,
-        "#!/bin/sh\nprintf 'READY guardian=1 worker=2 pgid=2 start=1.000000\\n'\nread cmd\nprintf 'RELEASED\\n'\n" <>
+        "#!/bin/bash\nprintf 'READY guardian=1 worker=2 pgid=2 start=1.000000\\n'\nread cmd\nprintf 'RELEASED\\n'\n" <>
           "printf 'EXIT kind=exited status=0 escaped=unknown settled=1 leftovers=2 proof=gone\\n'\nread cmd\n" <>
           "printf 'DEAD reason=command kind=unknown settled=1 leftovers=0 proof=gone escaped=unknown\\n'\n"
       )
@@ -1712,7 +1714,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
 
         File.write!(
           fake,
-          "#!/bin/sh\nprintf 'READY guardian=1 worker=2 pgid=2 start=1.000000\\n'\nread cmd\nprintf 'DEAD reason=command kind=unknown #{unquote(trailer)} escaped=unknown\\n'\n"
+          "#!/bin/bash\nprintf 'READY guardian=1 worker=2 pgid=2 start=1.000000\\n'\nread cmd\nprintf 'DEAD reason=command kind=unknown #{unquote(trailer)} escaped=unknown\\n'\n"
         )
 
         File.chmod!(fake, 0o700)
@@ -1762,7 +1764,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
       fault_fs = FaultFs.new()
       FaultFs.inject(fault_fs, :chmod, fn [name, _] -> String.ends_with?(name, ".tmp") end, {:error, :eperm})
       FaultFs.inject(fault_fs, :dir_sync, fn _ -> true end, {:error, :eio})
-      result = Execution.prepare(fault_fs, request(run_dir, ["/bin/sh", "-c", "sleep 30"]), opts)
+      result = Execution.prepare(fault_fs, request(run_dir, ["/bin/bash", "-c", "sleep 30"]), opts)
       assert match?({:error, %{clause: "claim_unpublished", stage: "chmod", cleanup: "removed_unsynced"}}, result)
       trace = FaultFs.trace(fault_fs)
       rm_index = Enum.find_index(trace, &match?({:rm, _}, &1))
@@ -1783,7 +1785,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
       before = File.read!(claim_path)
       fault_fs = FaultFs.new()
       FaultFs.inject(fault_fs, :dir_sync, fn _ -> true end, {:error, :eio})
-      result = Execution.prepare(fault_fs, request(run_dir, ["/bin/sh", "-c", "sleep 30"]), opts)
+      result = Execution.prepare(fault_fs, request(run_dir, ["/bin/bash", "-c", "sleep 30"]), opts)
 
       assert match?(
                {:error, %{clause: "claim_conflict", cleanup: "foreign_final_untouched", temp: "removed_unsynced"}},
@@ -1800,7 +1802,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
     } do
       fault_fs = FaultFs.new()
       FaultFs.inject(fault_fs, :write, 1, {:error, :eio})
-      result = Execution.prepare(fault_fs, request(run_dir, ["/bin/sh", "-c", "sleep 30"]), opts)
+      result = Execution.prepare(fault_fs, request(run_dir, ["/bin/bash", "-c", "sleep 30"]), opts)
       assert match?({:error, %{clause: "claim_unpublished", stage: "write", cleanup: "removed"}}, result)
       trace = FaultFs.trace(fault_fs)
       rm_index = Enum.find_index(trace, &match?({:rm, _}, &1))
@@ -1815,11 +1817,11 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
     } do
       fault_fs = FaultFs.new()
       FaultFs.inject(fault_fs, :lstat, 2, {:error, :eio})
-      result = Execution.prepare(fault_fs, request(run_dir, ["/bin/sh", "-c", "sleep 30"]), opts)
+      result = Execution.prepare(fault_fs, request(run_dir, ["/bin/bash", "-c", "sleep 30"]), opts)
       assert match?({:error, %{clause: "claim_unpublished", stage: "gates_dir", class: "eio", cleanup: "none"}}, result)
       fault_fs = FaultFs.new()
       FaultFs.inject(fault_fs, :mkdir, 1, {:error, :eacces})
-      result = Execution.prepare(fault_fs, request(run_dir, ["/bin/sh", "-c", "sleep 30"]), opts)
+      result = Execution.prepare(fault_fs, request(run_dir, ["/bin/bash", "-c", "sleep 30"]), opts)
       assert match?({:error, %{clause: "claim_unpublished", stage: "mkdir", class: "eacces", cleanup: "none"}}, result)
     end
 
@@ -1845,7 +1847,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
       run_dir: run_dir,
       opts: opts
     } do
-      {prepared, ack} = acked(run_dir, ["/bin/sh", "-c", "echo out-line; echo err-line >&2; exit 0"], opts)
+      {prepared, ack} = acked(run_dir, ["/bin/bash", "-c", "echo out-line; echo err-line >&2; exit 0"], opts)
       assert {:ok, running} = Execution.release(prepared, ack)
       assert {:exit, outcome} = Execution.await(running, opts)
       assert {:ok, %{"stdout_hash" => out, "stderr_hash" => err}} = Execution.evidence(run_dir, "gr_0001", 1)
@@ -1873,7 +1875,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
 
     test "durations are measured from the recorded release: exit and owner expire carry them, a never-released handle carries none",
          %{run_dir: run_dir, opts: opts} do
-      {prepared, ack} = acked(run_dir, ["/bin/sh", "-c", "sleep 0.3; exit 0"], opts)
+      {prepared, ack} = acked(run_dir, ["/bin/bash", "-c", "sleep 0.3; exit 0"], opts)
       assert {:ok, running} = Execution.release(prepared, ack)
       assert {:exit, %{"duration_ms" => d}} = Execution.await(running, opts)
       assert d >= 250
@@ -1881,7 +1883,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
       # each handle gets its own run directory: one journal, one seq 1 each
       run_dir2 = Path.join(run_dir, "r2")
       File.mkdir_p!(run_dir2)
-      {prepared, ack} = acked(run_dir2, ["/bin/sh", "-c", "sleep 30"], opts, %{gate_run_id: "gr_0002"})
+      {prepared, ack} = acked(run_dir2, ["/bin/bash", "-c", "sleep 30"], opts, %{gate_run_id: "gr_0002"})
       assert {:ok, running} = Execution.release(prepared, ack)
       Process.sleep(300)
       assert {:timeout, %{kind: "timeout", duration_ms: expire_d} = termination} = Execution.expire(running)
@@ -1889,7 +1891,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
 
       run_dir3 = Path.join(run_dir, "r3")
       File.mkdir_p!(run_dir3)
-      {prepared, ack} = acked(run_dir3, ["/bin/sh", "-c", "echo ran > ran; sleep 30"], opts, %{gate_run_id: "gr_0003"})
+      {prepared, ack} = acked(run_dir3, ["/bin/bash", "-c", "echo ran > ran; sleep 30"], opts, %{gate_run_id: "gr_0003"})
       Process.put(:gate_exec_now, @deadline)
       assert {:error, rejection} = Execution.release(prepared, ack)
 
@@ -1900,7 +1902,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
     end
 
     test "the native backstop termination carries a measured duration from the release", %{run_dir: run_dir, opts: opts} do
-      {prepared, ack} = acked(run_dir, ["/bin/sh", "-c", "sleep 30 & sleep 30"], opts, %{deadline_unix: @now + 1})
+      {prepared, ack} = acked(run_dir, ["/bin/bash", "-c", "sleep 30 & sleep 30"], opts, %{deadline_unix: @now + 1})
       identity = Execution.identity(prepared)
       assert {:ok, running} = Execution.release(prepared, ack)
       assert wait_until(fn -> dead?(identity) end, 8_000)
@@ -1929,7 +1931,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
         )
 
         if sync_fault, do: FaultFs.inject(fault_fs, :dir_sync, fn _ -> true end, {:error, :eio})
-        result = Execution.prepare(fault_fs, request(dir, ["/bin/sh", "-c", "sleep 30"]), opts)
+        result = Execution.prepare(fault_fs, request(dir, ["/bin/bash", "-c", "sleep 30"]), opts)
         assert match?({:error, %{clause: "claim_unpublished", stage: "chmod", cleanup: ^label}}, result), label
         trace = FaultFs.trace(fault_fs)
         rm_index = Enum.find_index(trace, &match?({:rm, _}, &1))
@@ -1960,7 +1962,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
         )
 
         if sync_fault, do: FaultFs.inject(fault_fs, :dir_sync, fn _ -> true end, {:error, :eio})
-        result = Execution.prepare(fault_fs, request(dir, ["/bin/sh", "-c", "sleep 30"]), opts)
+        result = Execution.prepare(fault_fs, request(dir, ["/bin/bash", "-c", "sleep 30"]), opts)
         assert match?({:error, %{clause: "claim_unpublished", stage: "dir_sync", cleanup: ^label}}, result), label
         {:error, rejection} = result
         refute Map.has_key?(rejection, :residue), "an absent object is never residue"
@@ -1987,7 +1989,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
         {:hook, fn -> remove_final!(final) end}
       )
 
-      result = Execution.prepare(fault_fs, request(run_dir, ["/bin/sh", "-c", "sleep 30"]), opts)
+      result = Execution.prepare(fault_fs, request(run_dir, ["/bin/bash", "-c", "sleep 30"]), opts)
 
       assert {:error,
               %{

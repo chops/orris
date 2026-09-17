@@ -27,7 +27,7 @@ defmodule AiOrchestrator.Contracts.VerifyRgGateTest do
     on_exit(fn -> File.rm_rf!(root) end)
 
     rg = Path.join(bin, "rg")
-    File.write!(rg, "#!/bin/sh\n#{body}\n")
+    File.write!(rg, "#!/bin/bash\n#{body}\n")
     File.chmod!(rg, 0o755)
 
     System.cmd(@capture_rg, ["test vocabulary", "pattern", "."],

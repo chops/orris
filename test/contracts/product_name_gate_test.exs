@@ -59,7 +59,7 @@ defmodule AiOrchestrator.Contracts.ProductNameGateTest do
     bin = Path.join(root, "fake-bin")
     File.mkdir_p!(bin)
     fake_rg = Path.join(bin, "rg")
-    File.write!(fake_rg, "#!/bin/sh\nexit 2\n")
+    File.write!(fake_rg, "#!/bin/bash\nexit 2\n")
     File.chmod!(fake_rg, 0o755)
 
     path = bin <> ":" <> System.fetch_env!("PATH")

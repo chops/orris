@@ -201,9 +201,11 @@ defmodule AiOrchestrator.Dispatch.PaneClient do
     case stage_input(temp_dir, input) do
       {:ok, input_path} ->
         try do
+          # Ignore wrapper startup hooks without removing the target's environment.
           System.cmd(
-            "/bin/sh",
+            "bash",
             [
+              "-p",
               "-c",
               ~s(executable=$1; shift; exec "$executable" "$@" < "$0"),
               input_path,

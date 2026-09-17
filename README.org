@@ -44,7 +44,7 @@ Schema support or a test fixture does not imply a complete runtime feature.
 The verification gate pins Elixir 1.20.4 and Erlang/OTP 29.0.5. With Nix and
 flakes enabled, run from the repository root:
 
-#+begin_src sh
+#+begin_src bash
 nix develop --command bin/verify
 nix build --no-link .#gate-guardian
 #+end_src
@@ -61,7 +61,7 @@ a claim of measured runtime coverage on every platform.
 :END:
 To inspect journals under an explicit local runs root:
 
-#+begin_src sh
+#+begin_src bash
 ai-orchestrator list --root /path/to/runs --json
 #+end_src
 
@@ -73,6 +73,8 @@ Live pane operations require the separate Orrisd coordination runtime and an
 [[file:docs/contracts/ipc-v2.org][the protocol v2 dispatch contract]], built on the
 [[file:docs/contracts/ipc-v1.org][base framing and command rules]]. This source snapshot does not
 bundle that runtime or provide a verified external installation of the pair.
+Prompt delivery requires Bash available as ~bash~ on ~PATH~; the pinned Nix
+development shell provides it.
 Real gate execution also requires configuring the built ~gate_guardian~ path.
 See [[file:lib/ai_orchestrator/config/runtime.ex][runtime configuration]] and the
 [[file:docs/contracts/gate-guardian-protocol.org][guardian protocol]].

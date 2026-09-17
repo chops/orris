@@ -35,7 +35,7 @@ impl Session {
                 "--timeout-ms",
                 "2000",
                 "--",
-                "sh",
+                "bash",
                 "-c",
                 command,
             ])
