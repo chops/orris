@@ -3,6 +3,7 @@ defmodule AiOrchestrator.Dispatch.PaneClient do
 
   alias AiOrchestrator.Config.Runtime
   alias AiOrchestrator.Contract.SensitiveBytes
+  alias AiOrchestrator.Dispatch.Refusal
 
   @doc """
   Sends a prompt to a pane over `ap`.
@@ -102,17 +103,17 @@ defmodule AiOrchestrator.Dispatch.PaneClient do
   # daemon has no durable receipt; an answer about another message, or another pane, says
   # nothing about this one; a reply that is not ok is not an answer either. None may be
   # read as an answer, and the absence of an answer is never `absent`.
-  defp reconcile_reply({:ok, reply}, pane_ref, message_id), do: v2_answer(reply, pane_ref, message_id)
+  defp reconcile_reply({:ok, reply}, pane_ref, message_id), do: v2_answer(reply, :reconcile, pane_ref, message_id)
   defp reconcile_reply({:error, _reason} = error, _pane_ref, _message_id), do: error
 
   # A send with no message id in play is the pre-receipt, decode-only shape and passes
   # through as it always did. A send that named a message is a v2 operation and is held to
   # every v2 check: ok, version, and both echoes.
   defp answered(result, _pane_ref, nil), do: result
-  defp answered({:ok, reply}, pane_ref, message_id), do: v2_answer(reply, pane_ref, message_id)
+  defp answered({:ok, reply}, pane_ref, message_id), do: v2_answer(reply, :send, pane_ref, message_id)
   defp answered({:error, _reason} = error, _pane_ref, _message_id), do: error
 
-  defp v2_answer(%{"ok" => true, "protocol_version" => 2} = reply, pane_ref, message_id) do
+  defp v2_answer(%{"ok" => true, "protocol_version" => 2} = reply, _operation, pane_ref, message_id) do
     case reply do
       %{"msg_id" => ^message_id, "pane_id" => ^pane_ref} -> {:ok, reply}
       %{"msg_id" => ^message_id, "pane_id" => _other} -> {:error, %{"reason" => "reply_pane_mismatch"}}
@@ -122,8 +123,16 @@ defmodule AiOrchestrator.Dispatch.PaneClient do
     end
   end
 
-  defp v2_answer(%{"ok" => true}, _pane_ref, _message_id), do: {:error, %{"reason" => "protocol_version_unsupported"}}
-  defp v2_answer(_not_ok, _pane_ref, _message_id), do: {:error, %{"reason" => "reply_not_ok"}}
+  # NS-42 rules 6 / 11: a v2 reply that is not ok is classified by the closed vocabulary the
+  # contract names -- a typed refusal, a request error, or the undifferentiated remainder --
+  # and never read as an answer about delivery.
+  defp v2_answer(%{"ok" => false, "protocol_version" => 2} = reply, operation, pane_ref, message_id),
+    do: Refusal.classify(reply, operation, pane_ref, message_id)
+
+  defp v2_answer(%{"ok" => true}, _operation, _pane_ref, _message_id),
+    do: {:error, %{"reason" => "protocol_version_unsupported"}}
+
+  defp v2_answer(_not_ok, _operation, _pane_ref, _message_id), do: {:error, %{"reason" => "reply_not_ok"}}
 
   # D2: the version is stated on every v2 call; a pre-receipt send with no message id keeps
   # the argument vector it always had.

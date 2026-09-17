@@ -23,8 +23,8 @@ defmodule AiOrchestrator.Dispatch.IpcV2SendReplyTest do
     "send.duplicate.queued.json" => {:ok, "queued", true},
     "send.duplicate.pending.json" => {:ok, "queued", true},
     "send.duplicate.ambiguous.json" => {:error, "dispatch_reconcile_ambiguous"},
-    "send.error.conflict.json" => {:error, "reply_not_ok"},
-    "send.error.missing_msg_id.json" => {:error, "reply_not_ok"}
+    "send.error.conflict.json" => {:error, "dispatch_refused_conflict"},
+    "send.error.missing_msg_id.json" => {:error, "dispatch_request_rejected"}
   }
 
   test "every send fixture is routed as the contract says" do

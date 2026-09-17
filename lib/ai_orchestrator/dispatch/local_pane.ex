@@ -5,6 +5,7 @@ defmodule AiOrchestrator.Dispatch.LocalPane do
 
   alias AiOrchestrator.Contract.ArtifactBaseline
   alias AiOrchestrator.Dispatch.PaneClient
+  alias AiOrchestrator.Dispatch.Refusal
 
   @default_observe_timeout_ms 900_000
   @default_poll_interval_ms 250
@@ -158,7 +159,7 @@ defmodule AiOrchestrator.Dispatch.LocalPane do
     with {:ok, payload_hash} <- payload_hash(command),
          reconcile_opts = opts |> Keyword.put(:payload_hash, payload_hash) |> Keyword.put(:protocol_version, 2),
          {:ok, response} <- pane_client.reconcile(pane_ref, send_message_id, reconcile_opts),
-         :ok <- versioned(response),
+         :ok <- versioned(response, :reconcile, send_message_id, pane_ref),
          :ok <- bound(response, send_message_id, pane_ref),
          {:ok, outcome} <- validate_outcome(response),
          {:ok, attempt} <- delivery_attempt(response, outcome) do
@@ -199,11 +200,19 @@ defmodule AiOrchestrator.Dispatch.LocalPane do
 
   # D2 / M5 / MUST-8, applied to the reducer-facing double exactly as PaneClient applies them
   # to the real daemon: a v2 answer is ok, names version 2, and echoes BOTH the message and
-  # the pane. The request decides the protocol; the reply never does.
-  defp versioned(%{"ok" => true, "protocol_version" => 2}), do: :ok
-  defp versioned(%{"ok" => true}), do: {:error, %{"reason" => "protocol_version_unsupported"}}
-  defp versioned(%{}), do: {:error, %{"reason" => "reply_not_ok"}}
-  defp versioned(_not_a_map), do: {:error, %{"reason" => "send_reply_invalid"}}
+  # the pane. The request decides the protocol; the reply never does. A v2 reply that is not
+  # ok is classified by the contract's closed refusal vocabulary (NS-42 rules 6 / 11), here as
+  # in PaneClient, so a double is held to the same distinctions as the daemon.
+  defp versioned(%{"ok" => true, "protocol_version" => 2}, _operation, _message_id, _pane_ref), do: :ok
+
+  defp versioned(%{"ok" => false, "protocol_version" => 2} = reply, operation, message_id, pane_ref),
+    do: Refusal.classify(reply, operation, pane_ref, message_id)
+
+  defp versioned(%{"ok" => true}, _operation, _message_id, _pane_ref),
+    do: {:error, %{"reason" => "protocol_version_unsupported"}}
+
+  defp versioned(%{}, _operation, _message_id, _pane_ref), do: {:error, %{"reason" => "reply_not_ok"}}
+  defp versioned(_not_a_map, _operation, _message_id, _pane_ref), do: {:error, %{"reason" => "send_reply_invalid"}}
 
   defp bound(%{"msg_id" => message_id, "pane_id" => pane_ref}, message_id, pane_ref), do: :ok
 
@@ -219,7 +228,7 @@ defmodule AiOrchestrator.Dispatch.LocalPane do
   # and carries a status this adapter maps. The pre-receipt, no-message-id compatibility
   # lives in PaneClient.send/3's decode-only path, not here.
   defp send_answered(reply, message_id, pane_ref) do
-    with :ok <- versioned(reply), do: bound(reply, message_id, pane_ref)
+    with :ok <- versioned(reply, :send, message_id, pane_ref), do: bound(reply, message_id, pane_ref)
   end
 
   defp validate_outcome(%{"outcome" => outcome}) when outcome in @reconcile_outcomes, do: {:ok, outcome}
