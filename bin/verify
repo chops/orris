@@ -126,6 +126,7 @@ if [[ -n "$legacy_hits" ]]; then
 fi
 
 bin/check-product-name
+bash test/check_product_name_test.sh
 
 if [[ -d lib ]]; then
   vocab_hits="$(bin/capture-rg 'prototype domain vocabulary' -n 'task_id|round_' lib)"

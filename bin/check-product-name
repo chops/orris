@@ -30,9 +30,10 @@ if [[ $status -gt 1 ]]; then
   exit 2
 fi
 
-hits="$(printf '%s' "$raw_hits" | sed 's|^\./||')"
-
-if [[ -n "$hits" ]]; then
-  printf 'forbidden prototype product-version marker:\n%s\n' "$hits" >&2
+if [[ -n "$raw_hits" ]]; then
+  printf 'forbidden prototype product-version marker:\n' >&2
+  while IFS= read -r hit; do
+    printf '%s\n' "${hit#./}" >&2
+  done <<<"$raw_hits"
   exit 1
 fi

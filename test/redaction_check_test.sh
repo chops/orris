@@ -107,7 +107,9 @@ done
 
 generic_token="s""k-abcdefghijklmnopqrstuvwxyz1234567890"
 printf '%s\n' "$generic_token" >"$external/sample.txt"
-run_capture 1 env PATH=/bin:/usr/bin "$scanner" --paths "$external"
+mkdir "$tmp/grep-fallback"
+ln -s "$(command -v sha256sum)" "$tmp/grep-fallback/sha256sum"
+run_capture 1 env PATH="$tmp/grep-fallback:/bin:/usr/bin" "$scanner" --paths "$external"
 [[ "$output" == *"<external-1>/sample.txt:1:provider_token"* ]] || fail "grep fallback missed a provider token"
 
 anthropic_token="s""k-ant-abcdefghijklmnopqrstuvwxyz123456"
@@ -121,8 +123,16 @@ run_capture 1 "$scanner" --locators --paths "$external"
 locator=$(grep '^provider_token:<external-1>/sample.txt:' <<<"$output")
 [[ -n "$locator" ]] || fail "locator mode did not emit a provider-token locator"
 [[ "$locator" != *"$generic_token"* ]] || fail "locator mode disclosed matched content"
+expected_digest=c363c84107e7366590728f1a3570e8311d6fe1df1912d9f07ad3afb2eaff8979
+[[ "$locator" == "provider_token:<external-1>/sample.txt:$expected_digest" ]] || fail "locator digest changed"
 printf '%s # reviewed synthetic test value\n' "$locator" >allow
 run_capture 0 "$scanner" --allowlist allow --paths "$external"
+
+printf '%s # reviewed without terminal newline' "$locator" >allow
+run_capture 0 "$scanner" --allowlist allow --paths "$external"
+printf '%sx # not the exact locator\n' "$locator" >allow
+run_capture 1 "$scanner" --allowlist allow --paths "$external"
+printf '%s # reviewed synthetic test value\n' "$locator" >allow
 
 printf '\n%s\n' "$generic_token" >"$external/sample.txt"
 run_capture 0 "$scanner" --allowlist allow --paths "$external"
@@ -135,5 +145,19 @@ run_capture 1 "$scanner" --allowlist allow --paths "$external"
 printf '%s\n' "$locator" >allow
 run_capture 2 "$scanner" --allowlist allow --paths "$external"
 [[ "$output" == *"needs an exact locator"* ]] || fail "malformed allowlist was not explained"
+
+mkdir "$tmp/no-hash"
+ln -s "$(command -v grep)" "$tmp/no-hash/grep"
+ln -s "$(command -v basename)" "$tmp/no-hash/basename"
+run_capture 2 env PATH="$tmp/no-hash" "$BASH" "$scanner" --paths "$external/sample.txt"
+[[ "$output" == *'sha256sum is required'* ]] || fail "missing native hash tool did not fail closed"
+[[ "$output" != *'redaction-check: clean'* ]] || fail "missing native hash tool reported clean"
+
+# Renamed multicall coreutils binaries would select sha256sum instead of false.
+printf '#!%s\nexit 1\n' "$BASH" >"$tmp/no-hash/sha256sum"
+chmod +x "$tmp/no-hash/sha256sum"
+run_capture 2 env PATH="$tmp/no-hash" "$BASH" "$scanner" --paths "$external/sample.txt"
+[[ "$output" == *'sha256sum failed'* ]] || fail "native hash failure did not fail closed"
+[[ "$output" != *'redaction-check: clean'* ]] || fail "native hash failure reported clean"
 
 printf 'redaction-check tests: ok\n'
