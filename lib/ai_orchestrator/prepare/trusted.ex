@@ -18,6 +18,7 @@ defmodule AiOrchestrator.Prepare.Trusted do
   alias AiOrchestrator.Journal.Reader
   alias AiOrchestrator.PaneRegistry.FileRegistry
   alias AiOrchestrator.Prepare.Prepared
+  alias AiOrchestrator.Spec.PathBoundary
   alias AiOrchestrator.Spec.Plan
   alias AiOrchestrator.Spec.RunSpec
 
@@ -218,8 +219,19 @@ defmodule AiOrchestrator.Prepare.Trusted do
          {:ok, validated_spec} <- RunSpec.validate(spec),
          {:ok, plan_bytes} <- read_input_bytes(run_dir, "plan.json"),
          {:ok, plan} <- decode_input(plan_bytes, "plan.json"),
-         {:ok, _validated_plan} <- Plan.validate(plan, validated_spec) do
+         {:ok, _validated_plan} <- Plan.validate(plan, validated_spec),
+         :ok <- contained_on_disk(validated_spec, plan) do
       {:ok, %{spec: spec, plan: plan, spec_hash: sha256(spec_bytes), plan_hash: sha256(plan_bytes)}}
+    end
+  end
+
+  # NS-20.D.001: the physical layer of the allowed-path containment (a symlink under the repository
+  # root that leaves it or the allowed roots) runs here, on the host with the filesystem, after the
+  # pure plan check and before any identity, claim or dispatch; the rejection is the plan's vocabulary
+  defp contained_on_disk(%{"repo_root" => repo_root, "allowed_roots" => allowed_roots}, plan) do
+    case PathBoundary.check(repo_root, allowed_roots, Plan.writer_allowed_paths(plan)) do
+      :ok -> :ok
+      {:error, rejection} -> {:error, Plan.path_rejection(rejection)}
     end
   end
 

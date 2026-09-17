@@ -1,12 +1,36 @@
 defmodule AiOrchestrator.Spec.Plan do
   @moduledoc false
 
+  alias AiOrchestrator.Spec.PathBoundary
   alias AiOrchestrator.Spec.RunSpec
 
   @type rejection :: %{required(:clause) => String.t(), optional(atom()) => term()}
 
   @effort_hints ["low", "medium", "high", "xhigh"]
   @writer_kinds MapSet.new(["implement", "integration"])
+
+  @doc """
+  The allowed paths of the writer kinds (implement, integration): the paths the containment rule
+  judges (NS-20.D.001). Non-list and non-string entries are left to the shape check.
+  """
+  @spec writer_allowed_paths(map()) :: [String.t()]
+  def writer_allowed_paths(%{"work_items" => work_items}) when is_list(work_items) do
+    for %{"kind" => kind, "allowed_paths" => paths} <- work_items,
+        MapSet.member?(@writer_kinds, kind),
+        is_list(paths),
+        path <- paths,
+        is_binary(path),
+        do: path
+  end
+
+  def writer_allowed_paths(_plan), do: []
+
+  @doc "A `PathBoundary` rejection in the plan's rejection vocabulary; the field is the offending path."
+  @spec path_rejection(PathBoundary.rejection()) :: rejection()
+  def path_rejection(%{clause: "path_outside_roots", path: path}),
+    do: %{clause: "work_item_paths_outside_roots", field: path}
+
+  def path_rejection(%{clause: clause, path: path}), do: %{clause: "work_item_" <> clause, field: path}
 
   @doc """
   Hash of the plan's initial context as recorded at plan time: sha256 over the
@@ -178,10 +202,13 @@ defmodule AiOrchestrator.Spec.Plan do
 
   defp validate_agent_roles(_plan, _spec), do: {:error, %{clause: "invalid_run_plan_shape"}}
 
-  defp validate_allowed_paths(%{"work_items" => work_items}, %{"allowed_roots" => allowed_roots}) do
-    case Enum.find_value(work_items, &invalid_mutating_path(&1, allowed_roots)) do
-      nil -> :ok
-      path -> {:error, %{clause: "work_item_paths_outside_roots", field: path}}
+  # the pure layer of the containment rule: absolute and `..` paths are refused by form, the rest by
+  # expanded containment under the spec's allowed roots (the physical layer runs at trusted admission)
+  defp validate_allowed_paths(%{"work_items" => work_items} = plan, %{"allowed_roots" => allowed_roots})
+       when is_list(work_items) do
+    case PathBoundary.lexical(allowed_roots, writer_allowed_paths(plan)) do
+      :ok -> :ok
+      {:error, rejection} -> {:error, path_rejection(rejection)}
     end
   end
 
@@ -232,13 +259,6 @@ defmodule AiOrchestrator.Spec.Plan do
   end
 
   defp missing_dep(_work_item, _ids), do: nil
-
-  defp invalid_mutating_path(%{"kind" => kind, "allowed_paths" => paths}, allowed_roots)
-       when kind in ["implement", "integration"] do
-    Enum.find(paths, &(not path_under_any_root?(&1, allowed_roots)))
-  end
-
-  defp invalid_mutating_path(_work_item, _allowed_roots), do: nil
 
   @type graph :: %{String.t() => [String.t()]}
 
@@ -308,15 +328,4 @@ defmodule AiOrchestrator.Spec.Plan do
   end
 
   defp normalize_path(path), do: path |> String.trim() |> String.trim_trailing("/")
-
-  defp path_under_any_root?(path, roots) do
-    Enum.any?(roots, &path_under_root?(path, &1))
-  end
-
-  defp path_under_root?(path, root) do
-    path = normalize_path(path)
-    root = normalize_path(root)
-
-    path == root or String.starts_with?(path, root <> "/")
-  end
 end
