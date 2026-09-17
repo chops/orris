@@ -32,6 +32,7 @@ defmodule AiOrchestrator.Spec.Plan do
          :ok <- validate_duplicate_ids(plan),
          :ok <- validate_missing_deps(plan),
          :ok <- validate_expected_artifacts(plan),
+         :ok <- validate_acceptance_gates(plan, validated_spec),
          :ok <- validate_agent_roles(plan, validated_spec),
          :ok <- validate_allowed_paths(plan, validated_spec),
          :ok <- validate_dag(plan),
@@ -144,6 +145,27 @@ defmodule AiOrchestrator.Spec.Plan do
        when is_binary(id) and is_list(artifacts), do: Enum.all?(artifacts, &is_binary/1)
 
   defp invalid_expected_artifacts?(_work_item), do: false
+
+  defp validate_acceptance_gates(%{"work_items" => work_items}, %{"gates" => gates}) when is_map(gates) do
+    case Enum.find_value(work_items, &invalid_acceptance(&1, gates)) do
+      nil -> :ok
+      rejection -> {:error, rejection}
+    end
+  end
+
+  defp validate_acceptance_gates(_plan, _spec), do: {:error, %{clause: "invalid_run_plan_shape"}}
+
+  # The reducer runs exactly one gate, the first acceptance entry looked up in the spec's gates; any
+  # further entry would be accepted but inert. Leave malformed field types to the existing schema check.
+  defp invalid_acceptance(%{"id" => id, "acceptance" => [gate_id]}, gates) when is_binary(id) and is_binary(gate_id) do
+    if Map.has_key?(gates, gate_id), do: nil, else: %{clause: "unknown_acceptance_gate", field: gate_id}
+  end
+
+  defp invalid_acceptance(%{"id" => id, "acceptance" => entries}, _gates) when is_binary(id) and is_list(entries) do
+    if Enum.all?(entries, &is_binary/1), do: %{clause: "acceptance_gate_cardinality", field: id}
+  end
+
+  defp invalid_acceptance(_work_item, _gates), do: nil
 
   defp validate_agent_roles(%{"work_items" => work_items}, %{"agents" => agents}) do
     roles = MapSet.new(agents, & &1["role"])

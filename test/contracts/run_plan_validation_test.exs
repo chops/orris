@@ -21,6 +21,9 @@ defmodule AiOrchestrator.Contracts.RunPlanValidationTest do
         "invalid_effort_hint_value",
         "invalid_empty_expected_artifacts",
         "invalid_multiple_expected_artifacts",
+        "invalid_empty_acceptance",
+        "invalid_multiple_acceptance",
+        "invalid_unknown_acceptance_gate",
         "invalid_stretch_overlap",
         "invalid_paths_outside_roots",
         "invalid_nonpositive_timeout"
@@ -89,6 +92,86 @@ defmodule AiOrchestrator.Contracts.RunPlanValidationTest do
 
       assert {:error, rejection} = Plan.validate(plan, spec)
       F.assert_rejection_matches(rejection, expected)
+    end
+  end
+
+  test "malformed acceptance fields retain the existing shape rejection" do
+    plan = F.json("plans", "valid_linear", "plan.json")
+    spec = F.json("plans", "valid_linear", "spec.json")
+    [item | rest] = plan["work_items"]
+
+    malformed =
+      [Map.delete(item, "acceptance")] ++
+        Enum.map([nil, "tests", %{}, [1], [nil], ["tests", 1], [%{"tests" => true}]], fn acceptance ->
+          Map.put(item, "acceptance", acceptance)
+        end)
+
+    for invalid_item <- malformed do
+      invalid_plan = Map.put(plan, "work_items", [invalid_item | rest])
+      assert {:error, %{clause: "invalid_run_plan_shape"}} = Plan.validate(invalid_plan, spec)
+    end
+  end
+
+  test "valid singleton acceptance declarations are preserved for every work item" do
+    plan = F.json("plans", "valid_linear", "plan.json")
+    spec = F.json("plans", "valid_linear", "spec.json")
+    assert {:ok, validated} = Plan.validate(plan, spec)
+
+    assert Enum.map(validated["work_items"], & &1["acceptance"]) == Enum.map(plan["work_items"], & &1["acceptance"])
+  end
+
+  test "a later review work item's acceptance is checked and named in the rejection" do
+    plan = F.json("plans", "valid_linear", "plan.json")
+    spec = F.json("plans", "valid_linear", "spec.json")
+    [writer, reviewer] = plan["work_items"]
+
+    empty = Map.put(plan, "work_items", [writer, Map.put(reviewer, "acceptance", [])])
+    assert {:error, %{clause: "acceptance_gate_cardinality", field: "item_b"}} = Plan.validate(empty, spec)
+
+    unknown = Map.put(plan, "work_items", [writer, Map.put(reviewer, "acceptance", ["not_a_gate"])])
+    assert {:error, %{clause: "unknown_acceptance_gate", field: "not_a_gate"}} = Plan.validate(unknown, spec)
+  end
+
+  test "an acceptance entry naming any declared gate is accepted, not only the first declared" do
+    plan = F.json("plans", "valid_linear", "plan.json")
+    spec = F.json("plans", "valid_linear", "spec.json")
+    spec = Map.put(spec, "gates", %{"tests" => ["mix", "test"], "format" => ["mix", "format", "--check-formatted"]})
+    [writer, reviewer] = plan["work_items"]
+    plan = Map.put(plan, "work_items", [writer, Map.put(reviewer, "acceptance", ["format"])])
+
+    assert {:ok, _validated} = Plan.validate(plan, spec)
+  end
+
+  test "earlier timeout, duplicate-id, missing-dependency and artifact rejections keep precedence over acceptance" do
+    for name <- [
+          "invalid_nonpositive_timeout",
+          "invalid_duplicate_ids",
+          "invalid_missing_dep",
+          "invalid_empty_expected_artifacts",
+          "invalid_multiple_expected_artifacts"
+        ] do
+      plan = F.json("plans", name, "plan.json")
+      spec = F.json("plans", name, "spec.json")
+      expected = F.json("plans", name, "expected_rejection.json")
+      [item | rest] = plan["work_items"]
+
+      for acceptance <- [[], ["tests", "tests2"], ["not_a_gate"]] do
+        plan = Map.put(plan, "work_items", [Map.put(item, "acceptance", acceptance) | rest])
+
+        assert {:error, rejection} = Plan.validate(plan, spec)
+        F.assert_rejection_matches(rejection, expected)
+      end
+    end
+  end
+
+  test "acceptance rejections keep precedence over the later agent-role and path checks" do
+    for name <- ["invalid_undeclared_agent", "invalid_paths_outside_roots"] do
+      plan = F.json("plans", name, "plan.json")
+      spec = F.json("plans", name, "spec.json")
+      [%{"id" => id} = item | rest] = plan["work_items"]
+      plan = Map.put(plan, "work_items", [Map.put(item, "acceptance", []) | rest])
+
+      assert {:error, %{clause: "acceptance_gate_cardinality", field: ^id}} = Plan.validate(plan, spec)
     end
   end
 end

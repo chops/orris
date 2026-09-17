@@ -18,20 +18,24 @@ defmodule AiOrchestrator.Spec.TypedBudgetsRedTest do
   @fields ["max_attempts_default", "restart_attempts", "max_wall_clock_s", "gate_attempts"]
 
   # Historical corpus outcomes were measured on RunSpec at 306c629 (path, schema_version, outcome).
-  # The two expected-artifact fixtures copy valid_linear's spec bytes and inherit its expected outcome;
-  # those entries are not new runtime measurements. One fixture is a JSON array; one carries version 99.
+  # The two expected-artifact fixtures and the three acceptance-gate fixtures copy valid_linear's spec bytes and
+  # inherit its expected outcome; those entries are not new runtime measurements. One fixture is a JSON array; one
+  # carries version 99.
   @measured [
     {"test/fixtures/contracts/journals/reject_data_required_fields/spec.json", :list, "invalid_run_spec_shape"},
     {"test/fixtures/contracts/plans/invalid_cycle/spec.json", 1, "ok"},
     {"test/fixtures/contracts/plans/invalid_duplicate_ids/spec.json", 1, "ok"},
     {"test/fixtures/contracts/plans/invalid_effort_hint_value/spec.json", 1, "ok"},
+    {"test/fixtures/contracts/plans/invalid_empty_acceptance/spec.json", 1, "ok"},
     {"test/fixtures/contracts/plans/invalid_empty_expected_artifacts/spec.json", 1, "ok"},
     {"test/fixtures/contracts/plans/invalid_missing_dep/spec.json", 1, "ok"},
+    {"test/fixtures/contracts/plans/invalid_multiple_acceptance/spec.json", 1, "ok"},
     {"test/fixtures/contracts/plans/invalid_multiple_expected_artifacts/spec.json", 1, "ok"},
     {"test/fixtures/contracts/plans/invalid_nonpositive_timeout/spec.json", 1, "ok"},
     {"test/fixtures/contracts/plans/invalid_paths_outside_roots/spec.json", 1, "ok"},
     {"test/fixtures/contracts/plans/invalid_stretch_overlap/spec.json", 1, "ok"},
     {"test/fixtures/contracts/plans/invalid_undeclared_agent/spec.json", 1, "ok"},
+    {"test/fixtures/contracts/plans/invalid_unknown_acceptance_gate/spec.json", 1, "ok"},
     {"test/fixtures/contracts/plans/valid_diamond/spec.json", 1, "ok"},
     {"test/fixtures/contracts/plans/valid_linear/spec.json", 1, "ok"},
     {"test/fixtures/contracts/run_specs/invalid_agent_grammar/spec.json", 1, "agent_name_grammar"},
