@@ -162,6 +162,7 @@ defmodule AiOrchestrator.Dispatch.LocalPane do
          :ok <- versioned(response, :reconcile, send_message_id, pane_ref),
          :ok <- bound(response, send_message_id, pane_ref),
          {:ok, outcome} <- validate_outcome(response),
+         :ok <- same_payload_as(response, payload_hash),
          {:ok, attempt} <- delivery_attempt(response, outcome) do
       {:ok,
        maybe_put(
@@ -230,6 +231,18 @@ defmodule AiOrchestrator.Dispatch.LocalPane do
   defp send_answered(reply, message_id, pane_ref) do
     with :ok <- versioned(reply, :send, message_id, pane_ref), do: bound(reply, message_id, pane_ref)
   end
+
+  # NS-42 rule 5: reconciliation binds the payload, so a receipt view that names a different
+  # payload than the one this command journaled is not an answer about this send, whatever
+  # outcome it carries -- the same rule duplicate/5 holds a duplicate view to. A conflict
+  # echoes the identities the caller presented, and a no-record absent carries no hash at
+  # all, so both pass; only a view that names another payload is refused.
+  defp same_payload_as(%{"payload_hash" => hash}, hash), do: :ok
+
+  defp same_payload_as(%{"payload_hash" => _other}, _hash),
+    do: {:error, %{"reason" => "reconcile_payload_mismatch", "detector" => "dispatch_reconcile"}}
+
+  defp same_payload_as(_view, _hash), do: :ok
 
   defp validate_outcome(%{"outcome" => outcome}) when outcome in @reconcile_outcomes, do: {:ok, outcome}
 
