@@ -57,7 +57,7 @@ defmodule AiOrchestrator.Contract.PromptObject do
   on a key, and a key outside the set grows no atom: the atom table is a fixed
   BEAM resource that is never reclaimed, so a constructor reachable from a
   decoded journal that converts before it checks turns a malformed file into a
-  node that stops scheduling. This is an availability invariant, not input
+  BEAM runtime that stops scheduling. This is an availability invariant, not input
   hygiene, and it is the reason the unknown-key rejection is a refusal rather
   than a conversion that happens to fail.
 

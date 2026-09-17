@@ -283,8 +283,10 @@ defmodule AiOrchestrator.Run.GateAsyncAwaitRedTest do
     {running, identity, started}
   end
 
-  defp gated(run_dir), do: ["/bin/sh", "-c", "while [ ! -f '#{Path.join(run_dir, "go")}' ]; do sleep 0.02; done; exit 0"]
-  defp permit!(run_dir), do: File.write!(Path.join(run_dir, "go"), "")
+  defp gated(run_dir),
+    do: ["/bin/bash", "-c", "while [ ! -f '#{Path.join(run_dir, "release-permit")}' ]; do sleep 0.02; done; exit 0"]
+
+  defp permit!(run_dir), do: File.write!(Path.join(run_dir, "release-permit"), "")
   defp line(port, text), do: {port, {:data, {:eol, text}}}
   # RED: the primitive does not exist yet; runtime module values keep --warnings-as-errors honest
   defp execution, do: Module.concat(["AiOrchestrator", "Gate", "Execution"])
@@ -389,7 +391,11 @@ defmodule AiOrchestrator.Run.GateAsyncAwaitRedTest do
     # so an after-permit failure provably happens while native work is live; the guardian's EOF-driven settlement
     # after the owner's death is then a legitimate natural reclaim
     defp live_after_permit(run_dir),
-      do: ["/bin/sh", "-c", "while [ ! -f '#{Path.join(run_dir, "go")}' ]; do sleep 0.02; done; exec /bin/sleep 30"]
+      do: [
+        "/bin/bash",
+        "-c",
+        "while [ ! -f '#{Path.join(run_dir, "release-permit")}' ]; do sleep 0.02; done; exec /bin/sleep 30"
+      ]
 
     defp failing_owner!(dir, o, boundary) do
       test = self()

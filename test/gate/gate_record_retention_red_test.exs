@@ -180,7 +180,7 @@ defmodule AiOrchestrator.Gate.RecordRetentionRedTest do
 
   # the REAL guardian's own EXIT and exit_status, dequeued into the caller (real records, not synthetic)
   defp exited!(run_dir, opts) do
-    {running, identity} = running!(run_dir, ["/bin/sh", "-c", "exit 0"], @far, opts)
+    {running, identity} = running!(run_dir, ["/bin/bash", "-c", "exit 0"], @far, opts)
     port = running.port
     assert wait_until(fn -> dead?(identity) end, 10_000)
     {running, port, dequeue!(port, "EXIT "), dequeue_status!(port)}
@@ -674,8 +674,10 @@ defmodule AiOrchestrator.Gate.RecordRetentionRedTest do
   end
 
   # permit-gated command: exits only once the test writes the permit (RT-M8 forced order)
-  defp gated(run_dir), do: ["/bin/sh", "-c", "while [ ! -f '#{Path.join(run_dir, "go")}' ]; do sleep 0.02; done; exit 0"]
-  defp permit!(run_dir), do: File.write!(Path.join(run_dir, "go"), "")
+  defp gated(run_dir),
+    do: ["/bin/bash", "-c", "while [ ! -f '#{Path.join(run_dir, "release-permit")}' ]; do sleep 0.02; done; exit 0"]
+
+  defp permit!(run_dir), do: File.write!(Path.join(run_dir, "release-permit"), "")
 
   defp owned_ports(pid) do
     {:links, links} = Process.info(pid, :links)

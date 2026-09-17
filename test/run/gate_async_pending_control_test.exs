@@ -333,10 +333,16 @@ defmodule AiOrchestrator.Run.GateAsyncPendingControlTest do
 
     test "a completed run is reclaimed naturally: no force, the group settled by the guardian", ctx do
       {pid, cap} = worker(seams(ctx, WitnessExecutor, witness: self()))
-      argv = ["/bin/sh", "-c", "while [ ! -f '#{Path.join(ctx.run_dir, "go")}' ]; do sleep 0.02; done; exit 0"]
+
+      argv = [
+        "/bin/bash",
+        "-c",
+        "while [ ! -f '#{Path.join(ctx.run_dir, "release-permit")}' ]; do sleep 0.02; done; exit 0"
+      ]
+
       {identity, _port} = released!(pid, cap, ctx.run_dir, argv)
       ref = pending!(pid, cap)
-      File.write!(Path.join(ctx.run_dir, "go"), "")
+      File.write!(Path.join(ctx.run_dir, "release-permit"), "")
       assert_receive {:effect_result, ^cap, 1, ^ref, ^pid, %Observation.GateFinished{}}, 20_000
       assert {:gone, :natural} = reap(identity)
     end

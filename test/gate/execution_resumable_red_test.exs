@@ -119,11 +119,11 @@ defmodule AiOrchestrator.Gate.ExecutionResumableRedTest do
     {running, identity}
   end
 
-  # forced order (GP-M2): the command completes only when the test creates `go`
+  # forced order (GP-M2): the command completes only when the test creates `release-permit`
   defp gated(run_dir, then_sh),
-    do: ["/bin/sh", "-c", "while [ ! -f '#{Path.join(run_dir, "go")}' ]; do sleep 0.02; done; #{then_sh}"]
+    do: ["/bin/bash", "-c", "while [ ! -f '#{Path.join(run_dir, "release-permit")}' ]; do sleep 0.02; done; #{then_sh}"]
 
-  defp release_gate!(run_dir), do: File.write!(Path.join(run_dir, "go"), "")
+  defp release_gate!(run_dir), do: File.write!(Path.join(run_dir, "release-permit"), "")
 
   defp port_of(%{port: port}), do: port
 
@@ -321,7 +321,7 @@ defmodule AiOrchestrator.Gate.ExecutionResumableRedTest do
 
     test "a terminal record received BEFORE the Port closed is valid evidence: begin_await answers it although Port.info is nil (G-N3)",
          %{run_dir: run_dir, opts: opts} do
-      {running, _} = running!(run_dir, ["/bin/sh", "-c", "exit 0"], @far, opts)
+      {running, _} = running!(run_dir, ["/bin/bash", "-c", "exit 0"], @far, opts)
       port = port_of(running)
       assert queued_record?(port, "EXIT ", 10_000)
       assert wait_until(fn -> Port.info(port) == nil end, 5_000), "the guardian exited; the Port closed"
@@ -333,7 +333,7 @@ defmodule AiOrchestrator.Gate.ExecutionResumableRedTest do
   describe "R-4 resume" do
     test "EXIT via one dequeued record, released only after {:pending}: exit_status 3, kind exited, and field parity with an unchanged await/2 baseline (duration normalised)",
          %{run_dir: run_dir, opts: opts} do
-      {b_running, b_identity} = running!(sub!(run_dir, "baseline"), ["/bin/sh", "-c", "exit 3"], @far, opts)
+      {b_running, b_identity} = running!(sub!(run_dir, "baseline"), ["/bin/bash", "-c", "exit 3"], @far, opts)
       assert {:exit, baseline} = Execution.await(b_running, opts)
       assert wait_until(fn -> dead?(b_identity) end, 10_000)
 

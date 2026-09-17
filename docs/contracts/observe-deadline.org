@@ -67,8 +67,9 @@ gap: a blocked non-cooperative observe adapter. No runtime-wide deadline coverag
   five-key closed failure plus cleanup, preserving the original kind/class (never re-hashing the precomputed
   diagnostic as if it were the original cause). No public diagnostic field, kind or EventData change.
 - Expiration mapping: =:expired= is mapped by =Effects= to =Observation.TimedOut{assignment_id, deadline_unix:
-  <the owner's retained intent deadline>, now: now(opts)}=, making this unit the FIRST producer of that admissible
-  type (disclosed: it is not a previously emitted baseline). The cooperative shape (=ObserveFailed= with
+  retained_intent_deadline, now: now(opts)}=, where =retained_intent_deadline= names the owner's retained intent deadline.
+  This unit is the FIRST producer of that admissible type (disclosed: it is not a previously emitted baseline).
+  The cooperative shape (=ObserveFailed= with
   =observation_timeout= + =last_observation=) is UNCHANGED and remains a separate baseline; the expiry shape is
   distinct (unwrap = =observation_timeout= + =deadline_unix=) and is disclosed as such; no =last_observation= and
   no event is fabricated. The full-path baseline (what the Executor returns and what the durable prefix holds

@@ -2183,7 +2183,7 @@ defmodule AiOrchestrator.Run.ServerFoundationRedTest do
         |> Map.put("repo_root", run_dir)
 
     defp marker_argv(run_dir),
-      do: ["/bin/sh", "-c", ~s{m="#{run_dir}/attempt1.ran"; [ -e "$m" ] && exit 0; : > "$m"; sleep 30}]
+      do: ["/bin/bash", "-c", ~s{m="#{run_dir}/attempt1.ran"; [ -e "$m" ] && exit 0; : > "$m"; sleep 30}]
 
     defp real_config(run_dir, mode, argv, opts),
       do: %{
@@ -2206,7 +2206,7 @@ defmodule AiOrchestrator.Run.ServerFoundationRedTest do
           run_id: "run_fixture_0001",
           gate_run_id: gate_run_id,
           attempt: 1,
-          command_argv: ["/bin/sh", "-c", "sleep 30"],
+          command_argv: ["/bin/bash", "-c", "sleep 30"],
           repo_root: run_dir,
           run_dir: run_dir,
           deadline_unix: FixedClock.unix_now() + 600,
@@ -2259,7 +2259,7 @@ defmodule AiOrchestrator.Run.ServerFoundationRedTest do
       run_dir = tmp_run_dir()
 
       {owner, sup} =
-        start_run!(real_config(run_dir, :run, ["/bin/sh", "-c", "exit 0"], real_opts(helper, self())))
+        start_run!(real_config(run_dir, :run, ["/bin/bash", "-c", "exit 0"], real_opts(helper, self())))
 
       server = sup |> started_children() |> Keyword.fetch!(:server)
       executing = executing!()
@@ -2381,7 +2381,7 @@ defmodule AiOrchestrator.Run.ServerFoundationRedTest do
       run_dir = tmp_run_dir()
 
       {owner, sup} =
-        start_run!(real_config(run_dir, :run, ["/bin/sh", "-c", "sleep 30"], real_opts(helper, self())))
+        start_run!(real_config(run_dir, :run, ["/bin/bash", "-c", "sleep 30"], real_opts(helper, self())))
 
       _server = sup |> started_children() |> Keyword.fetch!(:server)
       executing = executing!()
@@ -2412,7 +2412,7 @@ defmodule AiOrchestrator.Run.ServerFoundationRedTest do
           end
         )
 
-      argv = ["/bin/sh", "-c", ~s{[ "$(ls gates/*.claim.* | wc -l)" -gt 1 ] && exit 0; sleep 30}]
+      argv = ["/bin/bash", "-c", ~s{[ "$(ls gates/*.claim.* | wc -l)" -gt 1 ] && exit 0; sleep 30}]
       {owner, sup} = start_run!(real_config(run_dir, :run, argv, opts))
       server = sup |> started_children() |> Keyword.fetch!(:server)
       executing = executing!()
@@ -2554,8 +2554,10 @@ defmodule AiOrchestrator.Run.ServerFoundationRedTest do
       end
     end
 
-    defp aw_argv_rework, do: ["/bin/sh", "-c", ~s{[ "$(ls gates/*.claim.* | wc -l)" -gt 1 ] && exit 0; sleep 30}]
-    defp aw_gated_argv(run_dir), do: ["/bin/sh", "-c", "while [ ! -f '#{run_dir}/go' ]; do sleep 0.02; done; exit 0"]
+    defp aw_argv_rework, do: ["/bin/bash", "-c", ~s{[ "$(ls gates/*.claim.* | wc -l)" -gt 1 ] && exit 0; sleep 30}]
+
+    defp aw_gated_argv(run_dir),
+      do: ["/bin/bash", "-c", "while [ ! -f '#{run_dir}/release-permit' ]; do sleep 0.02; done; exit 0"]
 
     # ---- before-arm hold (AR-M14): the EXISTING test-owned gate barrier (Execution `opts[:barrier]`, test-only)
     # blocks the executing Worker at :after_go until the test acks. :after_go runs inside the ReleaseGate effect
@@ -2702,7 +2704,7 @@ defmodule AiOrchestrator.Run.ServerFoundationRedTest do
       assert_receive {:gate_deadline, :server, ^id, {:early, w1}}, 5_000
       assert_receive {:gate_deadline, :server, ^id, {:early, w2}}, 5_000
       assert w1 <= 50 and w2 <= 50
-      File.write!(Path.join(run_dir, "go"), "")
+      File.write!(Path.join(run_dir, "release-permit"), "")
       assert_receive {:gate_deadline, :server, ^id, :cancelled}, 30_000
       refute_received {:gate_deadline, :server, %{ref: ^ref}, :request_expiration}
       assert {:ok, _} = run_server().await(server, 30_000)
@@ -2747,7 +2749,7 @@ defmodule AiOrchestrator.Run.ServerFoundationRedTest do
       Seam.put(:now, FixedClock.unix_now() + 10_000)
       assert_receive {:gate_deadline, :server, ^id, {:early, _}}, 5_000
       refute_receive {:gate_deadline, :server, ^id, :request_expiration}, 500
-      File.write!(Path.join(run_dir, "go"), "")
+      File.write!(Path.join(run_dir, "release-permit"), "")
       assert_receive {:gate_deadline, :server, ^id, :cancelled}, 30_000
       assert {:ok, _} = run_server().await(server, 30_000)
       assert Enum.any?(journal(run_dir), &(&1["type"] == "gate_passed"))
@@ -2759,7 +2761,7 @@ defmodule AiOrchestrator.Run.ServerFoundationRedTest do
       require_run!()
       run_dir = tmp_run_dir()
       opts = aw_opts(helper, self(), effect_observer: aw_jump_on(Effect.AwaitGate, 10_000))
-      {owner, sup} = start_run!(real_config(run_dir, :run, ["/bin/sh", "-c", "sleep 2; exit 0"], opts))
+      {owner, sup} = start_run!(real_config(run_dir, :run, ["/bin/bash", "-c", "sleep 2; exit 0"], opts))
       server = sup |> started_children() |> Keyword.fetch!(:server)
       executing = executing!()
       {_identity, _} = ready!(owner, executing)
@@ -2775,7 +2777,7 @@ defmodule AiOrchestrator.Run.ServerFoundationRedTest do
       require_run!()
       run_dir = tmp_run_dir()
       opts = aw_opts(helper, self(), [])
-      {owner, sup} = start_run!(real_config(run_dir, :run, ["/bin/sh", "-c", "sleep 30"], opts))
+      {owner, sup} = start_run!(real_config(run_dir, :run, ["/bin/bash", "-c", "sleep 30"], opts))
       server = sup |> started_children() |> Keyword.fetch!(:server)
       executing = executing!()
       {identity, _} = ready!(owner, executing)
@@ -2812,7 +2814,7 @@ defmodule AiOrchestrator.Run.ServerFoundationRedTest do
           end
         )
 
-      {owner, sup} = start_run!(real_config(run_dir, :run, ["/bin/sh", "-c", "sleep 30"], opts))
+      {owner, sup} = start_run!(real_config(run_dir, :run, ["/bin/bash", "-c", "sleep 30"], opts))
       server = sup |> started_children() |> Keyword.fetch!(:server)
       mref = Process.monitor(server)
       executing = executing!()
@@ -2834,7 +2836,7 @@ defmodule AiOrchestrator.Run.ServerFoundationRedTest do
       run_dir = tmp_run_dir()
       Seam.put(:fault, nil)
       opts = aw_opts(helper, self(), clock: AwFaultClock, gate_deadline_cap_ms: 50)
-      {owner, sup} = start_run!(real_config(run_dir, :run, ["/bin/sh", "-c", "sleep 30"], opts))
+      {owner, sup} = start_run!(real_config(run_dir, :run, ["/bin/bash", "-c", "sleep 30"], opts))
       server = sup |> started_children() |> Keyword.fetch!(:server)
       mref = Process.monitor(server)
       executing = executing!()
@@ -2882,7 +2884,7 @@ defmodule AiOrchestrator.Run.ServerFoundationRedTest do
       refute rendered =~ run_dir, "no run_dir bytes in the formatted status"
       assert rendered =~ ":redacted", "data rendered :redacted"
       refute rendered =~ "due_ms", "no fence instants in the formatted status"
-      File.write!(Path.join(run_dir, "go"), "")
+      File.write!(Path.join(run_dir, "release-permit"), "")
       assert_receive {:gate_deadline, :server, ^id, :cancelled}, 30_000
       assert {:ok, _} = run_server().await(server, 30_000)
       stop_owned!(owner)
@@ -2911,7 +2913,7 @@ defmodule AiOrchestrator.Run.ServerFoundationRedTest do
 
       assert_receive {:run_effect_applied, ^server, {:execute, ^cap, ^gen, ^rref}}, 30_000
       :erlang.trace(executing, false, [:send])
-      File.write!(Path.join(run_dir, "go"), "")
+      File.write!(Path.join(run_dir, "release-permit"), "")
       assert {:ok, _} = run_server().await(server, 30_000)
       stop_owned!(owner)
     end
@@ -2936,7 +2938,7 @@ defmodule AiOrchestrator.Run.ServerFoundationRedTest do
       1 = :erlang.trace(executing, true, [:send])
       refute_receive {:trace, ^executing, :send, {:effect_result, _, _, ^rref, _, _}, _}, 200
       :erlang.trace(executing, false, [:send])
-      File.write!(Path.join(run_dir, "go"), "")
+      File.write!(Path.join(run_dir, "release-permit"), "")
       assert {:ok, _} = run_server().await(server, 30_000)
       stop_owned!(owner)
     end
@@ -3178,9 +3180,9 @@ defmodule AiOrchestrator.Run.ServerFoundationRedTest do
       require_run!()
       run_dir = tmp_run_dir()
       test = self()
-      go = Path.join(run_dir, "go")
+      permit_path = Path.join(run_dir, "release-permit")
       # a failed row must not leave the gated command holding for the journaled deadline: release it before teardown
-      on_exit(fn -> File.write(go, "") end)
+      on_exit(fn -> File.write(permit_path, "") end)
 
       observer = fn effect, observation -> send(test, {:effect_observed, effect, observation}) end
       opts = aw_opts(helper, self(), effect_observer: observer)
@@ -3209,7 +3211,7 @@ defmodule AiOrchestrator.Run.ServerFoundationRedTest do
       assert Keyword.fetch!(opts, :clock) == SeamClock, "the RESOLVED loop.opts clock is the configured seam clock"
       assert is_integer(intent.deadline_unix) and intent.deadline_unix > SeamClock.unix_now()
 
-      File.write!(go, "")
+      File.write!(permit_path, "")
       assert {:ok, _} = run_server().await(server, 30_000)
       assert Enum.any?(journal(run_dir), &(&1["type"] == "gate_passed"))
       stop_owned!(owner)
@@ -3594,7 +3596,7 @@ defmodule AiOrchestrator.Run.ServerFoundationRedTest do
       assert is_integer(wait) and wait > 0 and wait <= 50
       assert counts == %{unix: 1, mono: 1}
       :erlang.trace(server, false, [:call, :send])
-      File.write!(Path.join(run_dir, "go"), "")
+      File.write!(Path.join(run_dir, "release-permit"), "")
       assert_receive {:gate_deadline, :server, ^id, :cancelled}, 30_000
       assert {:ok, _} = run_server().await(server, 30_000)
       stop_owned!(owner)
@@ -3648,7 +3650,7 @@ defmodule AiOrchestrator.Run.ServerFoundationRedTest do
                      30_000
 
       :erlang.trace(server, false, [:send])
-      File.write!(Path.join(run_dir, "go"), "")
+      File.write!(Path.join(run_dir, "release-permit"), "")
       assert {:ok, _} = run_server().await(server, 30_000)
       stop_owned!(owner)
     end
@@ -3670,7 +3672,7 @@ defmodule AiOrchestrator.Run.ServerFoundationRedTest do
       :erlang.trace(server, true, [:send])
       refute_receive {:trace, ^server, :send, {:release_terminal, ^cap, ^gen, _, _}, ^executing}, 200
       :erlang.trace(server, false, [:send])
-      File.write!(Path.join(run_dir, "go"), "")
+      File.write!(Path.join(run_dir, "release-permit"), "")
       assert {:ok, _} = run_server().await(server, 30_000)
       stop_owned!(owner)
     end
@@ -3726,9 +3728,9 @@ defmodule AiOrchestrator.Run.ServerFoundationRedTest do
     end
 
     # ---- AR-M15a: initial Server arm failures / refusals (AW-M1 "Arm / clock errors", D-8). Every row holds the
-    # gate command (no `go`), so once the hold is released the Server's only remaining work is the release result,
-    # the AwaitGate commit and its request/arm: a closed exit in that window is the arm phase. No row requires the
-    # run_effect_requested notification to precede the exit (AW-M1 fixes no such order inside request/3,
+    # gate command (no `release-permit`), so once the hold is released the Server's only remaining work is the release
+    # result, the AwaitGate commit and its request/arm: a closed exit in that window is the arm phase. No row
+    # requires the run_effect_requested notification to precede the exit (AW-M1 fixes no such order inside request/3,
     # m_1788849293816). The witnesses that separate a Server arm failure from the pre-existing Worker fault (T-4 /
     # AF-N1): the fault clock records the exact pid and sample it raised in; the Server settles the owner ITSELF
     # through the protocol under closed/2 (its {:settle, ...} applied trace, cleanup from the reply: integer
@@ -3736,7 +3738,7 @@ defmodule AiOrchestrator.Run.ServerFoundationRedTest do
     defp af_run!(helper, extra) do
       require_run!()
       run_dir = tmp_run_dir()
-      on_exit(fn -> File.write(Path.join(run_dir, "go"), "") end)
+      on_exit(fn -> File.write(Path.join(run_dir, "release-permit"), "") end)
       opts = aw_hold_opts(helper, self(), extra)
       {owner, sup} = start_run!(real_config(run_dir, :run, aw_gated_argv(run_dir), opts))
       server = sup |> started_children() |> Keyword.fetch!(:server)
@@ -3925,7 +3927,7 @@ defmodule AiOrchestrator.Run.ServerFoundationRedTest do
       Seam.put(:pid_fault, {:unix, bystander})
       release_go!(executing, hold)
       assert_receive {:run_effect_requested, ^server, %{op: :execute, kind: Effect.AwaitGate}}, 30_000
-      File.write!(Path.join(run_dir, "go"), "")
+      File.write!(Path.join(run_dir, "release-permit"), "")
       assert {:ok, _} = run_server().await(server, 30_000)
       assert Enum.any?(journal(run_dir), &(&1["type"] == "gate_passed"))
       send(bystander, :finish)
@@ -3980,7 +3982,7 @@ defmodule AiOrchestrator.Run.ServerFoundationRedTest do
       run_dir = tmp_run_dir()
       Seam.put(:pid_fault, nil)
       opts = aw_opts(helper, self(), clock: AwPidFaultClock, gate_deadline_cap_ms: 50)
-      {owner, sup} = start_run!(real_config(run_dir, :run, ["/bin/sh", "-c", "sleep 30"], opts))
+      {owner, sup} = start_run!(real_config(run_dir, :run, ["/bin/bash", "-c", "sleep 30"], opts))
       server = sup |> started_children() |> Keyword.fetch!(:server)
       mref = Process.monitor(server)
       executing = executing!()
@@ -4409,7 +4411,7 @@ defmodule AiOrchestrator.Run.ServerFoundationRedTest do
       send(server, {:timeout, {:gate_deadline, make_ref()}, {:gate_chunk, %{}}})
       assert run_server().status(server) == :driving
       refute_received {:gate_deadline, :server, _, :request_expiration}
-      File.write!(Path.join(run_dir, "go"), "")
+      File.write!(Path.join(run_dir, "release-permit"), "")
       assert {:ok, _} = run_server().await(server, 30_000)
       assert Enum.any?(journal(run_dir), &(&1["type"] == "gate_passed"))
       stop_owned!(owner)

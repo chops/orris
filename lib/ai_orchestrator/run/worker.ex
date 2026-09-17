@@ -506,12 +506,12 @@ defmodule AiOrchestrator.Run.Worker do
   # allocate the task (it waits for GO), hold before GO if configured, then wait in fence chunks
   defp fenced_run(closure, ctx) do
     {:ok, outstanding} = DeadlineFence.outstanding(ctx.op)
-    go = make_ref()
+    release_ref = make_ref()
 
     task =
       Task.Supervisor.async_nolink(ctx.task_sup, fn ->
         receive do
-          {:go, ^go} -> AdapterRunner.run(closure)
+          {:go, ^release_ref} -> AdapterRunner.run(closure)
         end
       end)
 
@@ -521,7 +521,7 @@ defmodule AiOrchestrator.Run.Worker do
     joined(ctx, task, handle, fn ->
       case hold(ctx, :before_go, handle, outstanding) do
         :proceed ->
-          send(task.pid, {:go, go})
+          send(task.pid, {:go, release_ref})
           fact(ctx, handle, {:task_started, task.pid})
           first_wait(ctx, task, handle, outstanding)
 

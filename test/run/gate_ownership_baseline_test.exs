@@ -183,13 +183,13 @@ defmodule AiOrchestrator.Run.GateOwnershipBaselineTest do
   # forced-order positive control (addendum m_1788803880000): the command completes only after the test has
   # witnessed the Worker's PENDING await for this op, so the terminal record can never arrive while the Worker is idle
   defp gated_argv(run_dir, then_sh),
-    do: ["/bin/sh", "-c", "while [ ! -f '#{Path.join(run_dir, "go")}' ]; do sleep 0.02; done; #{then_sh}"]
+    do: ["/bin/bash", "-c", "while [ ! -f '#{Path.join(run_dir, "release-permit")}' ]; do sleep 0.02; done; #{then_sh}"]
 
   defp await_gated!(pid, cap, run_dir, deadline) do
     ref = make_ref()
     send(pid, {:execute, cap, 1, ref, %Effect.AwaitGate{gate_run_id: @gate, attempt: 1, deadline_unix: deadline}, nil})
     pending!(pid, ref)
-    File.write!(Path.join(run_dir, "go"), "")
+    File.write!(Path.join(run_dir, "release-permit"), "")
     await!(pid, cap, ref, %Effect.AwaitGate{gate_run_id: @gate, attempt: 1, deadline_unix: deadline})
   end
 
@@ -424,7 +424,7 @@ defmodule AiOrchestrator.Run.GateOwnershipBaselineTest do
       {pid, cap} = worker(ctx.seams)
 
       {{:ok, %Observation.GatePrepared{started: started}}, identity} =
-        prepare!(pid, cap, prepare_effect(ctx.run_dir, ["/bin/sh", "-c", "echo ran >> ran"], 1_700_000_001))
+        prepare!(pid, cap, prepare_effect(ctx.run_dir, ["/bin/bash", "-c", "echo ran >> ran"], 1_700_000_001))
 
       persisted = persist_started!(ctx.run_dir, started)
       StepClock.set_unix(1_700_000_005)
@@ -444,7 +444,7 @@ defmodule AiOrchestrator.Run.GateOwnershipBaselineTest do
       {pid, cap} = worker(ctx.seams)
 
       {{:ok, %Observation.GatePrepared{started: started}}, identity} =
-        prepare!(pid, cap, prepare_effect(ctx.run_dir, ["/bin/sh", "-c", "echo ran >> ran; exit 0"], 1_700_000_001))
+        prepare!(pid, cap, prepare_effect(ctx.run_dir, ["/bin/bash", "-c", "echo ran >> ran; exit 0"], 1_700_000_001))
 
       persisted = persist_started!(ctx.run_dir, started)
 
@@ -475,7 +475,7 @@ defmodule AiOrchestrator.Run.GateOwnershipBaselineTest do
       # command exit, so the guardian's EXIT can only be dequeued by the IDLE Worker after the trace is live
       [port] = owned_ports(pid)
       :erlang.trace(pid, true, [:receive])
-      File.write!(Path.join(ctx.run_dir, "go"), "")
+      File.write!(Path.join(ctx.run_dir, "release-permit"), "")
       assert wait_until(fn -> dead?(identity) end, 10_000), "the command exited and the group settled before any await"
       assert_receive {:trace, ^pid, :receive, {^port, {:data, {:eol, "EXIT " <> _}}}}, 5_000
       :erlang.trace(pid, false, [:receive])
