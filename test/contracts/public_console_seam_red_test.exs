@@ -344,7 +344,7 @@ defmodule AiOrchestrator.Contracts.PublicConsoleSeamRedTest do
     head_before = File.read!(Path.join(dir, "events.head"))
 
     for bad <- [[], "att_0001", [1], ["att 0001"], ["att_0001", ""], [nil]] do
-      assert {:error, %{clause: "attention_ids_invalid"}} = @prepare.resolve_attention(ref, bad, server_opts),
+      assert match?({:error, %{clause: "attention_ids_invalid"}}, @prepare.resolve_attention(ref, bad, server_opts)),
              inspect(bad)
     end
 
