@@ -30,9 +30,13 @@ defmodule AiOrchestrator.Dispatch.IpcV2RefusalTest do
 
   # The daemon's words, as the contract names them (docs/contracts/ipc-v1.org "Reply
   # fixtures", docs/contracts/ipc-v2.org "Send replies" and "Framing and version").
+  # `invalid_msg_id` / `invalid_pane_id` are the grammar refusals: the daemon drops the echo
+  # for the identity it could not read, so they carry at most the other one. Their own rows
+  # are in ipc_v2_identity_grammar_test.exs; they are listed here because this file is where
+  # the vocabulary is pinned against the vendored contracts.
   @send_refusals ~w(conflict pane_not_found pane_dead queue_full send_timeout paste_failed)
-  @send_request_errors ~w(missing_msg_id missing_pane_id missing_text oversize)
-  @reconcile_request_errors ~w(missing_payload_hash missing_msg_id missing_pane_id)
+  @send_request_errors ~w(missing_msg_id missing_pane_id missing_text oversize invalid_msg_id invalid_pane_id)
+  @reconcile_request_errors ~w(missing_payload_hash missing_msg_id missing_pane_id invalid_msg_id invalid_pane_id)
 
   defp command do
     %{

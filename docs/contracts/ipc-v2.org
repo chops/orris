@@ -49,6 +49,26 @@ until a client asks for version 2.
   carry no receipt view; ~conflict~ echoes the identities the caller presented,
   never the stored ones.
 
+** Identity grammars and their refusals
+:PROPERTIES:
+:CUSTOM_ID: identity-grammars-and-their-refusals
+:END:
+- ~msg_id~ is ~snd_~ followed by exactly 64 lowercase hex characters (the
+  SEND-ID-1 digest; the minting rule is the client's, the grammar is shared).
+- ~pane_id~ is ~%~ followed by 1..128 characters from ~[a-zA-Z0-9_]~. This is the
+  GOVERNING grammar: it is the one the daemon's receipt record is keyed by, so a
+  pane id outside it cannot be stored and therefore cannot be delivered. A daemon
+  whose echo predicate is wider than its storage predicate will echo a pane id it
+  then refuses; the two predicates are one grammar and a daemon reconciles them on
+  its own side.
+- An identity that fails its grammar is refused ~invalid_msg_id~ or
+  ~invalid_pane_id~ BEFORE admission. The daemon drops the echo for the identity
+  it could not read -- there is nothing safe to echo -- so these replies carry at
+  most the other identity, and a client MUST NOT require an echo before naming
+  them. They are request errors, facts about the request the client built, and are
+  distinct from ~missing_msg_id~ / ~missing_pane_id~, which say the field was
+  absent rather than malformed.
+
 ** Send replies
 :PROPERTIES:
 :CUSTOM_ID: send-replies

@@ -14,9 +14,14 @@ defmodule AiOrchestrator.Dispatch.Refusal do
   #     it as `refusal`. It is about THIS send only if both echoes match (rule 3), so a
   #     refusal about another message or pane is an identity error, not a refusal.
   #   * a request error (ipc-v1.org: missing_pane_id, missing_text, oversize; ipc-v2.org:
-  #     missing_msg_id, missing_payload_hash) is a fact about the request this consumer
-  #     built, and becomes `dispatch_request_rejected` with the word as `error`. The daemon
-  #     echoes only the identities it could read, so no echo is required here.
+  #     missing_msg_id, missing_payload_hash, invalid_msg_id, invalid_pane_id) is a fact
+  #     about the request this consumer built, and becomes `dispatch_request_rejected` with
+  #     the word as `error`. The daemon echoes only the identities it could read, so no echo
+  #     is required here -- and for the two `invalid_*` words that is the whole point: an
+  #     identity that failed the daemon's grammar is one it cannot safely echo, so it drops
+  #     that echo. Without these two words in the vocabulary, a malformed identity degraded
+  #     into `reply_not_ok`, which does not repeat the word, leaving the operator with no
+  #     name for a failure whose fix is in the request this consumer built.
   #   * any other word -- including words the daemon may emit that the contract does not
   #     name -- and any refusal that does not name version 2 stays `reply_not_ok`, and the
   #     word is not repeated.
@@ -24,9 +29,9 @@ defmodule AiOrchestrator.Dispatch.Refusal do
   # The detector names the operation whose reply this was; the reducer routes on `reason`.
 
   @send_refusals ~w(conflict pane_not_found pane_dead queue_full send_timeout paste_failed)
-  @send_request_errors ~w(missing_msg_id missing_pane_id missing_text oversize)
+  @send_request_errors ~w(missing_msg_id missing_pane_id missing_text oversize invalid_msg_id invalid_pane_id)
   @reconcile_refusals []
-  @reconcile_request_errors ~w(missing_payload_hash missing_msg_id missing_pane_id)
+  @reconcile_request_errors ~w(missing_payload_hash missing_msg_id missing_pane_id invalid_msg_id invalid_pane_id)
 
   @type operation :: :send | :reconcile
 
