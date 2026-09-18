@@ -35,6 +35,9 @@ defmodule AiOrchestrator.Lifecycle.Core.Reducer do
 
   @zero_hash "sha256:0000000000000000000000000000000000000000000000000000000000000000"
   @default_assignment_timeout_s 900
+  # the repository itself, as the one root an artifact is judged against when only containment
+  # under the worktree is at issue (NS-20.D.001)
+  @repository_root ["."]
 
   defstruct clock_reads: 0,
             completed_work_item_ids: [],
@@ -976,6 +979,7 @@ defmodule AiOrchestrator.Lifecycle.Core.Reducer do
       state,
       resumption.assignment_id,
       resumption.expected_artifact,
+      resumption.work_item,
       {:resumed_snapshotted, resumption, object}
     )
   end
@@ -1388,6 +1392,7 @@ defmodule AiOrchestrator.Lifecycle.Core.Reducer do
       state,
       context.assignment_id,
       context.expected_artifact,
+      context.work_item,
       {:artifact_snapshotted, context, deadline_unix, bytes, prompt, object}
     )
   end
@@ -1400,7 +1405,10 @@ defmodule AiOrchestrator.Lifecycle.Core.Reducer do
     |> ret(:blocked)
   end
 
-  defp snapshot_artifact(state, assignment_id, expected_artifact, frame) do
+  # NS-20.D.001: the roots travel with the snapshot command so the adapter can judge the artifact
+  # path physically before it reads any bytes. The command map is not journaled (the adapter builds
+  # `assignment_dispatch_sent` from its own closed set), so carrying them costs no schema.
+  defp snapshot_artifact(state, assignment_id, expected_artifact, work_item, frame) do
     perform(
       state,
       %Effect.SnapshotArtifact{
@@ -1408,12 +1416,22 @@ defmodule AiOrchestrator.Lifecycle.Core.Reducer do
         command: %{
           "assignment_id" => assignment_id,
           "repo_root" => state.run.repo_root,
-          "expected_artifact" => expected_artifact
+          "expected_artifact" => expected_artifact,
+          "allowed_roots" => artifact_roots(state, work_item)
         }
       },
       frame
     )
   end
+
+  # A writer's artifact is evidence about a file it is allowed to write, so it is judged against the
+  # spec's allowed roots -- the same roots plan admission judged its declared form against. Any other
+  # kind, including the synthesised review item, names its own document, which need not lie under a
+  # writer's root; that one is judged for containment under the repository and nothing more.
+  defp artifact_roots(fsm, %{"kind" => kind}) when kind in ["implement", "integration"],
+    do: fsm.spec["allowed_roots"] || @repository_root
+
+  defp artifact_roots(_fsm, _work_item), do: @repository_root
 
   defp artifact_snapshotted(state, context, deadline_unix, %SensitiveBytes{} = bytes, prompt, object, {:ok, baseline}) do
     prompt = prompt |> projected_prompt(object) |> Map.put("artifact_baseline", baseline)

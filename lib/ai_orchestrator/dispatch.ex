@@ -2,7 +2,7 @@ defmodule AiOrchestrator.Dispatch do
   @moduledoc false
 
   use Boundary,
-    deps: [AiOrchestrator.Config, AiOrchestrator.Contract, AiOrchestrator.Journal],
+    deps: [AiOrchestrator.Config, AiOrchestrator.Contract, AiOrchestrator.Journal, AiOrchestrator.Spec],
     exports: [LocalPane, PaneClient, PromptStore]
 
   # MUST-7: the artifact baseline is taken before the projection is committed, never by

@@ -6,9 +6,12 @@ defmodule AiOrchestrator.Dispatch.LocalPane do
   alias AiOrchestrator.Contract.ArtifactBaseline
   alias AiOrchestrator.Dispatch.PaneClient
   alias AiOrchestrator.Dispatch.Refusal
+  alias AiOrchestrator.Spec.PathBoundary
 
   @default_observe_timeout_ms 900_000
   @default_poll_interval_ms 250
+  # the repository itself, when the command declares no roots: containment under the worktree
+  @repository_root ["."]
   @zero_hash "sha256:0000000000000000000000000000000000000000000000000000000000000000"
 
   @impl true
@@ -490,9 +493,25 @@ defmodule AiOrchestrator.Dispatch.LocalPane do
 
   defp baseline_refusal(reason), do: {:error, %{"reason" => reason, "detector" => "artifact_baseline"}}
 
+  # NS-20.D.001, the physical half: `File.stat` and `File.read` FOLLOW symlinks, so the path is
+  # judged before any byte is read. `PathBoundary.check/3` is the same containment judgement plan
+  # admission runs lexically, plus the physical layer: an artifact that resolves outside the
+  # canonical worktree root, or outside every canonical allowed root, never becomes this run's
+  # evidence. The refusal answers the EXISTING closed class `artifact_baseline_failed`, whose
+  # detail the host drops on the way to attention, so nothing new is journaled. The judgement is
+  # point in time, exactly as `PathBoundary` documents: a symlink planted after it is not defended.
   defp artifact_baseline(command) do
-    path = Path.join(fetch!(command, "repo_root"), fetch!(command, "expected_artifact"))
+    repo_root = fetch!(command, "repo_root")
+    expected_artifact = fetch!(command, "expected_artifact")
+    allowed_roots = Map.get(command, "allowed_roots") || @repository_root
 
+    case PathBoundary.check(repo_root, allowed_roots, [expected_artifact]) do
+      :ok -> baseline_of(Path.join(repo_root, expected_artifact))
+      {:error, %{clause: clause}} -> {:error, %{"reason" => "artifact_baseline_failed", "detail" => clause}}
+    end
+  end
+
+  defp baseline_of(path) do
     case artifact_snapshot(path) do
       {:ok, fingerprint} -> {:ok, Map.put(fingerprint, "exists", true)}
       :missing -> {:ok, %{"exists" => false}}
