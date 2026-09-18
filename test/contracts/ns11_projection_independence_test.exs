@@ -19,13 +19,11 @@ defmodule AiOrchestrator.Contracts.NS11ProjectionIndependenceTest do
   alias AiOrchestrator.Contracts.FixtureHelper, as: F
   alias AiOrchestrator.Query
   alias AiOrchestrator.Test.ConsoleSeamRows, as: Rows
+  alias AiOrchestrator.Test.StoredState
 
   @moduletag timeout: 300_000
 
   @projections ["run-summary.org", "run-context.org"]
-  # a stored-state technology is named by one of these segments of an application name; the segment rule keeps
-  # an unrelated application whose name merely contains the letters (for example `ssl_verify_fun`) out of it
-  @stored_state_segments ~w(ash ecto oban sql sqlite postgrex myxql tds mnesia)
   # one application that must be in every measured closure, so an empty or unparsed closure cannot pass
   @witness :jason
 
@@ -96,11 +94,9 @@ defmodule AiOrchestrator.Contracts.NS11ProjectionIndependenceTest do
 
   # ---- helpers ----
 
-  defp stored_state(applications), do: applications |> Enum.filter(&stored_state?/1) |> Enum.sort()
-
-  defp stored_state?(app) do
-    app |> Atom.to_string() |> String.split("_") |> Enum.any?(&(&1 in @stored_state_segments))
-  end
+  # the predicate lives in test/support so that the packaged-archive leg in production_escript_test.exs applies
+  # the SAME rule to the built archive; widening it in one place widens it for both measurements
+  defp stored_state(applications), do: StoredState.named(applications)
 
   # Mix's own production dependency graph, read through the CLI exactly as production_escript_test.exs does
   defp production_graph do

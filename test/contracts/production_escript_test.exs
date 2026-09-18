@@ -8,6 +8,8 @@ defmodule AiOrchestrator.Contracts.ProductionEscriptTest do
 
   use ExUnit.Case, async: false
 
+  alias AiOrchestrator.Test.StoredState
+
   @moduletag :production_escript
   @moduletag timeout: 300_000
 
@@ -82,6 +84,20 @@ defmodule AiOrchestrator.Contracts.ProductionEscriptTest do
   test "PE-4 the packaged inventory equals the exact expected set", %{build: build} do
     assert artifact?(build), "no production artifact to inspect (build exit #{build.exit})"
     assert oracle_verdict(@expected_packaged, packaged_apps(build.artifact)) == :ok
+  end
+
+  # NS-11.H.001 / NS-11.K.001, the packaged-archive leg: test/contracts/ns11_projection_independence_test.exs binds
+  # that row to what the application DECLARES it starts and to what the production dependency graph CONTAINS; this
+  # one binds it to the bytes actually shipped, reusing the single build above. It is not PE-4 restated: PE-4 pins an
+  # exact set, and a deliberate dependency change updates that pin and stays green. This row says what such an update
+  # may never contain, so adding ecto, Ash or Oban fails here even with the pin and the contract updated together.
+  test "PE-6 the packaged archive carries no SQL, Ash or Oban application", %{build: build} do
+    assert artifact?(build), "no production artifact to inspect (build exit #{build.exit})"
+    packaged = packaged_apps(build.artifact)
+
+    # a witness first, so an empty or unreadable archive cannot satisfy the emptiness that follows
+    assert :jason in packaged, "the measured packaged set is empty or unreadable: #{inspect(Enum.sort(packaged))}"
+    assert StoredState.named(packaged) == []
   end
 
   test "PE-4a the pinned expected set agrees with Mix's own production dependency graph" do
