@@ -307,7 +307,75 @@ defmodule AiOrchestrator.Host.MountRedTest do
   # ================================================================= rows
   describe "layout and readiness" do
     test "MR-1b the Application root order is [Ownership, Host.Supervisor, Host.Monitor] (behavioural row)" do
-      assert [Ownership, host_sup(), monitor_mod()] == AiOrchestrator.Application.children()
+      # read as the ids the root supervisor will actually use, so the order pin survives a child that carries
+      # start arguments (MR-1c) instead of being a bare module
+      assert [Ownership, host_sup(), monitor_mod()] ==
+               Enum.map(AiOrchestrator.Application.children(), &Supervisor.child_spec(&1, []).id)
+    end
+
+    # HOLE A of the R07 mounted-keeper audit: application.ex started `Host.Monitor` as a BARE MODULE, so its
+    # `start_link/1` received `[]`, so `start_census/2` took the `nil` branch of monitor.ex - census `:complete`,
+    # no task spawned, nothing discovered - in every shipped binary. The reconciliation this contract promises
+    # (section 5) and the whole reason the Monitor is mounted LAST never ran in production. This row asserts the
+    # Application's own start ARGUMENTS, then uses those same arguments to reconcile a mounted tree the monitor
+    # never saw registered, with the argument-less form as the negative control.
+    test "MR-1c the Application hands the Monitor its host supervisor, so the production census reconciles",
+         %{dir: dir} do
+      require_mount!()
+      app_args = application_monitor_args!()
+
+      assert Keyword.get(app_args, :host_supervisor) == host_sup(),
+             "the Application starts Host.Monitor with #{inspect(app_args)}: with no :host_supervisor the " <>
+               "Monitor marks its census :complete without discovering anything, so no shipped binary ever " <>
+               "reconciles the mounted trees (docs/contracts/host-mounted-runs.org section 5)"
+
+      n = System.unique_integer([:positive])
+      arb = :"app_census_arb_#{n}"
+      hsup = :"app_census_hsup_#{n}"
+      decoy = :"app_census_decoy_#{n}"
+
+      # the mounted run registers with the DECOY monitor, so a census is the ONLY way the monitors below can
+      # learn the tree exists
+      root =
+        start_supervised!(%{
+          id: :"app_census_root_#{n}",
+          type: :supervisor,
+          start:
+            {Supervisor, :start_link,
+             [
+               [
+                 {Ownership, name: arb},
+                 {host_sup(), name: hsup, child_shutdown_ms: 20_000},
+                 {monitor_mod(), name: decoy}
+               ],
+               [strategy: :rest_for_one]
+             ]}
+        })
+
+      h = %{root: root, arb: arb, hsup: hsup, mon: decoy, host: %{supervisor: hsup, monitor: decoy, ownership: arb}}
+      handle = mount!(h, dir, holding(self(), :subtree_started))
+      {ref, _payload, helper} = await_held!(:subtree_started)
+      wait_until(fn -> match?({:ok, %{registered: true}}, host().status(dir, monitor: decoy, ownership: arb)) end)
+
+      # the APPLICATION'S OWN arguments, with only the instance-valued seams rebound to this isolated root: a
+      # key the Application does not pass cannot be rebound, so an inert Application spec stays inert here
+      live = start_census_monitor!(app_args, :"app_census_live_#{n}", hsup)
+
+      wait_until(fn ->
+        match?({:ok, %{registered: true, live: true}}, host().status(dir, monitor: live, ownership: arb))
+      end)
+
+      assert {:ok, %{registered: true, live: true, owner: censused}} = host().status(dir, monitor: live, ownership: arb)
+      assert censused == handle.owner, "the census entry must name the mounted owner"
+
+      # NEGATIVE CONTROL: the same arguments WITHOUT :host_supervisor, over the same live root, discover
+      # nothing - so the row above cannot pass vacuously
+      inert = start_census_monitor!(Keyword.delete(app_args, :host_supervisor), :"app_census_inert_#{n}", hsup)
+      assert {:ok, %{census: :complete, skipped: 0}} = host().census(monitor: inert)
+      assert {:ok, %{registered: false}} = host().status(dir, monitor: inert, ownership: arb)
+
+      send(helper, {:release, ref})
+      assert match?({:ok, %{}}, host().await(handle, @deadline))
     end
 
     test "MR-1a a mounted tree is a descendant with the exact trusted identities in its barrier payload", %{dir: dir} do
@@ -1052,6 +1120,34 @@ defmodule AiOrchestrator.Host.MountRedTest do
       {:ok, %{census: :complete}} -> true
       _ -> System.monotonic_time(:millisecond) > deadline and flunk("census never completed")
     end)
+  end
+
+  # the child spec the Application actually hands its root supervisor for Host.Monitor, and the start
+  # arguments inside it (a bare module yields `[]`, which is exactly the defect MR-1c names)
+  defp application_monitor_args! do
+    spec =
+      AiOrchestrator.Application.children()
+      |> Enum.map(&Supervisor.child_spec(&1, []))
+      |> Enum.find(&(&1.id == monitor_mod()))
+
+    assert is_map(spec), "the Application starts no Host.Monitor child"
+    assert {mod, :start_link, [args]} = spec.start
+    assert mod == monitor_mod(), "the Host.Monitor child does not start Host.Monitor"
+    assert is_list(args), "Host.Monitor start arguments are not a keyword list: #{inspect(args)}"
+    args
+  end
+
+  # a monitor started from `args`, rebinding ONLY the instance-valued seams of this row's isolated root: the
+  # registered name, the injected census deadline, and `:host_supervisor` where `args` already carries that key
+  defp start_census_monitor!(args, name, hsup) do
+    args =
+      args
+      |> Keyword.put(:name, name)
+      |> Keyword.put(:census_timeout, 20_000)
+      |> then(fn a -> if Keyword.has_key?(a, :host_supervisor), do: Keyword.put(a, :host_supervisor, hsup), else: a end)
+
+    start_supervised!(%{id: {:census_monitor, name}, start: {monitor_mod(), :start_link, [args]}})
+    name
   end
 
   defp wait_until(fun, tries \\ 750) do

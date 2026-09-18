@@ -32,7 +32,18 @@ defmodule AiOrchestrator.Application do
   their owners' teardown. `AiOrchestrator.Host.Monitor` mounts LAST: it only
   observes, so its own restart must restart no run tree; it reconciles from the
   tree instead (docs/contracts/host-mounted-runs.org).
+
+  The Monitor is started WITH the supervisor it reconciles from. That argument is
+  the census: `AiOrchestrator.Host.Monitor.start_census/2` discovers nothing and
+  marks itself `:complete` when no `:host_supervisor` is given, so a bare-module
+  child spec would make the reconciliation of section 5 inert in every shipped
+  binary (row MR-1c).
   """
   @spec children() :: [Supervisor.child_spec() | {module(), term()} | module()]
-  def children, do: [AiOrchestrator.Journal.Ownership, AiOrchestrator.Host.Supervisor, AiOrchestrator.Host.Monitor]
+  def children,
+    do: [
+      AiOrchestrator.Journal.Ownership,
+      AiOrchestrator.Host.Supervisor,
+      {AiOrchestrator.Host.Monitor, [host_supervisor: AiOrchestrator.Host.Supervisor]}
+    ]
 end
