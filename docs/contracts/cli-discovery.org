@@ -66,6 +66,21 @@ legacy Org table gained a =Repair= column (=yes=, =no=, or =-= for a row that
 could not be read). Reporting is not repairing: the plan belongs to the Writer,
 and no read truncates a tail, advances a receipt or writes a projection.
 
+* Watch
+=ai-orchestrator status [--json] --watch <run-dir> [--interval-ms <n>] [--for-ms <n>]=
+and =ai-orchestrator list --root <runs-root> [--json] --watch [--interval-ms <n>] [--for-ms <n>]=
+re-run exactly the one-shot read of the same verb and write a rendering only
+when that rendering CHANGES. The loop belongs to the invoking process: no
+supervised worker, no scheduled timer, no subscription and no lock, so nothing
+survives the process and nothing can outlive a run it observes. It ends on a
+terminal recorded status (=completed=, =cancelled=, =failed=,
+=budget_exhausted=), on the =--for-ms= horizon, or when the operator interrupts
+the foreground process; a listing has no terminal value, so it ends on the
+horizon alone. =--interval-ms= defaults to 1000 and is bounded by 3600000;
+=--for-ms= is bounded by 86400000. A read failure is written to stderr as the
+verb's own reason map and the loop continues, so a torn tail or a receipt lost
+during a live run does not end the watch. The loop itself exits 0.
+
 * Limits and dependencies
 This is a one-shot journal inventory, not an atomic snapshot across directories.
 Each valid run is read twice to preserve the existing public Query list shape;
@@ -74,9 +89,11 @@ no hard wall-time or memory bound. Existing trusted stationary-filesystem
 assumptions apply: this does not add descriptor-level journal-leaf confinement
 or protection against a hostile concurrent rename.
 
-Persistent Projection.Index, multi-root aggregation, watch/replay/explain,
-console integration and installed qualification remain separate units. This
-operation does not depend on mounted start/resume, live transport or Ash.
+Persistent Projection.Index, multi-root aggregation, replay/explain, console
+integration and installed qualification remain separate units. Watch is
+delivered above; it adds no cache, subscription, change notification or
+cross-process view of liveness, and is exactly a repeated read.
+This operation does not depend on mounted start/resume, live transport or Ash.
 
 * Acceptance mapping
 =test/cli/cli_discovery_test.exs= exercises:
@@ -95,7 +112,11 @@ operation does not depend on mounted start/resume, live transport or Ash.
 - D10 malformed argv refusals.
 
 =test/cli/cli_test.exs= pins the pending-repair reporting of =status= and the
-legacy =list= against an unchanged torn journal.
+legacy =list= against an unchanged torn journal. =test/cli/cli_watch_test.exs=
+exercises W1 successive values ending on the terminal status, W2 one rendering
+for an unchanged journal with deleted and lagging projections, W3 a read
+failure reported once while the loop keeps reading, W4 the explicit-root
+listing loop, W5 the bounded horizon and W6 malformed watch argv.
 
 Existing CLI tests and the relevant public Query preservation, path and repair
 controls remain compatibility checks. This contract does not claim a full

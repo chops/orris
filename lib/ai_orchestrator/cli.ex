@@ -18,6 +18,7 @@ defmodule AiOrchestrator.CLI do
 
   alias AiOrchestrator.CLI.Discovery
   alias AiOrchestrator.CLI.Read
+  alias AiOrchestrator.CLI.Watch
   alias AiOrchestrator.Journal.Fold
   alias AiOrchestrator.Prepare.Prepared
   alias AiOrchestrator.Prepare.Trusted
@@ -61,9 +62,16 @@ defmodule AiOrchestrator.CLI do
 
   def run(["status", "--json", run_dir], _opts), do: status_json(run_dir)
   def run(["status", run_dir], _opts), do: status_org(run_dir)
+  def run(["status" | args], opts), do: watch_status(args, opts)
   def run(["list", "--json"], opts), do: list_json(opts)
   def run(["list"], opts), do: list_org(opts)
-  def run(["list" | args], opts), do: discover(args, opts)
+
+  def run(["list" | args], opts) do
+    case Watch.arguments(args) do
+      {:ok, %{watch?: true} = parsed} -> watch_list_root(parsed, opts)
+      _other -> discover(args, opts)
+    end
+  end
 
   def run(["cancel", run_dir], opts), do: cancel_run_dir(run_dir, opts)
   def run(["resolve", run_dir, ids], opts), do: resolve_run_dir(run_dir, ids, opts)
@@ -170,6 +178,45 @@ defmodule AiOrchestrator.CLI do
     case Read.load(run_dir) do
       {:ok, loaded} -> ok(Read.render(loaded, json?))
       {:error, reason} -> error(66, reason)
+    end
+  end
+
+  # `status [--json] --watch <run-dir> [--interval-ms N] [--for-ms N]`: the same read, re-run until the
+  # recorded status is terminal or the bounded horizon passes (S2)
+  defp watch_status(args, opts) do
+    case Watch.arguments(args) do
+      {:ok, %{watch?: true, root: nil, positional: [run_dir]} = parsed} ->
+        Watch.run(fn -> status_cycle(run_dir, parsed.json?) end, parsed, opts)
+
+      _other ->
+        error(64, %{"reason" => "usage", "usage" => usage()})
+    end
+  end
+
+  # a read failure is rendered as the status verb's own error and the loop continues; it never repairs
+  defp status_cycle(run_dir, json?) do
+    case Read.load(run_dir) do
+      {:ok, loaded} ->
+        %{stdout: Read.render(loaded, json?), stderr: "", terminal?: Read.terminal?(loaded)}
+
+      {:error, reason} ->
+        %{stdout: "", stderr: Jason.encode!(normalize_rejection(reason)) <> "\n", terminal?: false}
+    end
+  end
+
+  # `list --root <root> [--json] --watch`: the explicit-root listing re-read on the same bounded loop; a
+  # listing has no terminal value, so it ends on the horizon or the cycle bound alone
+  defp watch_list_root(%{root: root, positional: []} = parsed, opts) when is_binary(root) do
+    args = ["--root", root] ++ if(parsed.json?, do: ["--json"], else: [])
+    Watch.run(fn -> list_root_cycle(args, opts) end, parsed, opts)
+  end
+
+  defp watch_list_root(_parsed, _opts), do: error(64, %{"reason" => "usage", "usage" => usage()})
+
+  defp list_root_cycle(args, opts) do
+    case Discovery.run(args, opts) do
+      :usage -> %{stdout: "", stderr: Jason.encode!(%{"reason" => "usage"}) <> "\n", terminal?: false}
+      result -> %{stdout: result.stdout, stderr: result.stderr, terminal?: false}
     end
   end
 
@@ -299,8 +346,10 @@ defmodule AiOrchestrator.CLI do
            ai-orchestrator run [--gate-guardian <path>] <run-dir>
            ai-orchestrator run [--gate-guardian <path>] --resume <run-dir>
            ai-orchestrator status [--json] <run-dir>
+           ai-orchestrator status [--json] --watch <run-dir> [--interval-ms <n>] [--for-ms <n>]
            ai-orchestrator list [--json]
            ai-orchestrator list --root <runs-root> [--json]
+           ai-orchestrator list --root <runs-root> [--json] --watch [--interval-ms <n>] [--for-ms <n>]
            ai-orchestrator cancel <run-dir>
            ai-orchestrator resolve <run-dir> <attention-id>[,<attention-id>...]
     """
