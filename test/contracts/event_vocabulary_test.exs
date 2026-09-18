@@ -52,6 +52,35 @@ defmodule AiOrchestrator.Contracts.EventVocabularyTest do
   @allowed_target_waves [:w4, :w6, :w7a, :w9]
   @wave_labels %{w4: "4", w6: "6", w7a: "7a", w9: "9"}
 
+  # The one function in fold.ex that returns a new Fold.State.
+  @state_transition :apply_type_update
+
+  # The functions that CLASSIFY an event without transitioning anything. A type named only
+  # here satisfies the naming check below with no disposition at all, which is the weakness
+  # the fold check alone cannot see.
+  @membership_predicates [:blocks_on_attention?, :cleanup_event?, :terminal_with_completed_ids?]
+
+  # Produced `:clause` types fold.ex names but gives no `apply_type_update/2` clause,
+  # measured at the head this list was written against. Each is validated or admitted by
+  # name without changing the folded state. Extending this list is a FINDING, not a fix: a
+  # promotion whose type lands here added a name to fold.ex and no disposition.
+  @produced_without_state_transition ~w(
+    assignment_dispatch_sent
+    assignment_observation_started
+    assignment_prompt_projected
+    pane_lease_release_requested
+    review_received
+    workspace_lease_release_requested
+  )
+
+  # Produced `:clause` types whose ONLY naming is inside a membership predicate: both are
+  # release acknowledgements whose state change is carried by the matching released event.
+  # A new entry means a promoted type that fold.ex neither validates nor dispositions.
+  @produced_named_only_in_a_predicate ~w(
+    pane_lease_release_requested
+    workspace_lease_release_requested
+  )
+
   test "vocabulary table covers exactly the declared event types" do
     assert Vocabulary.entries() |> Map.keys() |> MapSet.new() == Event.declared_types()
     assert MapSet.size(Event.declared_types()) == @declared_count
@@ -125,7 +154,7 @@ defmodule AiOrchestrator.Contracts.EventVocabularyTest do
   end
 
   test "fold classification in the table matches how fold.ex names types" do
-    named = FoldTypeCollector.named_types_from_source(Path.join(@lib_root, "ai_orchestrator/journal/fold.ex"))
+    named = FoldTypeCollector.named_types_from_source(fold_source())
 
     for {type, entry} <- Vocabulary.entries() do
       named? = MapSet.member?(named, type)
@@ -135,6 +164,82 @@ defmodule AiOrchestrator.Contracts.EventVocabularyTest do
         :generic -> refute named?, "#{type}: marked :generic but fold.ex names it in a pattern, list, or comparison"
       end
     end
+  end
+
+  # The naming check above proves only that fold.ex mentions a type in one of three
+  # syntactic positions. Four reserved types (work_item_failed, and the three notification
+  # types) are named ONLY inside a membership predicate, so promoting one would satisfy the
+  # fold half of NS-40 with no state transition, no validation and no terminal handling.
+  # These two rows close that: the sets are pinned, so a promotion that adds a bare naming
+  # fails here by name instead of passing.
+  test "every produced type marked :clause is dispositioned by a fold state transition" do
+    participation = FoldTypeCollector.named_types_by_function(fold_source())
+
+    without =
+      for {type, entry} <- Vocabulary.entries(),
+          entry.status == :produced,
+          entry.fold == :clause,
+          not MapSet.member?(participation_of(participation, type), @state_transition),
+          do: type
+
+    assert Enum.sort(without) == Enum.sort(@produced_without_state_transition),
+           """
+           A produced :clause type must take part in the fold's state transition, not merely
+           be named somewhere in fold.ex. `apply_type_update/2` is the only function that
+           returns a new Fold.State, and these produced types have no clause in it:
+
+           #{Enum.map_join(Enum.sort(without), "\n", &"  #{&1}")}
+
+           If a promotion put a type here, the promotion is incomplete: give it a real
+           disposition (ledger NS-40; architecture 307-310). Do not extend the pinned list.
+           """
+  end
+
+  test "no produced type marked :clause is named only inside a membership predicate" do
+    participation = FoldTypeCollector.named_types_by_function(fold_source())
+    predicates = MapSet.new(@membership_predicates)
+
+    membership_only =
+      for {type, entry} <- Vocabulary.entries(),
+          entry.status == :produced,
+          entry.fold == :clause,
+          functions = participation_of(participation, type),
+          MapSet.size(functions) > 0,
+          MapSet.subset?(functions, predicates),
+          do: type
+
+    assert Enum.sort(membership_only) == Enum.sort(@produced_named_only_in_a_predicate),
+           """
+           These produced :clause types are named in fold.ex only by a membership predicate
+           (#{Enum.map_join(@membership_predicates, ", ", &to_string/1)}), which classifies an
+           event without folding it:
+
+           #{Enum.map_join(Enum.sort(membership_only), "\n", &"  #{&1}")}
+
+           Membership in such a list is not a fold rule. Do not extend the pinned list.
+           """
+  end
+
+  test "the participation collector attributes each naming to the function that encloses it" do
+    # Without this the two rows above report the same green against a collector that has
+    # stopped distinguishing positions, which is exactly the defect they exist to close.
+    source = """
+    defmodule Synthetic do
+      defp apply_type_update(%{"type" => "run_created"}, state), do: state
+      defp validate_domain(state, %{"type" => "gate_passed"}), do: {:ok, state}
+      defp blocks_on_attention?(type), do: type in ["work_item_failed"]
+      defp cleanup_event?(type), do: type in ["notification_sent"]
+      defp preamble_allowed?(:run_created, type), do: type == "run_spec_loaded"
+    end
+    """
+
+    assert FoldTypeCollector.participation_from_string(source) == %{
+             "run_created" => MapSet.new([:apply_type_update]),
+             "gate_passed" => MapSet.new([:validate_domain]),
+             "work_item_failed" => MapSet.new([:blocks_on_attention?]),
+             "notification_sent" => MapSet.new([:cleanup_event?]),
+             "run_spec_loaded" => MapSet.new([:preamble_allowed?])
+           }
   end
 
   test "the fold-type collector ignores event-name-looking values compared to other variables" do
@@ -172,6 +277,10 @@ defmodule AiOrchestrator.Contracts.EventVocabularyTest do
 
     assert {:error, %{clause: "unknown_event_type"}} = Event.validate_line(line)
   end
+
+  defp fold_source, do: Path.join(@lib_root, "ai_orchestrator/journal/fold.ex")
+
+  defp participation_of(participation, type), do: Map.get(participation, type, MapSet.new())
 
   defp types_with_status(status) do
     Vocabulary.entries()
