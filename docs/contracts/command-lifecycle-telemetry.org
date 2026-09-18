@@ -92,7 +92,22 @@ original kind, reason and stacktrace. No retry, no journal write, no change to =
 =:telemetry= executes attached handlers synchronously in the invoking process. A handler that raises is
 caught and detached by =:telemetry= (with a logged warning) and cannot change the command outcome. A handler
 that blocks blocks the invocation: handlers attached to these events are expected to be nonblocking.
-Exporter isolation (OTel, batching, backpressure) belongs to the later application-boundary handler slice.
+The application-boundary span handler itself belongs to a later slice; the exporter boundary it will rely on
+is pinned now (below).
+
+* Exporter isolation (NS-26.F.001)
+No production module attaches a handler or creates a span today; the OpenTelemetry SDK and OTLP exporter
+are started as applications and are never reached by domain code. The isolation is therefore structural:
+spans end with a non-blocking ETS insert in the invoking process, export runs in the batch processor's own
+runner process, and every exporter escape (raise, exit, killed runner, export timeout, refused endpoint,
+uninitialisable exporter) is contained inside the SDK's supervision tree.
+=test/telemetry/exporter_isolation_test.exs= pins that boundary over the full command path
+(=Commands.invoke/4= -> =Run.Executor= -> owned subtree -> =Journal.Writer=): the same start command,
+under FixedClock/FixedId, must produce byte-identical =events.jsonl= and an identical result term with
+and without a failing exporter. The exporter is installed on a NAMED tracer provider the test starts with
+its own processor and exporter (never through =OTEL_*= environment), a test handler on the lifecycle
+events creates and force-flushes spans so the first export attempt overlaps the domain run, and every
+failure class proves it was exercised from inside the failing path.
 
 * Tests
 =test/commands/command_telemetry_red_test.exs= (CT-1..CT-16, CT-11b): cardinality and correlation for
