@@ -27,6 +27,51 @@ shapes this repository pins, with their ~CONTRACT_HASH~ computed under the v1 ha
 rule (see ~ipc-v1.org~). The v1 set and its hash are untouched; v1 remains the wire
 until a client asks for version 2.
 
+** Paired producer copy
+:PROPERTIES:
+:CUSTOM_ID: paired-producer-copy
+:END:
+The producer of these frames vendors this document VERBATIM, so that the daemon
+that emits the frames ships the contract text it emits them against instead of a
+restatement that drifts silently. The producer copy carries its own pairing
+block naming the consumer revision it was taken from; this block is the
+reciprocal half, so each repository names the other rather than only one
+direction being recorded.
+
+- paired_repository: ~orrisd~ (the ai-pair daemon; the producer of v2 frames)
+- paired_path: ~docs/contracts/ipc-v2.org~
+- paired_revision: ~971f0a88af0ed9496210a2da0c291eaf35937556~
+- paired_document_sha256: ~a593e1eb1e5194dc0dc122fb15896240b6547a644c28ae388bb2a85a2a47a202~
+- vendored_source_revision: ~e5da392ea0b26d89bea6e72d58e1e952a48b7600~
+- vendored_source_sha256: ~8bfdc102e8c37cb0399f169030d9bf37ff37aff2d14299b09e2325fb276bb32b~
+- paired_fixture_dir: ~test/fixtures/contracts/ipc/v2/~
+- paired_fixture_contract_hash: ~78c2f64240c3c5c9da60425c65c498974a2a81c8adb3e68e0bef28613c1707dc~
+- paired_fixture_count: ~16~
+
+~paired_document_sha256~ is the digest of the WHOLE producer document at
+~paired_revision~, which is the producer's pairing block, its producer addenda
+and the vendored region together. ~vendored_source_revision~ is the revision of
+THIS file whose bytes that copy vendors, and ~vendored_source_sha256~ its
+digest: the pairing is a pair of snapshots, and either side moves it by a
+deliberate re-pairing rather than by drifting.
+
+Adding this block changes this file, so the revision that carries it supersedes
+~vendored_source_revision~ as the consumer tip and the producer owes one
+re-vendoring: it re-takes these bytes and moves its ~source_revision~,
+~source_sha256~ and its own test pin together. Nothing breaks in the meantime.
+The producer's pins name a revision whose bytes are unchanged for ever, so its
+drift control keeps failing on a producer-side edit, and the fixtures and their
+~CONTRACT_HASH~ -- which are byte-identical in both repositories by design and
+pinned by ~test/contracts/ipc_v2_contract_hash_test.exs~ here -- were untouched
+by it.
+
+What the control here can see: that this document still names the paired
+revision, the paired digests, and the fixture hash the fixtures in this
+repository actually produce. What it CANNOT see is a change made in the producer
+repository, because this gate has no access to it -- the same stated limit the
+producer copy records in the other direction. A pairing that has gone stale is
+found by reading the two blocks, not by either gate.
+
 ** Framing and version
 :PROPERTIES:
 :CUSTOM_ID: framing-and-version
