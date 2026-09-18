@@ -120,6 +120,7 @@ defmodule AiOrchestrator.Test.DispatchAdapterConformance do
       unquote(capability_rows())
       unquote(preflight_rows())
       unquote(reconcile_rows())
+      unquote(gate_l_dimension_rows())
     end
   end
 
@@ -284,6 +285,93 @@ defmodule AiOrchestrator.Test.DispatchAdapterConformance do
           end
 
           refute conformance_pasted?(), "a refused delivery leaves no pane effect behind"
+        end
+      end
+    end
+  end
+
+  # NS-29.L.000 / NS-29.L.001. Gate L names six dimensions (architecture:716): delivery, observation,
+  # cancellation, identity, BACKPRESSURE and AMBIGUOUS FAILURE. The rows above cover delivery and
+  # observation. `queued` and `ambiguous` are already members of the reconcile union the suite
+  # exercises, but only as WORDS a `reconcile/2` answer may carry -- nothing here says what an adapter
+  # must DO with them, which is what a Gate L dimension is about. These two rows say it.
+  #
+  # Cancellation and identity are deliberately NOT here: `AiOrchestrator.Dispatch` declares no `cancel`
+  # and no `identity` callback (dispatch.ex:11-19) though architecture:387 names both, so those two
+  # dimensions cannot be written without a behaviour change, which is its own reviewed contract change.
+  defp gate_l_dimension_rows do
+    quote do
+      describe "#{inspect(@conformance_adapter)} conformance: the Gate L dimensions the union expresses" do
+        # BACKPRESSURE. A queued receipt says the daemon accepted the bytes and has not pasted them.
+        # The one thing an adapter may not do with it is paste again, and the second thing it may not
+        # do is call it a send this process performed: EJ-7 fixes `send_status` as `ok | queued |
+        # reconciled`, where `ok` alone names a fresh paste. Both delivered adapters answer a value
+        # here, and they answer DIFFERENT values (`queued` for LocalPane, `reconciled` for the scripted
+        # adapter), so the common row states the two things the behaviour actually fixes and not a
+        # word one adapter happens to use.
+        test "backpressure: a queued reconcile is not resent, and is never reported as a fresh send" do
+          result = @conformance_adapter.deliver(conformance_command(), conformance_opts({:reconcile, "queued"}))
+
+          assert {:ok, data} = result, "a queued receipt is an answer, not a refusal; got #{inspect(result)}"
+
+          refute conformance_pasted?(),
+                 "the daemon already holds these bytes: a second paste is a duplicate prompt"
+
+          refute data["send_status"] == "ok",
+                 "`ok` names a paste this process performed, and this process pasted nothing"
+
+          assert data["send_status"] in ["queued", "reconciled"],
+                 "a queued receipt must be carried under a status that says it was not freshly sent; " <>
+                   "got #{inspect(data["send_status"])}"
+        end
+
+        # The discriminator that keeps the row above from passing for an adapter that never pastes at
+        # all. `absent` is the ONE outcome that admits a paste, and under it the same command must
+        # reach the pane.
+        test "backpressure control: the one outcome that admits a paste does paste, so the row above is not vacuous" do
+          assert {:ok, _data} =
+                   @conformance_adapter.deliver(conformance_command(), conformance_opts({:reconcile, "absent"}))
+
+          assert conformance_pasted?(),
+                 "an absent receipt is the only outcome that may send, so this adapter never pastes at all " <>
+                   "and the queued row above proves nothing"
+        end
+
+        # AMBIGUOUS FAILURE. The daemon cannot prove the bytes did not land. A guess either duplicates
+        # work or drops it, so the only admissible answer is a refusal that names the ambiguity -- and
+        # a refusal must not be readable as an answer about delivery.
+        test "ambiguous failure: an unproven receipt refuses, names the ambiguity, and leaves the pane alone" do
+          result = @conformance_adapter.deliver(conformance_command(), conformance_opts({:reconcile, "ambiguous"}))
+
+          assert {:error, error} = result,
+                 "an ambiguous receipt must not be answered as a delivery; got #{inspect(result)}"
+
+          assert Conformance.refusal?(error), inspect(error)
+          assert error["reason"] == "dispatch_reconcile_ambiguous", inspect(error)
+          assert error["detector"] == "dispatch_reconcile", inspect(error)
+
+          refute conformance_pasted?(),
+                 "the bytes may already have landed: an ambiguous receipt may not be resolved by pasting"
+        end
+
+        # MEASURED, not assumed, and recorded here rather than fixed. `refusal?/1`'s own docstring says
+        # "an error map carrying `send_status` or a reconcile `outcome` would let a caller read a
+        # failure as a delivery", but the predicate only checks `send_status`. The two delivered
+        # adapters diverge on exactly that: LocalPane's ambiguous refusal carries
+        # `"outcome" => "ambiguous"` (local_pane.ex:113-114) and the scripted adapter's does not. So
+        # this row pins the union of what both guarantee -- no `send_status` -- and names the
+        # divergence instead of hiding it behind an assertion only one adapter can pass. Narrowing
+        # `refusal?/1` to match its own docstring would change a delivered refusal shape and is a
+        # refusal-vocabulary change, left to its own reviewed slice exactly as the preflight-word
+        # collapse above is.
+        test "ambiguous failure: whatever else a refusal carries, it never carries a send status" do
+          for scenario <- [{:reconcile, "ambiguous"}, {:reconcile, "conflict"}] do
+            assert {:error, error} = @conformance_adapter.deliver(conformance_command(), conformance_opts(scenario)),
+                   inspect(scenario)
+
+            refute Map.has_key?(error, "send_status"), "#{inspect(scenario)}: #{inspect(error)}"
+            refute conformance_pasted?(), inspect(scenario)
+          end
         end
       end
     end
