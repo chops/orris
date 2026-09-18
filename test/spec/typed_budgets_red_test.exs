@@ -18,11 +18,14 @@ defmodule AiOrchestrator.Spec.TypedBudgetsRedTest do
   @fields ["max_attempts_default", "restart_attempts", "max_wall_clock_s", "gate_attempts"]
 
   # Historical corpus outcomes were measured on RunSpec at 306c629 (path, schema_version, outcome).
-  # The two expected-artifact fixtures and the three acceptance-gate fixtures copy valid_linear's spec bytes and
-  # inherit its expected outcome; those entries are not new runtime measurements. One fixture is a JSON array; one
-  # carries version 99.
+  # The two expected-artifact fixtures, the three acceptance-gate fixtures and the three artifact-path fixtures copy
+  # valid_linear's spec bytes and inherit its expected outcome; those entries are not new runtime measurements. One
+  # fixture is a JSON array; one carries version 99.
   @measured [
     {"test/fixtures/contracts/journals/reject_data_required_fields/spec.json", :list, "invalid_run_spec_shape"},
+    {"test/fixtures/contracts/plans/invalid_artifact_absolute/spec.json", 1, "ok"},
+    {"test/fixtures/contracts/plans/invalid_artifact_outside_roots/spec.json", 1, "ok"},
+    {"test/fixtures/contracts/plans/invalid_artifact_traversal/spec.json", 1, "ok"},
     {"test/fixtures/contracts/plans/invalid_cycle/spec.json", 1, "ok"},
     {"test/fixtures/contracts/plans/invalid_duplicate_ids/spec.json", 1, "ok"},
     {"test/fixtures/contracts/plans/invalid_effort_hint_value/spec.json", 1, "ok"},

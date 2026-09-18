@@ -8,6 +8,8 @@ defmodule AiOrchestrator.Spec.Plan do
 
   @effort_hints ["low", "medium", "high", "xhigh"]
   @writer_kinds MapSet.new(["implement", "integration"])
+  # the repository itself, as the one root a path is judged against when only its FORM is at issue
+  @repository_root ["."]
 
   @doc """
   The allowed paths of the writer kinds (implement, integration): the paths the containment rule
@@ -56,6 +58,7 @@ defmodule AiOrchestrator.Spec.Plan do
          :ok <- validate_duplicate_ids(plan),
          :ok <- validate_missing_deps(plan),
          :ok <- validate_expected_artifacts(plan),
+         :ok <- validate_expected_artifact_paths(plan, validated_spec),
          :ok <- validate_acceptance_gates(plan, validated_spec),
          :ok <- validate_agent_roles(plan, validated_spec),
          :ok <- validate_allowed_paths(plan, validated_spec),
@@ -169,6 +172,38 @@ defmodule AiOrchestrator.Spec.Plan do
        when is_binary(id) and is_list(artifacts), do: Enum.all?(artifacts, &is_binary/1)
 
   defp invalid_expected_artifacts?(_work_item), do: false
+
+  # NS-20.D.001, the declared-artifact half: the artifact the host joins to `repo_root` and reads as
+  # the assignment's evidence is judged by the same pure layer as `allowed_paths`. EVERY kind is
+  # judged by FORM against the repository itself -- an absolute artifact, or one carrying `..`, is
+  # refused whoever declares it. A WRITER kind is additionally required to place its artifact under
+  # one of the spec's allowed roots, because a writer's evidence is a file it is allowed to write.
+  # A declared review item names its own review document, which need not lie under a writer's root,
+  # so the roots rule does not apply to it. Malformed entries are left to the existing shape check.
+  defp validate_expected_artifact_paths(%{"work_items" => work_items} = plan, %{"allowed_roots" => allowed_roots})
+       when is_list(work_items) and is_list(allowed_roots) do
+    with :ok <- judged(@repository_root, expected_artifact_paths(plan, fn _kind -> true end)) do
+      judged(allowed_roots, expected_artifact_paths(plan, &MapSet.member?(@writer_kinds, &1)))
+    end
+  end
+
+  defp validate_expected_artifact_paths(_plan, _spec), do: {:error, %{clause: "invalid_run_plan_shape"}}
+
+  defp judged(roots, paths) do
+    case PathBoundary.lexical(roots, paths) do
+      :ok -> :ok
+      {:error, rejection} -> {:error, path_rejection(rejection)}
+    end
+  end
+
+  defp expected_artifact_paths(%{"work_items" => work_items}, kind?) do
+    for %{"kind" => kind, "expected_artifacts" => artifacts} <- work_items,
+        kind?.(kind),
+        is_list(artifacts),
+        artifact <- artifacts,
+        is_binary(artifact),
+        do: artifact
+  end
 
   defp validate_acceptance_gates(%{"work_items" => work_items}, %{"gates" => gates}) when is_map(gates) do
     case Enum.find_value(work_items, &invalid_acceptance(&1, gates)) do

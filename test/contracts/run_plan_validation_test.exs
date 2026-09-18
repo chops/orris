@@ -14,6 +14,9 @@ defmodule AiOrchestrator.Contracts.RunPlanValidationTest do
   end
 
   for name <- [
+        "invalid_artifact_absolute",
+        "invalid_artifact_outside_roots",
+        "invalid_artifact_traversal",
         "invalid_cycle",
         "invalid_duplicate_ids",
         "invalid_missing_dep",
