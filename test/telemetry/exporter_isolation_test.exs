@@ -61,6 +61,8 @@ defmodule AiOrchestrator.Telemetry.ExporterIsolationTest do
     def export(tab, _resource, %{mode: mode, test: test, switch: switch}) do
       if Agent.get(switch, & &1) do
         send(test, {:export_attempted, mode, self(), :ets.info(tab, :size), System.monotonic_time()})
+        # the hang row asserts this runner is KILLED; it must be watched before it hangs (see below)
+        if mode == :hang, do: watch_runner!(test)
         fail(mode)
       else
         :ok
@@ -69,6 +71,46 @@ defmodule AiOrchestrator.Telemetry.ExporterIsolationTest do
 
     @impl true
     def shutdown(_state), do: :ok
+
+    # Reports how this runner dies, to a watcher established BEFORE it hangs.
+    #
+    # The hang row cannot learn that from a monitor the TEST sets up after the perturbed run: the
+    # processor kills the runner `exporting_timeout_ms` after the export begins, the test reaches its
+    # monitor only after the rest of that run and a journal byte comparison, and `Process.monitor/1`
+    # on an already-dead process answers `{:DOWN, ref, :process, pid, :noproc}` -- `:noproc` records
+    # that the process is gone and NOTHING about how it went, so a slow enough machine turns a
+    # correct kill into a failure. That is not hypothetical: the window between the export attempt
+    # and that monitor measures ~33 ms idle and 216-1941 ms under CPU oversubscription, either side
+    # of the 200 ms timeout.
+    #
+    # The watcher is therefore created here, by the runner itself, in the same breath as the export
+    # and before it hangs, so it is already watching whatever the machine does afterwards, and it
+    # reports the real exit reason. It must NOT be linked: `:kill` propagates along links and would
+    # take the watcher down with its subject before it could report.
+    #
+    # The runner then WAITS for the watcher to confirm the monitor is up before hanging. Spawning is
+    # asynchronous, so without this handshake a runner that died promptly could still outrun its own
+    # watcher and reproduce the very `:noproc` this exists to eliminate. The watcher monitors before
+    # it confirms, so even a kill delivered mid-handshake is observed rather than lost.
+    defp watch_runner!(test) do
+      runner = self()
+      watching = make_ref()
+
+      spawn(fn ->
+        ref = Process.monitor(runner)
+        send(runner, watching)
+
+        receive do
+          {:DOWN, ^ref, :process, ^runner, reason} -> send(test, {:runner_down, runner, reason})
+        end
+      end)
+
+      receive do
+        ^watching -> :ok
+      after
+        5_000 -> raise "the export runner watcher never established its monitor"
+      end
+    end
 
     # a soft failure the processor reports and drops
     defp fail(:not_retryable), do: :failed_not_retryable
@@ -242,9 +284,13 @@ defmodule AiOrchestrator.Telemetry.ExporterIsolationTest do
     end
   end
 
+  # The runner's own watcher (FailingExporter.watch_runner!/1) was monitoring before the export could
+  # time out, so this reads the reason the runner ACTUALLY died of rather than racing to observe it.
+  # `^runner` pins the report to the runner that made the measured attempt, so a later export cycle's
+  # runner cannot answer for it. The row still fails if the timeout never kills the runner (nothing
+  # arrives within 5 s) and if it dies of anything other than the kill.
   defp assert_runner_killed!(runner) do
-    monitor = Process.monitor(runner)
-    assert_receive {:DOWN, ^monitor, :process, ^runner, reason}, 5_000
+    assert_receive {:runner_down, ^runner, reason}, 5_000
     assert reason == :killed, "the hung export runner was not killed by the exporting timeout: #{inspect(reason)}"
   end
 
