@@ -110,8 +110,15 @@ defmodule AiOrchestrator.Lifecycle.Core.Reducer do
   # by the run server from the locked, verified prefix; it is validated against the prefix here and never
   # taken on trust. start emits only the genuinely missing preamble suffix, then the existing recovery;
   # resume is the existing recovery without a new run_resumed; cancel releases only the leases still held
-  # (a request left pending is completed under its own id) and then journals run_cancelled.
-  @continuation_acceptance %{"start" => "run_created", "resume" => "run_resumed", "cancel" => "run_cancel_requested"}
+  # (a request left pending is completed under its own id) and then journals run_cancelled. resolve_attention is a
+  # resume whose durable run_resumed names the ids it resolved: it continues only when that row resolved exactly the
+  # attention open at its seq (the same rule the acceptance applied), then as a resume.
+  @continuation_acceptance %{
+    "start" => "run_created",
+    "resume" => "run_resumed",
+    "resolve_attention" => "run_resumed",
+    "cancel" => "run_cancel_requested"
+  }
   @lifecycle_acceptances Map.values(@continuation_acceptance)
   @preamble_suffix ~w(run_spec_loaded plan_recorded run_started)
 
@@ -120,7 +127,8 @@ defmodule AiOrchestrator.Lifecycle.Core.Reducer do
     with :ok <- continuation_acceptance(prior_events, seq, verb),
          {:ok, prior_views} <- upcast_all(prior_events),
          {:ok, prior_state} <- Fold.fold_views(prior_views),
-         :ok <- continuable(prior_state) do
+         :ok <- continuable(prior_state),
+         :ok <- continued_resolution(verb, prior_views, seq, opts) do
       continue_execution(verb, spec, plan, prior_state, prior_views, opts)
     end
   end
@@ -142,6 +150,37 @@ defmodule AiOrchestrator.Lifecycle.Core.Reducer do
 
   defp continuable(%{terminal?: true}), do: {:error, %{clause: "continuation_acceptance_invalid"}}
   defp continuable(_state), do: :ok
+
+  # the accepted resolve row's ids (the command's own argument, idempotency-matched to the row's stamp) must equal
+  # the attention open at the row's seq, as the acceptance required; anything else is refused closed, nothing appended
+  defp continued_resolution("resolve_attention", prior_views, seq, opts) do
+    with {:ok, before} <- prior_views |> Enum.filter(&(&1["seq"] < seq)) |> Fold.fold_views() do
+      attention_admitted(before, opts)
+    end
+  end
+
+  defp continued_resolution(_verb, _prior_views, _seq, _opts), do: :ok
+
+  # a plain resume keeps its refusal while attention is open; resolve_attention (opts carry the ids the command names)
+  # is admitted only when the named ids are exactly the sorted open set - a strict subset or an unknown id is refused
+  # closed and nothing is appended (a resolved-but-still-blocked pane is re-observed by the existing recovery)
+  defp attention_admitted(fold_state, opts) do
+    case Keyword.get(opts, :resolves_attention_ids) do
+      nil -> no_open_attention(fold_state)
+      ids when is_list(ids) -> attention_resolved(ids, sorted_set(fold_state.open_attention_ids))
+    end
+  end
+
+  defp attention_resolved(ids, open) do
+    resolved = ids |> Enum.uniq() |> Enum.sort()
+    unknown = resolved -- open
+
+    if unknown == [] and resolved == open do
+      :ok
+    else
+      {:error, %{"reason" => "attention_unresolved", "open_attention_ids" => open, "unknown_attention_ids" => unknown}}
+    end
+  end
 
   defp continue_execution("cancel", _spec, _plan, fold_state, prior_views, opts) do
     state = cancel_state_from_fold(fold_state, prior_views, opts)
@@ -487,25 +526,17 @@ defmodule AiOrchestrator.Lifecycle.Core.Reducer do
   defp resume_execution(spec, plan, fold_state, prior_events, opts) do
     state = state_from_fold(spec, plan, fold_state, prior_events, opts)
 
-    cond do
-      fold_state.terminal? ->
-        halt(state, :ok)
-
-      MapSet.size(fold_state.open_attention_ids) > 0 ->
-        {:error,
-         %{
-           "reason" => "attention_required",
-           "open_attention_ids" => sorted_set(fold_state.open_attention_ids)
-         }}
-
-      true ->
-        with :ok <- lease_ownership_coherent(prior_events, fold_state) do
-          state
-          |> emit("run_resumed", run_resumed_data(state.run, fold_state, opts))
-          |> repair_stale_leases(fold_state)
-          |> push(:normalize_execution)
-          |> continue_resumed(fold_state)
-        end
+    if fold_state.terminal? do
+      halt(state, :ok)
+    else
+      with :ok <- attention_admitted(fold_state, opts),
+           :ok <- lease_ownership_coherent(prior_events, fold_state) do
+        state
+        |> emit("run_resumed", run_resumed_data(state.run, fold_state, opts))
+        |> repair_stale_leases(fold_state)
+        |> push(:normalize_execution)
+        |> continue_resumed(fold_state)
+      end
     end
   end
 
@@ -3126,8 +3157,17 @@ defmodule AiOrchestrator.Lifecycle.Core.Reducer do
       "recovery_reason" => Keyword.get(opts, :recovery_reason, "crash_recovery")
     }
     |> put_present("run_lock_path", run.run_lock_path)
+    |> put_resolved_attention(opts)
     |> put_tail_repair(opts)
     |> put_stamp(Keyword.get(opts, :requested_by))
+  end
+
+  # the ids an admitted resolve_attention resolves (already checked equal to the open set): the fold drops them
+  defp put_resolved_attention(data, opts) do
+    case Keyword.get(opts, :resolves_attention_ids) do
+      ids when is_list(ids) and ids != [] -> Map.put(data, "resolves_attention_ids", ids |> Enum.uniq() |> Enum.sort())
+      _ -> data
+    end
   end
 
   defp run_cancel_data(run, state, opts) do

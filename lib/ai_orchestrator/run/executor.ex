@@ -6,7 +6,8 @@ defmodule AiOrchestrator.Run.Executor do
   down by a dedicated owner process (`AiOrchestrator.Run.Executor.Owner`) that the caller monitors.
 
   Order, each step before any Writer, file or effect activity of the next: verb scope (start, resume,
-  cancel only), stamp revalidation (a caller can build a `Command` without `Commands`), executor
+  cancel and resolve_attention only; resolve_attention runs as the resume mode whose acceptance event
+  names the resolved attention ids), stamp revalidation (a caller can build a `Command` without `Commands`), executor
   context validation, the start arguments against the consumed inputs, then the owned subtree.
   Everything from there happens under the Writer lock inside the subtree, where `Run.Server` admits
   the command against the locked verified prefix.
@@ -26,8 +27,17 @@ defmodule AiOrchestrator.Run.Executor do
   alias AiOrchestrator.Journal.Schemas.RequestedBy
   alias AiOrchestrator.Run.Executor.Owner
 
-  @verbs %{"start" => :run, "resume" => :resume, "cancel" => :cancel}
-  @owned_bindings [:event_sink, :run_dir, :run_lock_path, :tail_repair, :requested_by, :cancel_reason, :recovery_reason]
+  @verbs %{"start" => :run, "resume" => :resume, "cancel" => :cancel, "resolve_attention" => :resume}
+  @owned_bindings [
+    :event_sink,
+    :run_dir,
+    :run_lock_path,
+    :tail_repair,
+    :requested_by,
+    :cancel_reason,
+    :recovery_reason,
+    :resolves_attention_ids
+  ]
   # spec_hash/plan_hash stay in the Host options: they are the input provenance the reducer journals
   @context_keys [:run_dir, :spec, :plan, :trace, :barrier, :restart_empty]
 

@@ -1010,7 +1010,7 @@ defmodule AiOrchestrator.Run.CommandExecutorRedTest do
 
   # =================================================================================================
   describe "E-1 (A) interface and verb scope" do
-    test "Run.Executor implements Commands.Executor and accepts exactly start, resume and cancel" do
+    test "Run.Executor implements Commands.Executor and accepts exactly start, resume, cancel and resolve_attention" do
       require_executor!()
       assert function_exported?(executor(), :execute, 2)
       behaviours = :attributes |> executor().module_info() |> Keyword.get_values(:behaviour) |> List.flatten()
@@ -1031,6 +1031,10 @@ defmodule AiOrchestrator.Run.CommandExecutorRedTest do
       assert {:ok, %{summary: %{"status" => "completed"}, appended_events: []}} =
                invoke("cancel", %{"reason" => "operator_cancel"}, run_id, CommandId.generate(), ctx)
 
+      # G1 (R08): resolve_attention is a resume; on a terminal run it is the same terminal no-op
+      assert {:ok, %{summary: %{"status" => "completed"}, appended_events: []}} =
+               invoke("resolve_attention", %{"attention_ids" => "att_0001"}, run_id, CommandId.generate(), ctx)
+
       assert journal_bytes(run_dir) == before
       refute Enum.any?(journal(run_dir), &(&1["type"] in ["run_resumed", "run_cancel_requested"]))
     end
@@ -1038,7 +1042,6 @@ defmodule AiOrchestrator.Run.CommandExecutorRedTest do
     for {verb, args} <- [
           {"pause", %{"reason" => "hold"}},
           {"repair", %{"kind" => "tail_truncate", "detail_hash" => @zero}},
-          {"resolve_attention", %{"attention_ids" => "att_0001"}},
           {"ratify_plan", %{"plan_hash" => @zero}}
         ] do
       test "a policy-valid but out-of-scope verb (#{verb}) is command_verb_unsupported with no activity at all" do
@@ -1052,6 +1055,208 @@ defmodule AiOrchestrator.Run.CommandExecutorRedTest do
 
         assert_no_activity!(fs, run_dir)
       end
+    end
+  end
+
+  # =================================================================================================
+  # G1 (R08 source-gap audit, slice G1): the resolve_attention verb. The journal already knew the answer
+  # (run_resumed.resolves_attention_ids, an optional schema field the fold drops); this unit adds the producer:
+  # the executor maps the verb to the resume mode, the server binds the command's ids, and the reducer admits the
+  # resume only when the named ids are exactly the sorted open set. No schema change, no IPC change.
+  @attention_block Path.expand("../fixtures/contracts/journals/fold_attention_block/events.jsonl", __DIR__)
+  @resolve_args %{"attention_ids" => "att_0001"}
+
+  defp attention_block_lines, do: @attention_block |> File.read!() |> String.split("\n", trim: true)
+
+  # a second open attention appended to the fixture prefix (same closed payload shape as the fixture's att_0001)
+  defp second_attention_line(lines) do
+    last = lines |> List.last() |> Jason.decode!()
+    seq = last["seq"] + 1
+
+    last
+    |> Map.merge(%{"seq" => seq, "event_id" => "ev_" <> String.pad_leading(Integer.to_string(seq), 4, "0")})
+    |> put_in(["data", "attention_id"], "att_0002")
+    |> Jason.encode!()
+  end
+
+  defp seeded_block(lines \\ attention_block_lines()) do
+    run_dir = tmp_run_dir()
+    seed_legacy!(run_dir, lines)
+    {run_dir, run_id_of(run_dir)}
+  end
+
+  describe "G-1 resolve_attention" do
+    test "accept: one stamped run_resumed with resolves_attention_ids == the sorted open set, recovery completes, retry replays" do
+      require_executor!()
+      {run_dir, run_id} = seeded_block()
+      ctx = context(run_dir, "gated_run_seed", gated_index())
+      command_id = CommandId.generate()
+
+      assert {:ok, %{summary: summary, appended_events: appended}} =
+               invoke("resolve_attention", @resolve_args, run_id, command_id, ctx)
+
+      # a completed summary carries no attention key at all: the resolved id is gone, nothing reopened
+      assert %{"status" => "completed", "completed_work_item_ids" => ["item_a"]} = summary
+      refute Map.has_key?(summary, "open_attention_ids")
+      assert [resumed | _rest] = appended
+      assert resumed["type"] == "run_resumed"
+      assert resumed["data"]["resolves_attention_ids"] == ["att_0001"]
+      assert resumed["data"]["recovery_reason"] == "attention_resolved"
+      assert resumed["data"]["requested_by"] == expected_stamp(@operator, "resolve_attention", @resolve_args, command_id)
+      assert Enum.count(appended, &(&1["type"] == "run_resumed")) == 1
+      # the recovery is the ordinary resumed run: the plan's work item is dispatched, gated and completed
+      assert "run_completed" in Enum.map(appended, & &1["type"])
+      assert_released!(run_dir)
+      before = journal_bytes(run_dir)
+      retry_ctx = context(run_dir, "gated_run_seed", gated_index(), effect_observer: observer_to(self()))
+
+      assert {:ok, %{summary: ^summary, appended_events: []}} =
+               invoke("resolve_attention", @resolve_args, run_id, command_id, retry_ctx)
+
+      assert journal_bytes(run_dir) == before
+      refute_received {:effect_ran, _}
+    end
+
+    test "a strict subset or an unknown id is attention_unresolved: nothing appended, no effect; plain resume keeps its refusal" do
+      require_executor!()
+      lines = attention_block_lines()
+      two = lines ++ [second_attention_line(lines)]
+      {two_dir, two_id} = seeded_block(two)
+      before_two = journal_bytes(two_dir)
+      two_ctx = context(two_dir, "gated_run_seed", gated_index(), effect_observer: observer_to(self()))
+
+      assert {:error,
+              %{
+                "reason" => "attention_unresolved",
+                "open_attention_ids" => ["att_0001", "att_0002"],
+                "unknown_attention_ids" => []
+              }} = invoke("resolve_attention", @resolve_args, two_id, CommandId.generate(), two_ctx)
+
+      assert {:error,
+              %{
+                "reason" => "attention_unresolved",
+                "open_attention_ids" => ["att_0001", "att_0002"],
+                "unknown_attention_ids" => ["att_0009"]
+              }} =
+               invoke(
+                 "resolve_attention",
+                 %{"attention_ids" => "att_0001,att_0009"},
+                 two_id,
+                 CommandId.generate(),
+                 two_ctx
+               )
+
+      assert journal_bytes(two_dir) == before_two
+      refute Enum.any?(journal(two_dir), &(&1["type"] == "run_resumed"))
+      # the fixture itself: an unknown id alone
+      {one_dir, one_id} = seeded_block()
+      before_one = journal_bytes(one_dir)
+      one_ctx = context(one_dir, "gated_run_seed", gated_index(), effect_observer: observer_to(self()))
+
+      assert {:error,
+              %{
+                "reason" => "attention_unresolved",
+                "open_attention_ids" => ["att_0001"],
+                "unknown_attention_ids" => ["att_0009"]
+              }} =
+               invoke("resolve_attention", %{"attention_ids" => "att_0009"}, one_id, CommandId.generate(), one_ctx)
+
+      # the plain resume keeps its own refusal on the same prefix
+      assert {:error, %{"reason" => "attention_required", "open_attention_ids" => ["att_0001"]}} =
+               invoke("resume", %{"recovery_reason" => "operator_resume"}, one_id, CommandId.generate(), one_ctx)
+
+      assert journal_bytes(one_dir) == before_one
+      refute_received {:effect_ran, _}
+    end
+
+    test "both open ids in either order resolve the two-attention prefix; the row carries them sorted" do
+      require_executor!()
+      lines = attention_block_lines()
+      {run_dir, run_id} = seeded_block(lines ++ [second_attention_line(lines)])
+      ctx = context(run_dir, "gated_run_seed", gated_index())
+
+      assert {:ok, %{summary: %{"status" => "completed"}, appended_events: [resumed | _]}} =
+               invoke("resolve_attention", %{"attention_ids" => "att_0002,att_0001"}, run_id, CommandId.generate(), ctx)
+
+      assert resumed["type"] == "run_resumed" and resumed["data"]["resolves_attention_ids"] == ["att_0001", "att_0002"]
+    end
+
+    test "interrupted after acceptance: the retry CONTINUES with one acceptance; after a later stamped resume it is command_superseded" do
+      require_executor!()
+      {run_dir, run_id} = seeded_block()
+      # the resolve is accepted (its run_resumed is this invocation's FIRST receipt) and killed right after
+      fs = FaultFs.new()
+      kill_after_receipt(fs, self(), 1)
+      resolve_id = CommandId.generate()
+
+      assert {:error, %{clause: "run_server_down"}} =
+               invoke(
+                 "resolve_attention",
+                 @resolve_args,
+                 run_id,
+                 resolve_id,
+                 context(run_dir, "gated_run_seed", gated_index(), fs: fs)
+               )
+
+      assert_received {:durable, 1}
+      assert [resumed] = Enum.filter(journal(run_dir), &(&1["type"] == "run_resumed"))
+      assert resumed["data"]["resolves_attention_ids"] == ["att_0001"]
+      assert resumed["data"]["requested_by"]["command_id"] == resolve_id
+      # (d) the continuation applies the same rule from the accepted row: no second acceptance, the run completes
+      prefix_dir = tmp_run_dir()
+      seed_legacy!(prefix_dir, legacy_lines(journal(run_dir)))
+      continue_ctx = context(prefix_dir, "gated_run_seed", gated_index())
+
+      assert {:ok, %{summary: %{"status" => "completed"}, events: events}} =
+               invoke("resolve_attention", @resolve_args, run_id, resolve_id, continue_ctx)
+
+      assert Enum.count(events, &(&1["type"] == "run_resumed")) == 1
+      # back on the interrupted journal: a stamped PLAIN resume is accepted (nothing is open any more) ...
+      resume_id = CommandId.generate()
+
+      assert {:ok, %{summary: %{"status" => "completed"}, appended_events: [plain | _]}} =
+               invoke(
+                 "resume",
+                 %{"recovery_reason" => "operator_resume"},
+                 run_id,
+                 resume_id,
+                 context(run_dir, "gated_run_seed", gated_index())
+               )
+
+      assert plain["type"] == "run_resumed" and plain["data"]["requested_by"]["command_id"] == resume_id
+      refute Map.has_key?(plain["data"], "resolves_attention_ids")
+      before = journal_bytes(run_dir)
+      retry_ctx = context(run_dir, "gated_run_seed", gated_index(), effect_observer: observer_to(self()))
+      # ... so the resolve's own interval is bounded by a later acceptance: superseded, nothing appended
+      assert {:error, %{clause: "command_superseded"}} =
+               invoke("resolve_attention", @resolve_args, run_id, resolve_id, retry_ctx)
+
+      assert journal_bytes(run_dir) == before
+      refute_received {:effect_ran, _}
+    end
+
+    test "a resolved-but-still-blocked pane is re-observed, never re-sent: the run re-blocks under a new id" do
+      require_executor!()
+      run_dir = tmp_run_dir()
+      ctx = context(run_dir, "auth_blocked_pane", blocked_index())
+
+      assert {:ok, %{summary: %{"status" => "blocked", "open_attention_ids" => ["att_0001"]}}} =
+               invoke("start", start_args(ctx), "run_g1_reblock", CommandId.generate(), ctx)
+
+      sends = Enum.count(journal(run_dir), &(&1["type"] == "assignment_dispatch_sent"))
+
+      assert {:ok, %{summary: %{"status" => "blocked", "open_attention_ids" => ["att_0002"]}, appended_events: appended}} =
+               invoke(
+                 "resolve_attention",
+                 @resolve_args,
+                 "run_g1_reblock",
+                 CommandId.generate(),
+                 context(run_dir, "auth_blocked_pane", blocked_index())
+               )
+
+      assert [%{"type" => "run_resumed", "data" => %{"resolves_attention_ids" => ["att_0001"]}} | _] = appended
+      assert Enum.count(journal(run_dir), &(&1["type"] == "assignment_dispatch_sent")) == sends
+      assert Enum.count(journal(run_dir), &(&1["type"] == "human_attention_required")) == 2
     end
   end
 

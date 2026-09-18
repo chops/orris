@@ -730,7 +730,7 @@ defmodule AiOrchestrator.Run.Server do
   # directory, the Writer's lock path and the repair this Writer actually performed. Whatever a caller
   # supplied under these keys is dropped first, so a clean verified prefix can never acquire a repair
   # record and no binding can point anywhere but this subtree.
-  @owned_bindings [:event_sink, :run_dir, :run_lock_path, :tail_repair]
+  @owned_bindings [:event_sink, :run_dir, :run_lock_path, :tail_repair, :resolves_attention_ids]
 
   defp open(%{mode: mode, opts: opts} = config, %{writer: writer}) do
     opened = Writer.opened(writer)
@@ -882,6 +882,11 @@ defmodule AiOrchestrator.Run.Server do
 
   defp reason_bindings(%Command{requested_by: %{"verb" => "resume"}, args: %{"recovery_reason" => r}}),
     do: [recovery_reason: r]
+
+  # resolve_attention is a resume whose acceptance names the attention ids it resolves (ADR 0001: run_resumed);
+  # the ids are the command's own closed argument (Arguments grammar: ids joined by ","), never a caller option
+  defp reason_bindings(%Command{requested_by: %{"verb" => "resolve_attention"}, args: %{"attention_ids" => ids}}),
+    do: [resolves_attention_ids: String.split(ids, ","), recovery_reason: "attention_resolved"]
 
   defp reason_bindings(_command), do: []
 
