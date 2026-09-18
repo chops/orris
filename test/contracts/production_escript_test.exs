@@ -14,6 +14,8 @@ defmodule AiOrchestrator.Contracts.ProductionEscriptTest do
   @moduletag timeout: 300_000
 
   @fixture "test/fixtures/contracts/scenarios/kill9_resume/events_pre_gate.jsonl"
+  # a recorded status that is NOT terminal, so `status --watch` keeps looping instead of ending on its own
+  @blocked_fixture "test/fixtures/contracts/scenarios/auth_blocked_pane/events.jsonl"
   @artifact_path "bin/ai-orchestrator"
 
   # The exact expected packaged application set (docs/contracts/production-escript.org, PE-4): the application,
@@ -109,6 +111,49 @@ defmodule AiOrchestrator.Contracts.ProductionEscriptTest do
     assert :boundary in Mix.Project.config()[:compilers]
   end
 
+  # The interrupt leg of `status --watch` (lib/ai_orchestrator/cli/watch.ex): the loop ends on a terminal recorded
+  # status, on the `--for-ms` horizon, after a bounded cycle count -- each of which test/cli/cli_watch_test.exs
+  # drives with injected seams -- "or when the operator interrupts the foreground process", which no row asserted.
+  # It has to be THIS artifact. Measured on 2026-09-18 with the same Port shape, run directory and signal:
+  #   elixir <script>                  STILL RUNNING 12s after SIGINT   (the ERTS break handler takes the signal
+  #   elixir --erl "-noinput" <script> STILL RUNNING 12s after SIGINT    and waits for a keystroke that a pipe
+  #   elixir --erl "+Bi" <script>      STILL RUNNING 12s after SIGINT    never delivers)
+  #   elixir --erl "+Bd" <script>      EXITED status=130
+  #   bin/ai-orchestrator (escript)    EXITED status=130
+  # So the row is a property of the packaged escript, which starts its emulator with the break handler off, and a
+  # version of it run under bare `elixir` would hang rather than pass. 130 is 128 + SIGINT: the runtime exits on
+  # the signal itself. The loop installs no handler -- that would be exactly the run-owned machinery this verb
+  # must not add -- and needs none, because it holds no lock, owns no timer and writes nothing.
+  test "PE-7 an interrupt ends the foreground watch process, which has written nothing", %{build: build} do
+    assert artifact?(build), "no production artifact to launch (build exit #{build.exit})"
+    run_dir = Path.join(build.work, "watch_run")
+    File.mkdir_p!(run_dir)
+    File.cp!(@blocked_fixture, Path.join(run_dir, "events.jsonl"))
+    before = directory_digest(run_dir)
+
+    # a ten-minute horizon against the bounded waits below: an end inside them is the signal, never the horizon
+    port =
+      Port.open(
+        {:spawn_executable, build.artifact},
+        [
+          :binary,
+          :exit_status,
+          :stderr_to_stdout,
+          args: ["status", "--watch", "--interval-ms", "50", "--for-ms", "600000", run_dir]
+        ]
+      )
+
+    # the loop has rendered, so the process is inside it rather than still starting the runtime
+    rendered = await(port, "* Status: BLOCKED", 120_000)
+    {:os_pid, os_pid} = Port.info(port, :os_pid)
+    assert {_out, 0} = System.cmd("kill", ["-INT", Integer.to_string(os_pid)], stderr_to_stdout: true)
+    {status, output} = drain(port, rendered, 30_000)
+
+    assert status == 130, "the interrupted watch exited #{status}:\n#{tail(output)}"
+    # an interrupted read leaves the run exactly as it found it: no repair, no receipt, no projection
+    assert directory_digest(run_dir) == before
+  end
+
   # ---- oracle controls: the comparison rejects both directions ----
 
   test "CO-1 an extra dev-only transitive application is rejected by the oracle" do
@@ -124,6 +169,40 @@ defmodule AiOrchestrator.Contracts.ProductionEscriptTest do
   # ---- helpers ----
 
   defp tail(output), do: output |> String.split("\n") |> Enum.take(-12) |> Enum.join("\n")
+
+  # bounded wait for a marker in a running process's output; an early exit or a silent process is a failure here
+  defp await(port, marker, timeout, acc \\ "") do
+    if String.contains?(acc, marker) do
+      acc
+    else
+      receive do
+        {^port, {:data, chunk}} -> await(port, marker, timeout, acc <> chunk)
+        {^port, {:exit_status, status}} -> flunk("the watch exited (#{status}) before rendering #{marker}: #{acc}")
+      after
+        timeout -> flunk("the watch never rendered #{marker}: #{acc}")
+      end
+    end
+  end
+
+  defp drain(port, acc, timeout) do
+    receive do
+      {^port, {:data, chunk}} -> drain(port, acc <> chunk, timeout)
+      {^port, {:exit_status, status}} -> {status, acc}
+    after
+      timeout -> flunk("the interrupted watch did not exit: #{acc}")
+    end
+  end
+
+  defp directory_digest(dir) do
+    dir
+    |> Path.join("**")
+    |> Path.wildcard()
+    |> Enum.filter(&File.regular?/1)
+    |> Enum.sort()
+    |> Enum.map(fn path ->
+      {Path.relative_to(path, dir), :sha256 |> :crypto.hash(File.read!(path)) |> Base.encode16(case: :lower)}
+    end)
+  end
 
   defp artifact?(build), do: build.exit == 0 and File.regular?(build.artifact)
 

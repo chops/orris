@@ -8,8 +8,12 @@ defmodule AiOrchestrator.CLI.Watch do
   run it observes. It never writes, repairs or advances a receipt: `Journal.Reader.load/2` is read-only.
 
   The loop ends cleanly on a terminal recorded status, on the bounded `--for-ms` horizon, after a bounded cycle
-  count, or when the operator interrupts the foreground process. A read failure is rendered as the verb's own
-  error and the loop continues, so a torn tail or a vanished receipt during a live run does not end the watch.
+  count, or when the operator interrupts the foreground process: the runtime exits on the signal itself (the
+  packaged escript answers 130, measured by `test/contracts/production_escript_test.exs` PE-7, which also holds
+  the run directory byte-identical across the interrupt). No signal handler is installed here, and none is
+  needed, because the loop holds no lock, owns no timer and writes nothing. A read failure is rendered as the
+  verb's own error and the loop continues, so a torn tail or a vanished receipt during a live run does not end
+  the watch.
   """
 
   alias AiOrchestrator.CLI
