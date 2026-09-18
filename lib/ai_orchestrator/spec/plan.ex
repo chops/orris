@@ -61,6 +61,7 @@ defmodule AiOrchestrator.Spec.Plan do
          :ok <- validate_expected_artifact_paths(plan, validated_spec),
          :ok <- validate_acceptance_gates(plan, validated_spec),
          :ok <- validate_agent_roles(plan, validated_spec),
+         :ok <- validate_reviewer_independence(plan, validated_spec),
          :ok <- validate_allowed_paths(plan, validated_spec),
          :ok <- validate_dag(plan),
          :ok <- validate_stretch_overlap(plan, validated_spec),
@@ -237,6 +238,47 @@ defmodule AiOrchestrator.Spec.Plan do
 
   defp validate_agent_roles(_plan, _spec), do: {:error, %{clause: "invalid_run_plan_shape"}}
 
+  # NS-25.D.001, the provable half. The register's control is "review by the same agent
+  # implementation AND pinned model as the writer without a recorded operator exception fails".
+  # The spec records neither an implementation nor a pinned model (`run_environment` has no
+  # producer), so the ONE identity fact a plan and a spec can decide at admission is the DECLARED
+  # agent: a writer work item whose role resolves to the same agent as the `reviewer` role would
+  # have its work reviewed by itself. Two declarations are the same agent when they carry the same
+  # `name`, or the same non-nil `agent_id` under two names. A spec with no reviewer role is
+  # unaffected -- no review is requested for it at all.
+  #
+  # This refuses a PROVABLE violation. It never establishes independence: two differently named
+  # agents may still be one CLI process running one pinned model, which nothing in the spec or the
+  # journal records today. The positive half is a separate slice.
+  defp validate_reviewer_independence(%{"work_items" => work_items}, %{"agents" => agents})
+       when is_list(work_items) and is_list(agents) do
+    case agent_for_role(agents, "reviewer") do
+      nil -> :ok
+      reviewer -> dependent_writer_agent(work_items, agents, reviewer)
+    end
+  end
+
+  defp validate_reviewer_independence(_plan, _spec), do: {:error, %{clause: "invalid_run_plan_shape"}}
+
+  # the field is the writer item's own agent name: the agent that would review its own work
+  defp dependent_writer_agent(work_items, agents, reviewer) do
+    work_items
+    |> Enum.filter(&writer?/1)
+    |> Enum.find_value(&same_agent(agent_for_role(agents, &1["role"]), reviewer))
+    |> case do
+      nil -> :ok
+      name -> {:error, %{clause: "reviewer_agent_not_independent", field: name}}
+    end
+  end
+
+  defp agent_for_role(agents, role), do: Enum.find(agents, &(&1["role"] == role))
+
+  defp same_agent(%{"name" => name}, %{"name" => name}), do: name
+
+  defp same_agent(%{"name" => name, "agent_id" => agent_id}, %{"agent_id" => agent_id}) when is_binary(agent_id), do: name
+
+  defp same_agent(_writer, _reviewer), do: nil
+
   # the pure layer of the containment rule: absolute and `..` paths are refused by form, the rest by
   # expanded containment under the spec's allowed roots (the physical layer runs at trusted admission)
   defp validate_allowed_paths(%{"work_items" => work_items} = plan, %{"allowed_roots" => allowed_roots})
@@ -314,6 +356,7 @@ defmodule AiOrchestrator.Spec.Plan do
   end
 
   defp writer?(%{"kind" => kind}), do: MapSet.member?(@writer_kinds, kind)
+  defp writer?(_work_item), do: false
 
   defp overlapping_concurrent_writers?(writers, graph) do
     writers

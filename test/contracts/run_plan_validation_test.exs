@@ -29,6 +29,7 @@ defmodule AiOrchestrator.Contracts.RunPlanValidationTest do
         "invalid_unknown_acceptance_gate",
         "invalid_stretch_overlap",
         "invalid_paths_outside_roots",
+        "invalid_reviewer_not_independent",
         "invalid_nonpositive_timeout"
       ] do
     test "#{name}: plan rejected with the named clause" do
@@ -164,6 +165,112 @@ defmodule AiOrchestrator.Contracts.RunPlanValidationTest do
         assert {:error, rejection} = Plan.validate(plan, spec)
         F.assert_rejection_matches(rejection, expected)
       end
+    end
+  end
+
+  # S3 (NS-25.D.001): the one identity fact the source can decide at admission
+  describe "reviewer independence" do
+    setup do
+      {:ok, plan: F.json("plans", "valid_linear", "plan.json"), spec: F.json("plans", "valid_linear", "spec.json")}
+    end
+
+    defp with_agents(spec, agents), do: Map.put(spec, "agents", agents)
+
+    test "distinct writer and reviewer agents are admitted", %{plan: plan, spec: spec} do
+      assert {:ok, _validated} = Plan.validate(plan, spec)
+    end
+
+    test "the same agent name under both roles is refused with that name", %{plan: plan, spec: spec} do
+      spec =
+        with_agents(spec, [
+          %{"name" => "writer_agent", "role" => "writer"},
+          %{"name" => "writer_agent", "role" => "reviewer"}
+        ])
+
+      assert Plan.validate(plan, spec) ==
+               {:error, %{clause: "reviewer_agent_not_independent", field: "writer_agent"}}
+    end
+
+    test "the same agent_id under two names is refused with the writer's name", %{plan: plan, spec: spec} do
+      spec =
+        with_agents(spec, [
+          %{"name" => "writer_agent", "role" => "writer", "agent_id" => "codex_cli_1"},
+          %{"name" => "reviewer_agent", "role" => "reviewer", "agent_id" => "codex_cli_1"}
+        ])
+
+      assert Plan.validate(plan, spec) ==
+               {:error, %{clause: "reviewer_agent_not_independent", field: "writer_agent"}}
+    end
+
+    test "distinct agent_ids under distinct names are admitted", %{plan: plan, spec: spec} do
+      spec =
+        with_agents(spec, [
+          %{"name" => "writer_agent", "role" => "writer", "agent_id" => "codex_cli_1"},
+          %{"name" => "reviewer_agent", "role" => "reviewer", "agent_id" => "claude_cli_1"}
+        ])
+
+      assert {:ok, _validated} = Plan.validate(plan, spec)
+    end
+
+    test "a spec with no reviewer role is unaffected", %{plan: plan, spec: spec} do
+      [writer | _rest] = plan["work_items"]
+      plan = Map.put(plan, "work_items", [writer])
+      spec = with_agents(spec, [%{"name" => "writer_agent", "role" => "writer"}])
+
+      assert {:ok, _validated} = Plan.validate(plan, spec)
+    end
+
+    test "an integration item is judged too, and a review item's own role is not a writer", %{plan: plan, spec: spec} do
+      [writer, reviewer] = plan["work_items"]
+
+      spec =
+        with_agents(spec, [%{"name" => "one_agent", "role" => "writer"}, %{"name" => "one_agent", "role" => "reviewer"}])
+
+      integration = Map.put(writer, "kind", "integration")
+
+      assert {:error, %{clause: "reviewer_agent_not_independent", field: "one_agent"}} =
+               Plan.validate(Map.put(plan, "work_items", [integration, reviewer]), spec)
+
+      # only the review item remains: nothing writes, so nothing is reviewed by its own writer
+      sole_reviewer = Map.put(reviewer, "deps", [])
+      assert {:ok, _validated} = Plan.validate(Map.put(plan, "work_items", [sole_reviewer]), spec)
+    end
+
+    test "a writer item declared under the reviewer role is refused", %{plan: plan, spec: spec} do
+      [writer, reviewer] = plan["work_items"]
+      writer = Map.put(writer, "role", "reviewer")
+
+      assert Plan.validate(Map.put(plan, "work_items", [writer, reviewer]), spec) ==
+               {:error, %{clause: "reviewer_agent_not_independent", field: "reviewer_agent"}}
+    end
+
+    test "the undeclared-role rejection keeps precedence", %{plan: plan, spec: spec} do
+      [writer, reviewer] = plan["work_items"]
+
+      spec =
+        with_agents(spec, [
+          %{"name" => "writer_agent", "role" => "writer"},
+          %{"name" => "writer_agent", "role" => "reviewer"}
+        ])
+
+      plan = Map.put(plan, "work_items", [Map.put(writer, "role", "nobody"), reviewer])
+
+      assert Plan.validate(plan, spec) == {:error, %{clause: "undeclared_agent_role", field: "nobody"}}
+    end
+
+    test "the independence rejection takes precedence over the later allowed-path check", %{plan: plan, spec: spec} do
+      [writer, reviewer] = plan["work_items"]
+
+      spec =
+        with_agents(spec, [
+          %{"name" => "writer_agent", "role" => "writer"},
+          %{"name" => "writer_agent", "role" => "reviewer"}
+        ])
+
+      plan = Map.put(plan, "work_items", [Map.put(writer, "allowed_paths", ["src"]), reviewer])
+
+      assert Plan.validate(plan, spec) ==
+               {:error, %{clause: "reviewer_agent_not_independent", field: "writer_agent"}}
     end
   end
 

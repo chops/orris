@@ -19,8 +19,9 @@ defmodule AiOrchestrator.Spec.TypedBudgetsRedTest do
 
   # Historical corpus outcomes were measured on RunSpec at 306c629 (path, schema_version, outcome).
   # The two expected-artifact fixtures, the three acceptance-gate fixtures and the three artifact-path fixtures copy
-  # valid_linear's spec bytes and inherit its expected outcome; those entries are not new runtime measurements. One
-  # fixture is a JSON array; one carries version 99.
+  # valid_linear's spec bytes and inherit its expected outcome; the reviewer-independence fixture copies them with one
+  # agent name changed, which RunSpec does not judge, so it inherits the same outcome. Those entries are not new
+  # runtime measurements. One fixture is a JSON array; one carries version 99.
   @measured [
     {"test/fixtures/contracts/journals/reject_data_required_fields/spec.json", :list, "invalid_run_spec_shape"},
     {"test/fixtures/contracts/plans/invalid_artifact_absolute/spec.json", 1, "ok"},
@@ -36,6 +37,7 @@ defmodule AiOrchestrator.Spec.TypedBudgetsRedTest do
     {"test/fixtures/contracts/plans/invalid_multiple_expected_artifacts/spec.json", 1, "ok"},
     {"test/fixtures/contracts/plans/invalid_nonpositive_timeout/spec.json", 1, "ok"},
     {"test/fixtures/contracts/plans/invalid_paths_outside_roots/spec.json", 1, "ok"},
+    {"test/fixtures/contracts/plans/invalid_reviewer_not_independent/spec.json", 1, "ok"},
     {"test/fixtures/contracts/plans/invalid_stretch_overlap/spec.json", 1, "ok"},
     {"test/fixtures/contracts/plans/invalid_undeclared_agent/spec.json", 1, "ok"},
     {"test/fixtures/contracts/plans/invalid_unknown_acceptance_gate/spec.json", 1, "ok"},
