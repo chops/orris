@@ -201,8 +201,10 @@ defmodule C1.MutationPreservationTest do
     # judgement at the snapshot boundary, reviewer independence), the R12 controls,
     # the R10 operator reads (pending_repair carried into the CLI reads,
     # status/list --root --watch, replay with an optional --to-seq prefix fold),
-    # and the second R12 controls lane (redaction artifact classes, the IPC
-    # closed/open boundary pair, the offline-mutation exclusion residues).
+    # the second R12 controls lane (redaction artifact classes, the IPC
+    # closed/open boundary pair, the offline-mutation exclusion residues), and
+    # the R06 consumer conformance (the five reconcile outcome shapes, the
+    # adapter conformance suite, and the two producer grammar refusals).
     # Pin root entries so another core commit cannot silently pass. A later authorized core delivery must update
     # this snapshot explicitly in its review. Console files are outside the
     # snapshot, avoiding a self-referential commit id.
@@ -212,11 +214,11 @@ defmodule C1.MutationPreservationTest do
     040000 tree 538b98582c5c194332306fae9559fa19f46bb33b\tbin
     100644 blob cfbb9f900c6f1442d2552baa0063cff01b270413\tflake.lock
     100644 blob 19621e64b39eda66e1ba845d833a1f3c619bd511\tflake.nix
-    040000 tree fa4362c5507a097aa6bf21478abf3c325c3ed671\tlib
+    040000 tree 4a75332c661532c4dffb38191565ab198c29c89d\tlib
     100644 blob 6f8544e74c5907bebfdba64381e9320b07fcd7e3\tmix.exs
     100644 blob 54b8c07475cf6c51b61b6ea63eade94966c0e27b\tmix.lock
     040000 tree 950aae97c234450184c6cf696d2dadd28520f48f\tnative
-    040000 tree 94223d6f32413a936072232ea8cf82ade2332454\ttest
+    040000 tree 18f11dd244b0baf3c4ae3a7e2c1354a348057523\ttest
     """
 
     {committed, 0} = System.cmd("git", ["ls-tree", "HEAD", "--"] ++ core_paths, cd: Harness.core_path())
