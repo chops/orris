@@ -19,6 +19,14 @@ defmodule AiOrchestrator.Run.Worker do
   and answers the expiry. Fence facts (test-only observer) carry the kind of the operation they describe; a
   retired operation's stale wake keeps that operation's kind, an unknown wake carries none. A birth bootstrap (a zero-arity closure) may supply test-only
   seams; it is executed under the closed failure boundary and never rendered.
+
+  A `Timer` (R08 G4, NS-18.D.002) has no adapter and no task: the fence IS the wait. It is armed at dequeue exactly
+  like Observe (one wall and one monotonic read, `Run.DeadlineFence`), an already-due deadline is answered at once,
+  and otherwise this process returns to its loop and waits LOOP-RESIDENT: every bounded chunk is a
+  `Process.send_after` wake dequeued here, classified against the armed fence at the configured monotonic clock,
+  and the due wake answers `Observation.Deadline` through `Effects.execute` with an expiring runner. Between chunks
+  the mailbox is serviced (a settle retires the timer and answers immediately; stale wakes are facts), so nothing
+  in this process ever sleeps through its mailbox. The direct no-runner `Effects.execute` keeps its own sleep.
   """
   use GenServer
 
@@ -112,7 +120,11 @@ defmodule AiOrchestrator.Run.Worker do
   end
 
   # the Server's deadline actuation, correlated on cap, gen and the pending op's ref: the owner-only settle primitive
-  def handle_info({:gate_deadline, cap, gen, ref}, %{cap: cap, gen: gen, pending: %{ref: ref} = pending} = state) do
+  # (an awaiting gate only: a pending Timer has no port and is never actuated by the Server, so its ref falls through)
+  def handle_info(
+        {:gate_deadline, cap, gen, ref},
+        %{cap: cap, gen: gen, pending: %{ref: ref, key: _, port: _} = pending} = state
+      ) do
     {:noreply,
      complete_pending(state, :settle_await, fn -> Effects.settle_await(state.runtime, pending.key, inputs(state)) end)}
   end
@@ -137,6 +149,11 @@ defmodule AiOrchestrator.Run.Worker do
   def handle_info({:execute, cap, gen, ref, %Effect.ReconcileSend{} = intent, receipt}, %{cap: cap, gen: gen} = state),
     do: {:noreply, execute_fenced(state, ref, intent, receipt)}
 
+  # the Timer is armed here under the same boundary and then waits loop-resident (no adapter, no task, no sleep):
+  # already due at dequeue is answered now, otherwise the op becomes the pending wait and this loop is free
+  def handle_info({:execute, cap, gen, ref, %Effect.Timer{} = intent, receipt}, %{cap: cap, gen: gen} = state),
+    do: {:noreply, execute_timer(state, ref, intent, receipt)}
+
   # every other effect begins through Effects.begin/3 (AW-M6: `{:done, execute(...)}` unless an AwaitGate opts in);
   # capability selection, the begin and the validation of a pending return run INSIDE the boundary (latest runtime)
   def handle_info({:execute, cap, gen, ref, intent, receipt}, %{cap: cap, gen: gen} = state) do
@@ -144,11 +161,18 @@ defmodule AiOrchestrator.Run.Worker do
     {:noreply, complete(state, ref, outcome)}
   end
 
+  # a settle wins over a pending Timer (the Server has moved on): its wake is cancelled and the op retired FIRST,
+  # so the Timer is never answered after the settle and its late wake is a stale fact
   def handle_info({:settle, cap, gen, ref}, %{cap: cap, gen: gen} = state) do
+    state = retire_timer(state)
     {cleanup, runtime} = Effects.settle(state.runtime)
     send(state.server, {:settled, cap, gen, ref, self(), cleanup})
     {:noreply, %{state | runtime: runtime, pending: nil}}
   end
+
+  # the pending Timer's own dequeued wake: one bounded chunk against its armed fence at the configured clock
+  def handle_info({:observe_fence_wake, identity}, %{pending: %{op: identity, timer: %{}}} = state),
+    do: {:noreply, timer_chunk(state)}
 
   # a wake that reaches the loop-free owner belongs to a retired op (its timer outlived it) or to nobody: a retired
   # op's fact keeps that op's kind and is filtered by it; an unknown wake carries no kind (none is invented)
@@ -243,10 +267,126 @@ defmodule AiOrchestrator.Run.Worker do
   end
 
   # Observe's deadline is an enforced struct key; the delivery effects carry an optional one that this owner
-  # refuses closed unless it is a non-negative integer (the refusal is described by its clause atom)
+  # refuses closed unless it is a non-negative integer (the refusal is described by its clause atom); a Timer's
+  # is enforced by its struct too, refused closed under its own clause atom when it is not such an integer
   defp admit_deadline!(%Effect.Observe{}), do: :ok
+  defp admit_deadline!(%Effect.Timer{deadline_unix: d}) when is_integer(d) and d >= 0, do: :ok
+  defp admit_deadline!(%Effect.Timer{}), do: :erlang.error(:timer_deadline_invalid)
   defp admit_deadline!(%{deadline_unix: d}) when is_integer(d) and d >= 0, do: :ok
   defp admit_deadline!(_intent), do: :erlang.error(:dispatch_deadline_missing)
+
+  # ---- the loop-resident Timer: armed once here, then chunks dequeued by this loop, expiry answered ----
+
+  # the arming (admission, clock reads, fence, the already-due decision, the first wait) runs INSIDE the owned
+  # boundary; a failing clock is a closed effect_failed exactly like Observe's. A waiting op is stored as the pending
+  # wait with its wake timer: no adapter, no task, and this process returns to its loop at once
+  defp execute_timer(state, ref, intent, receipt) do
+    op = %{cap: state.cap, gen: state.gen, ref: ref}
+
+    outcome =
+      guarded(state.runtime, fn ->
+        admit_deadline!(intent)
+
+        case arm_timer(state.fence, op, intent) do
+          {:due, _fence} -> expire_timer(state, intent, receipt)
+          {:wait, fence, wait} -> {:waiting, fence, wait}
+        end
+      end)
+
+    case outcome do
+      {:waiting, fence, wait} ->
+        {:ok, outstanding} = DeadlineFence.outstanding(op)
+        timer = %{intent: intent, receipt: receipt, fence: fence, outstanding: outstanding, wake: wake(op, wait)}
+        %{state | pending: %{ref: ref, op: op, timer: timer}}
+
+      answered ->
+        retire(complete(state, ref, answered), ref)
+    end
+  end
+
+  # one wall and one monotonic read of the configured clock, the pure fence, then due-or-wait from the SAME
+  # monotonic sample (the first wait is a fact like every later chunk); a refused fence is a closed failure
+  defp arm_timer(cfg, op, %Effect.Timer{deadline_unix: deadline}) do
+    observer = kind_observer(cfg, Effect.Timer)
+    observe_fact(observer, op, nil, :arming, Effect.Timer)
+    unix = cfg.clock.unix_now()
+    mono = cfg.clock.monotonic_ms()
+
+    case DeadlineFence.arm(op, deadline, unix, mono, cfg.cap_ms) do
+      {:ok, fence} ->
+        armed = {:armed, %{deadline_unix: deadline, due_ms: fence.due_ms, unix_now: unix}}
+        observe_fact(observer, op, nil, armed, Effect.Timer)
+
+        case DeadlineFence.next(fence, mono) do
+          :due ->
+            {:due, fence}
+
+          {:wait, wait} ->
+            observe_fact(observer, op, nil, {:early, %{wait_ms: wait, due_ms: fence.due_ms}}, Effect.Timer)
+            {:wait, fence, wait}
+        end
+
+      {:error, %{clause: clause}} ->
+        :erlang.error(%{clause: "timer_fence_refused", fence: clause})
+    end
+  end
+
+  # a dequeued eligible wake: read the clock, classify against the armed fence; early re-arms one bounded chunk,
+  # due selects expiry ONCE and answers; the pending wait is cleared before the single answer (AW-M3 order)
+  defp timer_chunk(%{pending: %{ref: ref, op: op, timer: timer}} = state) do
+    ctx = %{cfg: state.fence, op: op, kind: Effect.Timer}
+
+    outcome =
+      guarded(state.runtime, fn ->
+        now = state.fence.clock.monotonic_ms()
+
+        case DeadlineFence.observe(timer.outstanding, {:fence, timer.fence, now}) do
+          {:early, {:wait, wait}, outstanding} ->
+            fact(ctx, nil, {:early, %{wait_ms: wait, due_ms: timer.fence.due_ms}})
+            {:waiting, outstanding, wait}
+
+          {:ok, _outstanding, :request_expiration} ->
+            fact(ctx, nil, :due)
+            fact(ctx, nil, :expiry_selected)
+            expire_timer(state, timer.intent, timer.receipt)
+
+          {:stale, reason, _outstanding} ->
+            :erlang.error({:timer_fence_stale, reason})
+
+          {:error, %{clause: clause}} ->
+            :erlang.error(%{clause: "timer_fence_refused", fence: clause})
+        end
+      end)
+
+    case outcome do
+      {:waiting, outstanding, wait} ->
+        %{state | pending: %{state.pending | timer: %{timer | outstanding: outstanding, wake: wake(op, wait)}}}
+
+      answered ->
+        retire(complete(state, ref, answered), ref)
+    end
+  end
+
+  # the expiry answer is built by Effects from the retained intent (Observation.Deadline, the same builder the
+  # direct path uses): the runner never runs the closure and answers `:expired` from the fence's decision
+  defp expire_timer(state, intent, receipt) do
+    seams = Keyword.put(state.seams, :adapter_runner, fn _closure, _deadline -> :expired end)
+    {observation, runtime} = Effects.execute(intent, state.runtime, opts: seams, receipt: receipt)
+    {:ok, observation, runtime}
+  end
+
+  defp wake(op, wait), do: Process.send_after(self(), {:observe_fence_wake, op}, wait)
+
+  defp retire(state, ref), do: %{state | retired: Map.put(state.retired, ref, Effect.Timer)}
+
+  # the Server's settle retires a pending Timer: wake cancelled, one :cancelled fact, op retired (never answered)
+  defp retire_timer(%{pending: %{ref: ref, op: op, timer: %{wake: wake}}} = state) do
+    Process.cancel_timer(wake)
+    fact(%{cfg: state.fence, op: op, kind: Effect.Timer}, nil, :cancelled)
+    retire(state, ref)
+  end
+
+  defp retire_timer(state), do: state
 
   # every OTP report of this process (crash report, sys status) renders only closed values
   @impl true
@@ -454,7 +594,8 @@ defmodule AiOrchestrator.Run.Worker do
     cap = Keyword.get(seams, :observe_fence_cap_ms, Map.get(boot, :fence_cap_ms, @default_cap_ms))
 
     # which effect kinds report fence facts to the observer: Observe only by default, so the integrated Observe
-    # evidence keeps its exact fact stream; delivery tests opt in explicitly (holds apply to every fenced kind)
+    # evidence keeps its exact fact stream; delivery and Timer tests opt in explicitly (holds apply to every
+    # task-running fenced kind; the Timer has no task, no GO and no kill, so no held point)
     kinds = Keyword.get(seams, :observe_fence_kinds, [Effect.Observe])
 
     if (is_nil(observer) or is_pid(observer)) and hold?(hold) and is_integer(cap) and cap >= 1 and is_list(kinds),

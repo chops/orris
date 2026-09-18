@@ -215,6 +215,11 @@ defmodule AiOrchestrator.Effects do
   defp run_effect(%Effect.ReconcileSend{} = intent, runtime, opts, _receipt),
     do: {guarded(runtime, fn -> deliver_through(intent, Keyword.get(opts, :adapter_runner), opts) end), runtime}
 
+  # the Timer (R08 G4) takes the same seam: absent, the direct no-runner path sleeps here as before; present, the
+  # owner's fence is the wait and its `:expired` (or the closure's own `:ok`) is the deadline answer
+  defp run_effect(%Effect.Timer{} = intent, runtime, opts, _receipt),
+    do: {guarded(runtime, fn -> wait_through(intent, Keyword.get(opts, :adapter_runner), opts) end), runtime}
+
   defp run_effect(intent, runtime, opts, _receipt),
     do: {guarded(runtime, fn -> observe(intent, adapter(intent, opts), opts) end), runtime}
 
@@ -283,6 +288,32 @@ defmodule AiOrchestrator.Effects do
   end
 
   defp deliver_through(_intent, _runner, _opts), do: raise(ArgumentError, "adapter_runner must be a 2-arity function")
+
+  # the Timer through the runner grammar: the closure does nothing (`:ok`, no adapter); the OWNER's fence answers
+  # `:expired` at its due instant and that is the deadline; a runner that runs the closure answers the same
+  # observation; a closed `{:failed, diagnostic}` is carried unchanged; any other return fails closed (the Timer
+  # has no failure observation, so an unknown envelope is a raw failure under the owner's boundary, payload-free)
+  defp wait_through(intent, nil, opts), do: observe(intent, adapter(intent, opts), opts)
+
+  defp wait_through(%Effect.Timer{deadline_unix: deadline} = intent, runner, opts) when is_function(runner, 2) do
+    case runner.(fn -> :ok end, %{deadline_unix: deadline}) do
+      :expired ->
+        observe(intent, :ok, opts)
+
+      {:ok, :ok} ->
+        observe(intent, :ok, opts)
+
+      {:failed, diagnostic} ->
+        if AdapterRunner.diagnostic?(diagnostic),
+          do: raise(AdapterFailure, diagnostic: diagnostic),
+          else: :erlang.error(:timer_invalid_runner_return)
+
+      _other ->
+        :erlang.error(:timer_invalid_runner_return)
+    end
+  end
+
+  defp wait_through(_intent, _runner, _opts), do: raise(ArgumentError, "adapter_runner must be a 2-arity function")
 
   defp expired(%Effect.Dispatch{assignment_id: id}, opts),
     do: %Observation.DispatchFailed{assignment_id: id, reason: @expired_dispatch, now: now(opts)}
@@ -918,8 +949,10 @@ defmodule AiOrchestrator.Effects do
     dispatch_admitted(dispatch_module(opts), :reconcile, command, dispatch_opts(opts))
   end
 
-  # The host owns the wait: it sleeps until the deadline by its own clock and answers with
-  # the moment it woke. A scripted clock that is already past the deadline makes this free.
+  # The DIRECT no-runner path only (the Host oracle, legacy direct callers): the calling process
+  # sleeps until the deadline by its own clock and answers with the moment it woke. A scripted
+  # clock that is already past the deadline makes this free. The Run.Worker never reaches this
+  # clause: it supplies a runner and waits on its own fence (docs: R08 G4, NS-18.D.002).
   defp adapter(%Effect.Timer{deadline_unix: deadline_unix}, opts) do
     Process.sleep(max(deadline_unix - unix_now(opts), 0) * 1000)
     :ok

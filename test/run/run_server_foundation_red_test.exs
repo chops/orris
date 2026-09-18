@@ -40,6 +40,7 @@ defmodule AiOrchestrator.Run.ServerFoundationRedTest do
   alias AiOrchestrator.Test.FaultFs
   alias AiOrchestrator.Test.FixedClock
   alias AiOrchestrator.Test.GateDouble
+  alias AiOrchestrator.Test.LiveMonotonicClock
   alias AiOrchestrator.Test.OwnerOracle
   alias AiOrchestrator.Test.ScenarioHarness, as: H
 
@@ -1639,6 +1640,8 @@ defmodule AiOrchestrator.Run.ServerFoundationRedTest do
 
       run_dir = tmp_run_dir()
 
+      # R08 G4: the queued Timer waits on the Worker's fence at the configured MONOTONIC clock; FixedClock's
+      # counter advances only per read, so this run keeps FixedClock's wall stream with real monotonic time
       {o1, s1} =
         start_run!(%{
           run_dir: run_dir,
@@ -1649,7 +1652,7 @@ defmodule AiOrchestrator.Run.ServerFoundationRedTest do
             gated_index()
             |> fresh_opts()
             |> Keyword.delete(:event_sink)
-            |> Keyword.merge(dispatch: QueuedAdapter, effect_observer: observer),
+            |> Keyword.merge(dispatch: QueuedAdapter, effect_observer: observer, clock: LiveMonotonicClock),
           trace: self()
         })
 
