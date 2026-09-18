@@ -5,8 +5,11 @@ defmodule AiOrchestrator.Prepare do
   `AiOrchestrator.Prepare.Scope`, and delegates to the trusted tier the CLI uses. `invoke/3` executes with the
   core's built-in foreground executor (`AiOrchestrator.Run.Executor`), chosen here, never by a caller.
 
-  The public request is exactly a verb and a handle: no argument document is accepted. Rejections are
-  `%{clause: String.t(), detail: map() | nil}` with the trusted tier's original reason map carried in `detail`.
+  The public request is exactly a verb and a handle: no argument document is accepted, with ONE exception
+  (R08 G1): `resolve_attention/3` takes the list of attention ids to resolve, the verb's only argument, which
+  the trusted tier joins into the closed `attention_ids` command argument and validates before any identity or
+  claim. Rejections are `%{clause: String.t(), detail: map() | nil}` with the trusted tier's original reason
+  map carried in `detail`.
   """
 
   use Boundary,
@@ -59,6 +62,11 @@ defmodule AiOrchestrator.Prepare do
 
   @spec cancel(term(), keyword()) :: {:ok, Prepared.t()} | {:error, rejection()}
   def cancel(run_ref, server_opts), do: prepare(run_ref, server_opts, &Trusted.cancel/2)
+
+  @doc "The resolve_attention verb: `attention_ids` is the list of attention ids the resume resolves (the only argument)."
+  @spec resolve_attention(term(), [String.t()], keyword()) :: {:ok, Prepared.t()} | {:error, rejection()}
+  def resolve_attention(run_ref, attention_ids, server_opts),
+    do: prepare(run_ref, server_opts, &Trusted.resolve_attention(&1, attention_ids, &2))
 
   @doc "Executes an admitted command with the built-in foreground executor; pane claims are taken around it."
   @spec invoke(map(), Prepared.t(), keyword()) :: {:ok, %{events: [map()], close: term()}} | {:error, rejection()}

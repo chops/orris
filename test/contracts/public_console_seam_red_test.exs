@@ -296,9 +296,11 @@ defmodule AiOrchestrator.Contracts.PublicConsoleSeamRedTest do
   end
 
   test "F-11 unsupported verbs are refused with the existing clause" do
-    assert @prepare.supported_verbs() == ["start", "resume", "cancel"]
+    # R08 G1: resolve_attention joined the supported set; the other policy verbs stay refused
+    assert @prepare.supported_verbs() == ["start", "resume", "cancel", "resolve_attention"]
+    assert {:ok, "resolve_attention"} = @prepare.verb("resolve_attention")
 
-    for verb <- ~w(pause repair update_context ratify_plan resolve_attention) do
+    for verb <- ~w(pause repair update_context ratify_plan) do
       assert match?({:error, %{clause: "command_verb_unsupported"}}, @prepare.verb(verb)), verb
     end
   end
@@ -306,9 +308,69 @@ defmodule AiOrchestrator.Contracts.PublicConsoleSeamRedTest do
   test "F-12 the public request is a verb and a handle only", %{opts: opts} do
     for bad <- [%{"run_ref" => "x"}, [run_ref: "x"], 1] do
       assert match?({:error, %{clause: "run_ref_invalid"}}, @prepare.cancel(bad, opts)), inspect(bad)
+
+      assert match?({:error, %{clause: "run_ref_invalid"}}, @prepare.resolve_attention(bad, ["att_0001"], opts)),
+             inspect(bad)
     end
 
     assert function_exported?(@prepare, :cancel, 2) and function_exported?(@prepare, :invoke, 3)
+    # R08 G1: the ONE argument-carrying verb; its argument is the id list, nothing else
+    assert function_exported?(@prepare, :resolve_attention, 3)
+    refute function_exported?(@prepare, :resolve_attention, 2)
+  end
+
+  test "F-16 resolve_attention: the argument document is the id list; invalid ids refused; one stamped run_resumed", %{
+    root: root
+  } do
+    seams = Doubles.seams(Rows.fresh("registry"), self())
+    ref = "resolve_run"
+    dir = Path.join(root, ref)
+    File.mkdir_p!(dir)
+    Rows.write_inputs(dir, "auth_blocked_pane")
+
+    server_opts =
+      Keyword.merge(seams,
+        root: root,
+        pane_registry_root: Rows.fresh("registry2"),
+        dispatch: AiOrchestrator.Test.ScenarioHarness.BlockedDispatch
+      )
+
+    # the run wedges on att_0001 under the fixed clock (the scenario fixture's own deadlines would already be due);
+    # the harness double keeps the pane blocked, so the resolved run re-observes (never re-sends) and re-blocks
+    assert {:ok, started} = @prepare.start(ref, server_opts)
+    assert {:ok, %{events: _, close: :ok}} = @prepare.invoke(@console, started, server_opts)
+    assert %{"status" => "blocked", "open_attention_ids" => ["att_0001"]} = Fold.summary(Rows.state(dir))
+    before = File.read!(Path.join(dir, "events.jsonl"))
+    head_before = File.read!(Path.join(dir, "events.head"))
+
+    for bad <- [[], "att_0001", [1], ["att 0001"], ["att_0001", ""], [nil]] do
+      assert {:error, %{clause: "attention_ids_invalid"}} = @prepare.resolve_attention(ref, bad, server_opts),
+             inspect(bad)
+    end
+
+    assert File.read!(Path.join(dir, "events.jsonl")) == before
+    assert File.read!(Path.join(dir, "events.head")) == head_before
+    # an unknown id is refused by the reducer, closed, with nothing appended
+    assert {:ok, unknown} = @prepare.resolve_attention(ref, ["att_0009"], server_opts)
+    assert {:error, %{clause: "attention_unresolved", detail: detail}} = @prepare.invoke(@console, unknown, server_opts)
+
+    assert detail == %{
+             "reason" => "attention_unresolved",
+             "open_attention_ids" => ["att_0001"],
+             "unknown_attention_ids" => ["att_0009"]
+           }
+
+    assert File.read!(Path.join(dir, "events.jsonl")) == before
+    # the open id resolves: exactly one stamped run_resumed naming it, then the existing recovery re-observes the pane
+    assert {:ok, prepared} = @prepare.resolve_attention(ref, ["att_0001"], server_opts)
+    assert prepared.verb == "resolve_attention" and prepared.args == %{"attention_ids" => "att_0001"}
+    assert {:ok, %{events: events, close: :ok}} = @prepare.invoke(@console, prepared, server_opts)
+    assert [resumed] = Enum.filter(events, &(&1["type"] == "run_resumed"))
+    assert resumed["data"]["resolves_attention_ids"] == ["att_0001"]
+    assert resumed["data"]["recovery_reason"] == "attention_resolved"
+    assert %{"class" => "console", "id" => "session_abc", "verb" => "resolve_attention"} = resumed["data"]["requested_by"]
+    assert Enum.count(events, &(&1["type"] == "assignment_dispatch_sent")) == 1
+    assert Fold.summary(Rows.state(dir))["open_attention_ids"] == ["att_0002"]
   end
 
   test "F-13 the supplied console actor is journaled by the built-in path (class and id preserved)", %{

@@ -11,6 +11,7 @@ defmodule AiOrchestrator.Prepare.Trusted do
   """
 
   alias AiOrchestrator.Commands
+  alias AiOrchestrator.Commands.Arguments
   alias AiOrchestrator.Config.Runtime, as: RuntimeConfig
   alias AiOrchestrator.Id.SystemId
   alias AiOrchestrator.Journal.Event
@@ -23,7 +24,7 @@ defmodule AiOrchestrator.Prepare.Trusted do
   alias AiOrchestrator.Spec.RunSpec
 
   @journal_file "events.jsonl"
-  @verbs ["start", "resume", "cancel"]
+  @verbs ["start", "resume", "cancel", "resolve_attention"]
 
   @type inputs :: %{spec: map(), plan: map(), spec_hash: String.t(), plan_hash: String.t()}
   @type reason :: map()
@@ -70,6 +71,34 @@ defmodule AiOrchestrator.Prepare.Trusted do
 
       {:ok, prepared(verb, args, run_dir, fsm_opts, inputs)}
     end
+  end
+
+  @doc """
+  The CLI's `resolve`: a resume that names the attention ids it resolves (R08 G1). Inputs, options, the non-empty
+  prior journal lines, provenance and the resumed identity exactly as `resume/2`; pane claims as a resume. `ids` is
+  the list of attention ids; they are joined into the closed `attention_ids` argument (ids match `[A-Za-z0-9_-]+`,
+  so the join is unambiguous) and validated by the command grammar here, before any identity or claim.
+  """
+  @spec resolve_attention(Path.t(), [String.t()], keyword()) :: {:ok, Prepared.t()} | {:error, reason()}
+  def resolve_attention(run_dir, ids, opts) when is_list(ids) do
+    with {:ok, args} <- attention_args(ids),
+         {:ok, inputs} <- read_run_inputs(run_dir),
+         {:ok, fsm_opts} <- options(run_dir, opts),
+         {:ok, prior_lines} <- read_journal_lines(run_dir),
+         :ok <- verify_input_provenance(prior_lines, inputs),
+         {:ok, fsm_opts} <- resume_identity(prior_lines, fsm_opts) do
+      {:ok, prepared("resolve_attention", args, run_dir, fsm_opts, inputs)}
+    end
+  end
+
+  def resolve_attention(_run_dir, _ids, _opts), do: {:error, %{"reason" => "attention_ids_invalid"}}
+
+  defp attention_args(ids) do
+    args = %{"attention_ids" => Enum.join(ids, ",")}
+
+    if Enum.all?(ids, &is_binary/1) and match?({:ok, _}, Arguments.validate("resolve_attention", args)),
+      do: {:ok, args},
+      else: {:error, %{"reason" => "attention_ids_invalid"}}
   end
 
   @doc "The CLI's `cancel`: options, prior journal lines, resumed identity; no pane claims."

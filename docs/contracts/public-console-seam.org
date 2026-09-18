@@ -8,15 +8,21 @@ An external application (the console) reaches the core ONLY through modules the 
 verified journal prefix is used and =pending_repair= is exposed as data, never executed; nothing is written by a read.
 Mutations run through =Prepare= (the CLI's own admission rules, shared) and =Commands.invoke=; the public entry uses the
 core's built-in foreground executor (=Run.Executor=) chosen inside core (A1). Browser input never selects identity, roots,
-paths, executor, adapter, clock or id seams: the public request is exactly a verb and a run handle (=run_ref=).
+paths, executor, adapter, clock or id seams: the public request is exactly a verb and a run handle (=run_ref=), with
+ONE argument document (R08 G1, 2026-09-18): =resolve_attention= carries the list of attention ids it resolves, the verb's
+only command argument; the trusted tier joins them into the closed =attention_ids= grammar and validates them before
+any identity, claim or Writer activity (=attention_ids_invalid= otherwise).
 The CLI keeps its directory-based path, its error maps, exit codes, projection files and its pane-claim lifetime
 (the outcome callback runs inside the claimed operation before release, A2) byte for byte.
 
 * Public API (exact shapes; A3)
 - =Prepare.validate(run_ref, server_opts)= :: ={:ok, %{spec_hash, plan_hash}} | {:error, rejection}=
 - =Prepare.start/2=, =Prepare.resume/2=, =Prepare.cancel/2= :: ={:ok, %Prepare.Prepared{}} | {:error, rejection}= (opaque struct)
+- =Prepare.resolve_attention(run_ref, attention_ids, server_opts)= :: ={:ok, %Prepare.Prepared{}} | {:error, rejection}= (R08 G1:
+  =attention_ids= is a non-empty list of ids matching =[A-Za-z0-9_-]+=; the prepared verb is =resolve_attention= with args
+  =%{"attention_ids" => joined}=; inputs, provenance, identity and pane claims exactly as =resume/2=)
 - =Prepare.invoke(actor, prepared, server_opts)= :: ={:ok, %{events: [map()], close: :ok | {:error, map()}}} | {:error, rejection}=
-- =Prepare.supported_verbs()= == =["start", "resume", "cancel"]=; =Prepare.verb(term)= :: ={:ok, verb} | {:error, %{clause: "command_verb_unsupported"}}=
+- =Prepare.supported_verbs()= == =["start", "resume", "cancel", "resolve_attention"]=; =Prepare.verb(term)= :: ={:ok, verb} | {:error, %{clause: "command_verb_unsupported"}}=
 - =Query.list_runs(server_opts)= :: ={:ok, %{runs: [%{run_ref, run_id, status, last_seq, error}], skipped_outside_root: n}} | {:error, rejection}=
 - =Query.run_summary(run_ref, server_opts)= :: ={:ok, %{run_ref, run_id, status, last_seq, summary, rendered, pending_repair}} | {:error, rejection}=
 - =Query.run_context(run_ref, server_opts)= :: ={:ok, %{run_ref, rendered, pending_repair}} | {:error, rejection}=
@@ -112,8 +118,15 @@ Feature rows, =test/contracts/public_console_seam_red_test.exs= (RED at 2c33d78;
 - "F-14 a valid agent-class actor is refused for cancel and the journal bytes and head stay unchanged"
   (Policy clause command_not_authorized through the public wrapper; no events.head; R3)
 - "F-15 an invalid actor shape is refused before any execution" (invalid_command_actor / command_actor_fields / command_actor_id; bytes unchanged)
-- "F-11 unsupported verbs are refused with the existing clause"
-- "F-12 the public request is a verb and a handle only"
+- "F-11 unsupported verbs are refused with the existing clause" (four supported verbs since R08 G1; pause, repair,
+  update_context and ratify_plan stay refused)
+- "F-12 the public request is a verb and a handle only" (=resolve_attention/3= exported as the one argument-carrying verb)
+- "F-16 resolve_attention: the argument document is the id list; invalid ids are refused before any activity; the
+  console path journals one stamped run_resumed with resolves_attention_ids" (R08 G1: prepared verb/args; =[]=, a non-list,
+  a non-string and an id outside the grammar -> =attention_ids_invalid= with bytes unchanged; on the re-anchored
+  auth_blocked_pane journal the invoke appends exactly one run_resumed carrying =["att_0001"]=, =recovery_reason=
+  =attention_resolved= and the console stamp with verb =resolve_attention=; an unknown id -> =attention_unresolved=
+  carried in =detail= with bytes unchanged)
 Preservation (unchanged, must stay green): the CLI test set and the verifier's escript probe; host mount and review controls;
 production escript 8/8 with the same 18 applications (no dependency added); Boundary spec in dev and test; Policy table;
 =Run.Executor= verbs; contracts suite; Reader tests.
