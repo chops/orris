@@ -81,6 +81,15 @@ horizon alone. =--interval-ms= defaults to 1000 and is bounded by 3600000;
 verb's own reason map and the loop continues, so a torn tail or a receipt lost
 during a live run does not end the watch. The loop itself exits 0.
 
+* Replay
+=ai-orchestrator replay <run-dir> [--json] [--to-seq <n>]= folds the verified
+journal prefix and renders it exactly as =status= does. Without =--to-seq= it
+is provably the =status= answer. With =--to-seq N= it answers the recorded
+state as of sequence N, folded from the first N verified lines; an N above the
+last verified sequence exits 66 with =replay_seq_out_of_range= naming both
+sequences, and N below 1 or non-numeric exits 64. A prefix is a read and not a
+repair: a torn journal still reports the pending plan for the whole file.
+
 * Limits and dependencies
 This is a one-shot journal inventory, not an atomic snapshot across directories.
 Each valid run is read twice to preserve the existing public Query list shape;
@@ -89,10 +98,10 @@ no hard wall-time or memory bound. Existing trusted stationary-filesystem
 assumptions apply: this does not add descriptor-level journal-leaf confinement
 or protection against a hostile concurrent rename.
 
-Persistent Projection.Index, multi-root aggregation, replay/explain, console
-integration and installed qualification remain separate units. Watch is
-delivered above; it adds no cache, subscription, change notification or
-cross-process view of liveness, and is exactly a repeated read.
+Persistent Projection.Index, multi-root aggregation, =explain=, console
+integration and installed qualification remain separate units. Watch and replay
+are delivered above; neither adds a cache, a subscription, a change notification
+or any cross-process view of liveness, and a watch is exactly a repeated read.
 This operation does not depend on mounted start/resume, live transport or Ash.
 
 * Acceptance mapping
@@ -117,6 +126,9 @@ exercises W1 successive values ending on the terminal status, W2 one rendering
 for an unchanged journal with deleted and lagging projections, W3 a read
 failure reported once while the loop keeps reading, W4 the explicit-root
 listing loop, W5 the bounded horizon and W6 malformed watch argv.
+=test/cli/cli_replay_test.exs= exercises R1 equality with =status=, R2 each
+prefix, R3 the out-of-range refusal, R4 projection independence, R5 a torn
+tail and R6 malformed replay argv.
 
 Existing CLI tests and the relevant public Query preservation, path and repair
 controls remain compatibility checks. This contract does not claim a full

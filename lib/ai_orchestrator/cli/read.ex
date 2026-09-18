@@ -2,9 +2,9 @@ defmodule AiOrchestrator.CLI.Read do
   @moduledoc """
   The CLI's ONE verified journal read and its two renderings.
 
-  Every directory-based operator read (`status`, the legacy `list` rows and the `--watch` loop over them)
-  folds the verified journal prefix through `AiOrchestrator.Prepare.Trusted.read_journal/1` and renders the
-  same value. The loaded map's
+  Every directory-based operator read (`status`, `replay`, the legacy `list` rows and the `--watch` loop over
+  them) folds the verified journal prefix through `AiOrchestrator.Prepare.Trusted.read_journal/1` and renders
+  the same value. The loaded map's
   `pending_repair` is carried into both renderings, exactly as `list --root` and
   `AiOrchestrator.Query.run_summary/2` already carry it: it is the plan the WRITER would execute, reported as
   data. Nothing here writes, repairs or advances a receipt.
@@ -24,6 +24,25 @@ defmodule AiOrchestrator.CLI.Read do
     with {:ok, journal} <- Trusted.read_journal(run_dir),
          {:ok, state} <- Fold.fold_lines(journal.lines) do
       {:ok, %{state: state, pending_repair: journal.pending_repair}}
+    end
+  end
+
+  @doc "The same read folded over the first `limit` verified lines only (`replay --to-seq`)."
+  @spec load_prefix(Path.t(), pos_integer()) :: {:ok, loaded()} | {:error, map()}
+  def load_prefix(run_dir, limit) when is_integer(limit) and limit >= 1 do
+    with {:ok, journal} <- Trusted.read_journal(run_dir) do
+      fold_prefix(journal, limit)
+    end
+  end
+
+  defp fold_prefix(journal, limit) do
+    if limit > journal.last_seq do
+      {:error, %{"reason" => "replay_seq_out_of_range", "to_seq" => limit, "last_seq" => journal.last_seq}}
+    else
+      with {:ok, state} <- journal.lines |> Enum.take(limit) |> Fold.fold_lines() do
+        # a prefix is a read of the same verified bytes; a repair plan describes the WHOLE file, so it stands
+        {:ok, %{state: state, pending_repair: journal.pending_repair}}
+      end
     end
   end
 

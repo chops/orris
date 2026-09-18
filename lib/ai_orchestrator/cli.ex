@@ -63,6 +63,7 @@ defmodule AiOrchestrator.CLI do
   def run(["status", "--json", run_dir], _opts), do: status_json(run_dir)
   def run(["status", run_dir], _opts), do: status_org(run_dir)
   def run(["status" | args], opts), do: watch_status(args, opts)
+  def run(["replay" | args], _opts), do: replay(args)
   def run(["list", "--json"], opts), do: list_json(opts)
   def run(["list"], opts), do: list_org(opts)
 
@@ -220,6 +221,44 @@ defmodule AiOrchestrator.CLI do
     end
   end
 
+  # `replay <run-dir> [--json] [--to-seq N]`: the fold of the verified prefix the acceptance already
+  # exercises, named as an operator affordance; with no --to-seq it is the status answer (S3)
+  defp replay(args) do
+    case replay_arguments(args) do
+      {:ok, run_dir, json?, to_seq} -> replay_read(run_dir, json?, to_seq)
+      :usage -> error(64, %{"reason" => "usage", "usage" => usage()})
+    end
+  end
+
+  defp replay_read(run_dir, json?, to_seq) do
+    read = if is_nil(to_seq), do: Read.load(run_dir), else: Read.load_prefix(run_dir, to_seq)
+
+    case read do
+      {:ok, loaded} -> ok(Read.render(loaded, json?))
+      {:error, reason} -> error(66, reason)
+    end
+  end
+
+  defp replay_arguments(args), do: replay_arguments(args, nil, false, nil)
+
+  defp replay_arguments([], run_dir, json?, to_seq) when is_binary(run_dir), do: {:ok, run_dir, json?, to_seq}
+  defp replay_arguments(["--json" | rest], run_dir, false, to_seq), do: replay_arguments(rest, run_dir, true, to_seq)
+
+  defp replay_arguments(["--to-seq", value | rest], run_dir, json?, nil) do
+    case Integer.parse(value) do
+      {seq, ""} when seq >= 1 -> replay_arguments(rest, run_dir, json?, seq)
+      _other -> :usage
+    end
+  end
+
+  defp replay_arguments([value | rest], nil, json?, to_seq) do
+    if value != "" and not String.starts_with?(value, "-"),
+      do: replay_arguments(rest, value, json?, to_seq),
+      else: :usage
+  end
+
+  defp replay_arguments(_args, _run_dir, _json?, _to_seq), do: :usage
+
   defp list_json(opts) do
     case list_entries(opts) do
       {:ok, entries} -> json(0, entries, :stdout)
@@ -347,6 +386,7 @@ defmodule AiOrchestrator.CLI do
            ai-orchestrator run [--gate-guardian <path>] --resume <run-dir>
            ai-orchestrator status [--json] <run-dir>
            ai-orchestrator status [--json] --watch <run-dir> [--interval-ms <n>] [--for-ms <n>]
+           ai-orchestrator replay <run-dir> [--json] [--to-seq <n>]
            ai-orchestrator list [--json]
            ai-orchestrator list --root <runs-root> [--json]
            ai-orchestrator list --root <runs-root> [--json] --watch [--interval-ms <n>] [--for-ms <n>]
