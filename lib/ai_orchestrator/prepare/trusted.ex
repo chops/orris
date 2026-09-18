@@ -180,14 +180,24 @@ defmodule AiOrchestrator.Prepare.Trusted do
     end
   end
 
-  @doc "The verified, non-empty prior journal lines of a directory (the CLI's read)."
-  @spec read_journal_lines(Path.t()) :: {:ok, [binary()]} | {:error, reason()}
-  def read_journal_lines(run_dir) do
+  @doc """
+  The verified, non-empty prior journal read of a directory: the whole loaded map, so a caller that wants the
+  repair signal keeps it. `pending_repair` is the plan the WRITER would execute; reading it changes nothing.
+  """
+  @spec read_journal(Path.t()) :: {:ok, Reader.loaded()} | {:error, reason()}
+  def read_journal(run_dir) do
     case Reader.load(run_dir) do
-      {:ok, %{lines: lines}} -> nonempty_lines(lines)
+      {:ok, %{lines: []}} -> {:error, %{"reason" => "journal_empty", "file" => @journal_file}}
+      {:ok, %{} = loaded} -> {:ok, loaded}
       {:error, %{clause: "journal_missing"}} -> {:error, %{"reason" => "journal_not_found", "file" => @journal_file}}
       {:error, rejection} -> {:error, journal_rejection(rejection)}
     end
+  end
+
+  @doc "The verified, non-empty prior journal lines of a directory (the CLI's read)."
+  @spec read_journal_lines(Path.t()) :: {:ok, [binary()]} | {:error, reason()}
+  def read_journal_lines(run_dir) do
+    with {:ok, loaded} <- read_journal(run_dir), do: {:ok, loaded.lines}
   end
 
   @doc "A rejection that already names an operator-facing reason keeps it; otherwise the clause under the journal_ prefix."
@@ -360,9 +370,6 @@ defmodule AiOrchestrator.Prepare.Trusted do
     digest = :sha256 |> :crypto.hash(contents) |> Base.encode16(case: :lower)
     "sha256:" <> digest
   end
-
-  defp nonempty_lines([]), do: {:error, %{"reason" => "journal_empty", "file" => @journal_file}}
-  defp nonempty_lines(lines), do: {:ok, lines}
 
   defp read_resume_journal_lines(run_dir) do
     case read_journal_lines(run_dir) do

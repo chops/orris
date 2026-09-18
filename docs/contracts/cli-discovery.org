@@ -29,7 +29,9 @@ cannot be listed returns =runs_root_unreadable=; unexpected failures return
 =runs_root_unavailable=. These are JSON stderr reason maps, with empty stdout.
 Missing/duplicate flags, unknown options and positional extras exit 64.
 The existing =list=, =list --json= and directory-based status commands keep
-their existing output and behavior, including an empty implicit runs root.
+their root choice and their results, including an empty implicit runs root.
+Their output gained exactly one additive field, the pending repair the read
+already observed; see "Pending repair in every read" below.
 
 Query.list_runs chooses membership, then Query.run_summary supplies each row's
 facts from one verified journal-prefix read. If that read fails after discovery,
@@ -50,6 +52,19 @@ Filename handling assumes Elixir's required UTF8 native filename mode; a VM
 configured for Latin1 filenames is outside this qualification.
 Enumeration failures retain Query's root-error classification; they cannot
 produce a successful discovery result.
+
+* Pending repair in every read
+Every directory-based read reports the repair its verified load observed, as
+=list --root= and =Query.run_summary= already did. =status --json= and
+=replay --json= add a =pending_repair= object naming the action, the truncated
+byte count and the receipt sequence before and after, and ONLY when one is
+pending: a clean journal's JSON summary is unchanged byte for byte. =status=
+and =replay= in Org add one =- pending_repair ::= line after the journal
+position; the rendered =run-summary.org= projection itself is untouched. The
+legacy =list --json= rows carry the same boolean =list --root= carries, and the
+legacy Org table gained a =Repair= column (=yes=, =no=, or =-= for a row that
+could not be read). Reporting is not repairing: the plan belongs to the Writer,
+and no read truncates a tail, advances a receipt or writes a projection.
 
 * Limits and dependencies
 This is a one-shot journal inventory, not an atomic snapshot across directories.
@@ -78,6 +93,9 @@ operation does not depend on mounted start/resume, live transport or Ash.
   a rejected explicit path, while the invalid directory-name discovery case runs
   on filesystems that permit it.
 - D10 malformed argv refusals.
+
+=test/cli/cli_test.exs= pins the pending-repair reporting of =status= and the
+legacy =list= against an unchanged torn journal.
 
 Existing CLI tests and the relevant public Query preservation, path and repair
 controls remain compatibility checks. This contract does not claim a full

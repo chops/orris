@@ -17,6 +17,7 @@ defmodule AiOrchestrator.CLI do
     exports: []
 
   alias AiOrchestrator.CLI.Discovery
+  alias AiOrchestrator.CLI.Read
   alias AiOrchestrator.Journal.Fold
   alias AiOrchestrator.Prepare.Prepared
   alias AiOrchestrator.Prepare.Trusted
@@ -62,17 +63,18 @@ defmodule AiOrchestrator.CLI do
   def run(["status", run_dir], _opts), do: status_org(run_dir)
   def run(["list", "--json"], opts), do: list_json(opts)
   def run(["list"], opts), do: list_org(opts)
+  def run(["list" | args], opts), do: discover(args, opts)
 
-  def run(["list" | args], opts) do
+  def run(["cancel", run_dir], opts), do: cancel_run_dir(run_dir, opts)
+  def run(["resolve", run_dir, ids], opts), do: resolve_run_dir(run_dir, ids, opts)
+  def run(_argv, _opts), do: error(64, %{"reason" => "usage", "usage" => usage()})
+
+  defp discover(args, opts) do
     case Discovery.run(args, opts) do
       :usage -> error(64, %{"reason" => "usage", "usage" => usage()})
       result -> result
     end
   end
-
-  def run(["cancel", run_dir], opts), do: cancel_run_dir(run_dir, opts)
-  def run(["resolve", run_dir, ids], opts), do: resolve_run_dir(run_dir, ids, opts)
-  def run(_argv, _opts), do: error(64, %{"reason" => "usage", "usage" => usage()})
 
   # `--gate-guardian <absolute path>` names the gate guardian for this invocation (the flag
   # outranks the environment and the config file in RuntimeConfig); it is accepted once, first
@@ -159,16 +161,14 @@ defmodule AiOrchestrator.CLI do
   defp command_rejection(%{clause: _} = rejection), do: journal_rejection(rejection)
   defp command_rejection(%{} = reason), do: reason
 
-  defp status_json(run_dir) do
-    case load_state(run_dir) do
-      {:ok, state} -> json(0, Fold.summary(state), :stdout)
-      {:error, reason} -> error(66, reason)
-    end
-  end
+  defp status_json(run_dir), do: status(run_dir, true)
+  defp status_org(run_dir), do: status(run_dir, false)
 
-  defp status_org(run_dir) do
-    case load_state(run_dir) do
-      {:ok, state} -> ok(RunSummary.render(state))
+  # the verified read now carries pending_repair into BOTH renderings: an operator reading a torn-tailed
+  # journal sees the same repair signal `list --root` and Query.run_summary have always shown (S1)
+  defp status(run_dir, json?) do
+    case Read.load(run_dir) do
+      {:ok, loaded} -> ok(Read.render(loaded, json?))
       {:error, reason} -> error(66, reason)
     end
   end
@@ -212,19 +212,13 @@ defmodule AiOrchestrator.CLI do
 
     if File.dir?(run_dir) do
       [
-        case load_state(run_dir) do
-          {:ok, state} -> state |> Fold.summary() |> Map.put("run_ref", name)
-          {:error, reason} -> %{"run_ref" => name, "status" => "invalid", "error" => reason}
+        case Read.load(run_dir) do
+          {:ok, loaded} -> loaded |> Read.row() |> Map.put("run_ref", name)
+          {:error, reason} -> %{"run_ref" => name, "status" => "invalid", "error" => reason, "pending_repair" => nil}
         end
       ]
     else
       []
-    end
-  end
-
-  defp load_state(run_dir) do
-    with {:ok, lines} <- read_journal_lines(run_dir) do
-      Fold.fold_lines(lines)
     end
   end
 
@@ -235,8 +229,6 @@ defmodule AiOrchestrator.CLI do
   end
 
   defp surface_close(result, {:error, _rejection}), do: result
-
-  defp read_journal_lines(run_dir), do: Trusted.read_journal_lines(run_dir)
 
   defp journal_rejection(rejection), do: Trusted.journal_rejection(rejection)
 
@@ -272,13 +264,19 @@ defmodule AiOrchestrator.CLI do
   defp render_list(entries) do
     rows =
       Enum.map(entries, fn entry ->
-        "| #{entry["run_ref"]} | #{entry["run_id"] || "-"} | #{entry["status"]} | #{entry["last_seq"] || "-"} |"
+        "| #{entry["run_ref"]} | #{entry["run_id"] || "-"} | #{entry["status"]} | #{entry["last_seq"] || "-"} | " <>
+          repair_cell(entry["pending_repair"]) <> " |"
       end)
 
-    (["#+title: Runs", "", "* Runs", "| Ref | Run | Status | Seq |", "|-----+-----+--------+-----|"] ++ rows)
+    (["#+title: Runs", "", "* Runs", "| Ref | Run | Status | Seq | Repair |", "|-----+-----+--------+-----+--------|"] ++
+       rows)
     |> Enum.join("\n")
     |> Kernel.<>("\n")
   end
+
+  defp repair_cell(nil), do: "-"
+  defp repair_cell(true), do: "yes"
+  defp repair_cell(false), do: "no"
 
   defp ok(stdout), do: %{status: 0, stdout: stdout, stderr: ""}
 

@@ -482,7 +482,53 @@ defmodule AiOrchestrator.CLITest do
 
     assert %{status: 0, stdout: stdout, stderr: ""} = CLI.run(["list"], cwd: project_dir)
     assert stdout =~ "#+title: Runs"
-    assert stdout =~ "| complete | run_scenario_0001 | completed | 32 |"
+    assert stdout =~ "| complete | run_scenario_0001 | completed | 32 | no |"
+  end
+
+  # S1: `Trusted.read_journal_lines/1` used to destructure only `%{lines: lines}`, so the CLI's own reads
+  # dropped the loaded map's `pending_repair` while `list --root` (discovery.ex) and `Query.run_summary/2`
+  # both reported it. The torn tail keeps its meaning -- the verified prefix plus the plan the WRITER would
+  # execute -- and nothing here repairs, truncates or advances a receipt.
+  test "a torn tail is reported by status and by the legacy list, with the journal bytes unchanged" do
+    project_dir = tmp_dir("torn-project")
+    runs_root = Path.join([project_dir, ".ai-orchestrator", "runs"])
+    torn = runs_root |> Path.join("torn") |> write_journal(F.lines("scenarios", "gated_run_seed"))
+    journal = Path.join(torn, "events.jsonl")
+    File.write!(journal, ~s({"schema":"ai-orch), [:append])
+    before = File.read!(journal)
+
+    assert %{status: 0, stdout: json, stderr: ""} = CLI.run(["status", "--json", torn])
+    summary = Jason.decode!(json)
+    assert summary["status"] == "completed"
+    assert summary["last_seq"] == 32
+
+    assert summary["pending_repair"] == %{
+             "action" => "truncate_tail",
+             "truncate_bytes" => 18,
+             "receipt_seq_before" => 0,
+             "receipt_seq_after" => 0
+           }
+
+    assert %{status: 0, stdout: org, stderr: ""} = CLI.run(["status", torn])
+    assert org =~ "* Status: completed"
+    assert org =~ "- pending_repair :: truncate_tail (truncate_bytes 18, receipt_seq 0 -> 0)"
+
+    assert %{status: 0, stdout: listed, stderr: ""} = CLI.run(["list", "--json"], cwd: project_dir)
+    assert [%{"run_ref" => "torn", "pending_repair" => true}] = Jason.decode!(listed)
+    assert %{status: 0, stdout: table, stderr: ""} = CLI.run(["list"], cwd: project_dir)
+    assert table =~ "| torn | run_scenario_0001 | completed | 32 | yes |"
+
+    # a clean sibling keeps its exact summary: the key is added ONLY when a repair is pending
+    clean = runs_root |> Path.join("clean") |> write_journal(F.lines("scenarios", "gated_run_seed"))
+    assert %{status: 0, stdout: clean_json, stderr: ""} = CLI.run(["status", "--json", clean])
+    assert Jason.decode!(clean_json) == F.json("scenarios", "gated_run_seed", "expected.json")
+    refute Map.has_key?(Jason.decode!(clean_json), "pending_repair")
+    assert %{status: 0, stdout: clean_org, stderr: ""} = CLI.run(["status", clean])
+    refute clean_org =~ "pending_repair"
+
+    assert File.read!(journal) == before
+    refute File.exists?(Path.join(torn, "events.head"))
+    refute File.exists?(Path.join(torn, "run-summary.org"))
   end
 
   test "list is empty when the project has no runs root yet" do
