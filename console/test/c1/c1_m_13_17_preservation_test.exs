@@ -198,7 +198,9 @@ defmodule C1.MutationPreservationTest do
     # and the cycle-3 core delivery (Bash tooling and invocations, PaneClient -p
     # wrapper, barrier-file clarifications, artifact-cardinality control), plus the
     # R09 admission refusals (declared-artifact containment, the physical artifact
-    # judgement at the snapshot boundary, reviewer independence).
+    # judgement at the snapshot boundary, reviewer independence), the R12 controls,
+    # and the R10 operator reads (pending_repair carried into the CLI reads,
+    # status/list --root --watch, replay with an optional --to-seq prefix fold).
     # Pin root entries so another core commit cannot silently pass. A later authorized core delivery must update
     # this snapshot explicitly in its review. Console files are outside the
     # snapshot, avoiding a self-referential commit id.
@@ -208,11 +210,11 @@ defmodule C1.MutationPreservationTest do
     040000 tree 538b98582c5c194332306fae9559fa19f46bb33b\tbin
     100644 blob cfbb9f900c6f1442d2552baa0063cff01b270413\tflake.lock
     100644 blob 19621e64b39eda66e1ba845d833a1f3c619bd511\tflake.nix
-    040000 tree 5c1abfa9a613ea03ddb6bc96c9ab62f043a916fe\tlib
+    040000 tree fa4362c5507a097aa6bf21478abf3c325c3ed671\tlib
     100644 blob 6f8544e74c5907bebfdba64381e9320b07fcd7e3\tmix.exs
     100644 blob 54b8c07475cf6c51b61b6ea63eade94966c0e27b\tmix.lock
     040000 tree 950aae97c234450184c6cf696d2dadd28520f48f\tnative
-    040000 tree 20e2fffb0a7a5df6567930c9605e44ecf14b634d\ttest
+    040000 tree ee60d7dd4ab346dc9af461bbedfcfb6c99e9dbd5\ttest
     """
 
     {committed, 0} = System.cmd("git", ["ls-tree", "HEAD", "--"] ++ core_paths, cd: Harness.core_path())
