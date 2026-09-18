@@ -199,8 +199,10 @@ defmodule C1.MutationPreservationTest do
     # wrapper, barrier-file clarifications, artifact-cardinality control), plus the
     # R09 admission refusals (declared-artifact containment, the physical artifact
     # judgement at the snapshot boundary, reviewer independence), the R12 controls,
-    # and the R10 operator reads (pending_repair carried into the CLI reads,
-    # status/list --root --watch, replay with an optional --to-seq prefix fold).
+    # the R10 operator reads (pending_repair carried into the CLI reads,
+    # status/list --root --watch, replay with an optional --to-seq prefix fold),
+    # and the second R12 controls lane (redaction artifact classes, the IPC
+    # closed/open boundary pair, the offline-mutation exclusion residues).
     # Pin root entries so another core commit cannot silently pass. A later authorized core delivery must update
     # this snapshot explicitly in its review. Console files are outside the
     # snapshot, avoiding a self-referential commit id.
@@ -214,7 +216,7 @@ defmodule C1.MutationPreservationTest do
     100644 blob 6f8544e74c5907bebfdba64381e9320b07fcd7e3\tmix.exs
     100644 blob 54b8c07475cf6c51b61b6ea63eade94966c0e27b\tmix.lock
     040000 tree 950aae97c234450184c6cf696d2dadd28520f48f\tnative
-    040000 tree ee60d7dd4ab346dc9af461bbedfcfb6c99e9dbd5\ttest
+    040000 tree 94223d6f32413a936072232ea8cf82ade2332454\ttest
     """
 
     {committed, 0} = System.cmd("git", ["ls-tree", "HEAD", "--"] ++ core_paths, cd: Harness.core_path())
