@@ -80,6 +80,64 @@ defmodule C1.LoginTest do
     assert stale.status == 302 and Plug.Conn.get_resp_header(stale, "location") == ["/login"]
   end
 
+  # C1-07a refuses a garbage cookie at the socket upgrade; the HTTP path had no row for the case that matters more,
+  # a cookie the server itself minted with ONE BIT changed. The mechanism is the same on both transports
+  # (Plug.Session.COOKIE fails verification, get_session/2 answers nil, Plugs.RequireSession drops the cookie and
+  # redirects), so this states the delivered property on the second transport rather than closing a new hole.
+  test "C1-05g a signed session cookie with one bit flipped is no session on the HTTP path" do
+    {config, secret} = app!()
+    cookie = Harness.login!(config, secret)
+    {_id, value} = Harness.raw_session_id(cookie)
+    key = apply(OrrisConsole.Endpoint, :session_options, []) |> Keyword.fetch!(:key)
+
+    # the unflipped cookie is admitted: what follows is the flip, not a cookie that never worked
+    assert Harness.conn(config, :get, "/", [{"cookie", cookie}]).status == 200
+
+    for {label, flipped} <- [{"payload", flip(value, -2)}, {"signature", flip(value, -1)}] do
+      assert flipped != value and byte_size(flipped) == byte_size(value), label
+
+      {conn, calls} =
+        Harness.query_calls(fn -> Harness.conn(config, :get, "/", [{"cookie", key <> "=" <> flipped}]) end)
+
+      assert conn.status == 302, "#{label}: #{conn.status}"
+      assert Plug.Conn.get_resp_header(conn, "location") == ["/login"], label
+      assert calls == [], "#{label}: Query invoked for an unverifiable cookie"
+      # measured: the response sets NO cookie at all, so an unverifiable cookie is neither renewed nor minted
+      # into a session; a set-cookie here would be session fixation from bytes the server never signed
+      assert Plug.Conn.get_resp_header(conn, "set-cookie") == [], label
+    end
+
+    # neither flip allocated or consumed anything, and the session the operator really holds still works
+    assert SessionStore.counts(OrrisConsole.SessionStore) == %{sessions: 1, views: 0}
+    assert Harness.conn(config, :get, "/", [{"cookie", cookie}]).status == 200
+  end
+
+  # Flips the low bit of the first byte of segment `position` (-2 payload, -1 signature) that stays inside the
+  # base64url alphabet when flipped, so the cookie is still well formed and it is the SIGNED MATERIAL that changed
+  # rather than the cookie grammar. The segment separator is read from the value, not assumed.
+  defp flip(value, position) do
+    separator = if String.contains?(value, "--"), do: "--", else: "."
+    segments = String.split(value, separator)
+    segment = Enum.at(segments, position)
+    segments |> List.replace_at(position, flip_bit(segment)) |> Enum.join(separator)
+  end
+
+  defp flip_bit(segment) do
+    candidates = for {byte, index} <- Enum.with_index(:binary.bin_to_list(segment)), flippable?(byte), do: index
+
+    case candidates do
+      [index | _] ->
+        <<head::binary-size(^index), byte, rest::binary>> = segment
+        <<head::binary, Bitwise.bxor(byte, 1), rest::binary>>
+
+      [] ->
+        flunk("no byte of #{segment} can be bit-flipped inside the base64url alphabet")
+    end
+  end
+
+  # an even-valued letter or digit flips to its successor, which is a letter or digit again
+  defp flippable?(byte), do: rem(byte, 2) == 0 and (byte in ?A..?Y or byte in ?a..?y or byte in ?0..?8)
+
   test "C1-05e store bounds: the 129th login is refused as capacity; malformed input allocates nothing" do
     {_config, secret} = app!(login_capacity: 200, login_refill_ms: 1)
     store = OrrisConsole.SessionStore
