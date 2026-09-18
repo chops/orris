@@ -208,7 +208,9 @@ defmodule C1.MutationPreservationTest do
     # four owed rows (the producer copy this IPC contract is paired with, NS-11
     # bound to the packaged archive, the interrupt leg of the watch loop, and a
     # bit-flipped signed session cookie on the HTTP path; lib moved for one
-    # moduledoc only).
+    # moduledoc only), and the R2 hang repair (test only: the exporter isolation
+    # row now observes the runner's death through a watcher the runner itself
+    # establishes before it hangs, instead of a monitor that raced the timeout).
     # Pin root entries so another core commit cannot silently pass. A later authorized core delivery must update
     # this snapshot explicitly in its review. Console files are outside the
     # snapshot, avoiding a self-referential commit id.
@@ -218,11 +220,11 @@ defmodule C1.MutationPreservationTest do
     040000 tree 538b98582c5c194332306fae9559fa19f46bb33b\tbin
     100644 blob cfbb9f900c6f1442d2552baa0063cff01b270413\tflake.lock
     100644 blob 19621e64b39eda66e1ba845d833a1f3c619bd511\tflake.nix
-    040000 tree d6cc2e49708b18d6b4e5d7ca497d28fa9cc457b3\tlib
+    040000 tree 2afc3d0915f667838f9219e11defef48d93e60ac\tlib
     100644 blob 6f8544e74c5907bebfdba64381e9320b07fcd7e3\tmix.exs
     100644 blob 54b8c07475cf6c51b61b6ea63eade94966c0e27b\tmix.lock
     040000 tree 950aae97c234450184c6cf696d2dadd28520f48f\tnative
-    040000 tree 531bb1755a8eb9b557e7f5aae961bbcce4cbeee8\ttest
+    040000 tree caf93c4970ef5f77c9223ee8e14ba09a7759ddd0\ttest
     """
 
     {committed, 0} = System.cmd("git", ["ls-tree", "HEAD", "--"] ++ core_paths, cd: Harness.core_path())
