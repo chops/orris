@@ -376,6 +376,60 @@ defmodule AiOrchestrator.CLITest do
     assert File.read!(Path.join(run_dir, "run-summary.org")) =~ "* Status: cancelled"
   end
 
+  # R08 G1: the operator path of the resolve_attention verb (E-9 pattern): one stamped run_resumed naming the
+  # resolved id, projections rewritten; a stale or unknown id and an id outside the grammar are refused with nothing
+  # appended; the argument is required
+  test "resolve appends one stamped run_resumed naming the resolved attention id and rewrites projections" do
+    spec = "scenarios" |> F.json("gated_run_seed", "spec.json") |> Map.update!("agents", &[List.first(&1)])
+
+    run_dir =
+      "resolve"
+      |> tmp_dir()
+      |> write_json("spec.json", spec)
+      |> write_json("plan.json", F.json("scenarios", "gated_run_seed", "plan.json"))
+
+    opts = Keyword.put(fsm_opts(tmp_dir("resolve-registry")), :dispatch, AiOrchestrator.CLITest.BlockedDispatch)
+    assert %{status: 0, stdout: stdout} = CLI.run(["run", run_dir], opts)
+    assert stdout =~ "* Status: BLOCKED"
+    before = File.read!(Path.join(run_dir, "events.jsonl"))
+    assert %{status: 64, stderr: usage} = CLI.run(["resolve", run_dir])
+    assert Jason.decode!(usage)["reason"] == "usage"
+    assert %{status: 70, stderr: invalid} = CLI.run(["resolve", run_dir, "att 0001"], opts)
+    assert Jason.decode!(invalid)["reason"] == "attention_ids_invalid"
+    assert %{status: 70, stderr: unknown} = CLI.run(["resolve", run_dir, "att_0009"], opts)
+
+    assert Jason.decode!(unknown) == %{
+             "reason" => "attention_unresolved",
+             "open_attention_ids" => ["att_0001"],
+             "unknown_attention_ids" => ["att_0009"]
+           }
+
+    assert File.read!(Path.join(run_dir, "events.jsonl")) == before
+    # the pane stays blocked: the resolved run re-observes it and re-blocks under the next attention id
+    assert %{status: 0, stdout: resolved, stderr: ""} = CLI.run(["resolve", run_dir, "att_0001"], opts)
+    assert resolved =~ "* Status: BLOCKED"
+
+    events =
+      run_dir |> Path.join("events.jsonl") |> File.read!() |> String.split("\n", trim: true) |> Enum.map(&Jason.decode!/1)
+
+    assert [resumed] = Enum.filter(events, &(&1["type"] == "run_resumed"))
+    assert resumed["data"]["resolves_attention_ids"] == ["att_0001"]
+    assert resumed["data"]["recovery_reason"] == "attention_resolved"
+    assert %{"class" => "operator", "id" => "operator", "verb" => "resolve_attention"} = resumed["data"]["requested_by"]
+    assert Enum.count(events, &(&1["type"] == "assignment_dispatch_sent")) == 1
+
+    assert Enum.map(Enum.filter(events, &(&1["type"] == "human_attention_required")), & &1["data"]["attention_id"]) == [
+             "att_0001",
+             "att_0002"
+           ]
+
+    assert File.read!(Path.join(run_dir, "run-summary.org")) =~ "* Status: BLOCKED"
+    # the already-resolved id is now unknown and the new one is open
+    assert %{status: 70, stderr: stale} = CLI.run(["resolve", run_dir, "att_0001"], opts)
+    assert Jason.decode!(stale)["open_attention_ids"] == ["att_0002"]
+    assert Jason.decode!(stale)["unknown_attention_ids"] == ["att_0001"]
+  end
+
   test "status --json returns the folded journal summary" do
     run_dir = write_journal(tmp_dir("completed"), F.lines("scenarios", "gated_run_seed"))
 

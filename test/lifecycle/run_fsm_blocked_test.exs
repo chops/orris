@@ -68,4 +68,47 @@ defmodule AiOrchestrator.Lifecycle.RunFSMBlockedTest do
     assert prompt["data"]["prompt_hash"] != "sha256:0000000000000000000000000000000000000000000000000000000000000000"
     assert prompt["data"]["prompt_bytes"] > 512
   end
+
+  # R08 G1 positive companion: the same blocked prefix resumed WITH the resolved ids (the binding the run server
+  # derives from a resolve_attention command) journals one run_resumed naming them and re-observes the still-blocked
+  # pane (no second send, a new attention id); without the ids the plain resume keeps its refusal; a subset or an
+  # unknown id is refused closed
+  test "a resolve_attention resume journals run_resumed.resolves_attention_ids and re-observes the blocked pane" do
+    spec = F.json("scenarios", "auth_blocked_pane", "spec.json")
+    plan = F.json("scenarios", "auth_blocked_pane", "plan.json")
+    prompt_root = ScenarioHarness.prompt_root()
+
+    assert {:ok, %{events: events, summary: %{"status" => "blocked", "open_attention_ids" => ["att_0001"]}}} =
+             RunFSM.run(spec, plan, dispatch: BlockedDispatch, prompt_root: prompt_root, run_id: "run_scenario_0002")
+
+    # a pure legacy (v1) prior journal: the harness sink's chain fields are not a prefix the reducer re-verifies
+    lines = Enum.map(events, &(&1 |> Map.delete("prev_line_sha256") |> Map.put("schema_version", 1) |> Jason.encode!()))
+    base = [dispatch: BlockedDispatch, prompt_root: prompt_root]
+
+    assert {:error, %{"reason" => "attention_required", "open_attention_ids" => ["att_0001"]}} =
+             RunFSM.resume(spec, plan, lines, base)
+
+    assert {:error,
+            %{
+              "reason" => "attention_unresolved",
+              "open_attention_ids" => ["att_0001"],
+              "unknown_attention_ids" => ["att_0009"]
+            }} =
+             RunFSM.resume(spec, plan, lines, base ++ [resolves_attention_ids: ["att_0001", "att_0009"]])
+
+    assert {:ok, %{appended_events: appended, summary: summary}} =
+             RunFSM.resume(
+               spec,
+               plan,
+               lines,
+               base ++ [resolves_attention_ids: ["att_0001"], recovery_reason: "attention_resolved"]
+             )
+
+    assert [%{"type" => "run_resumed", "data" => data} | rest] = appended
+    assert data["resolves_attention_ids"] == ["att_0001"] and data["recovery_reason"] == "attention_resolved"
+    assert summary["status"] == "blocked" and summary["open_attention_ids"] == ["att_0002"]
+    types = Enum.map(rest, & &1["type"])
+    refute "assignment_dispatch_sent" in types
+    assert "human_attention_required" in types
+  end
 end

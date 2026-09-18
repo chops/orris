@@ -71,6 +71,7 @@ defmodule AiOrchestrator.CLI do
   end
 
   def run(["cancel", run_dir], opts), do: cancel_run_dir(run_dir, opts)
+  def run(["resolve", run_dir, ids], opts), do: resolve_run_dir(run_dir, ids, opts)
   def run(_argv, _opts), do: error(64, %{"reason" => "usage", "usage" => usage()})
 
   # `--gate-guardian <absolute path>` names the gate guardian for this invocation (the flag
@@ -108,6 +109,15 @@ defmodule AiOrchestrator.CLI do
 
   defp cancel_run_dir(run_dir, opts) do
     case Trusted.cancel(run_dir, opts) do
+      {:ok, prepared} -> invoke_prepared(prepared)
+      {:error, %{} = reason} -> error(70, reason)
+    end
+  end
+
+  # `resolve <run-dir> <id>[,<id>...]` (R08 G1): a resume that names the attention ids it resolves; the trusted
+  # tier validates the ids against the command grammar before any identity, claim or Writer activity
+  defp resolve_run_dir(run_dir, ids, opts) do
+    case Trusted.resolve_attention(run_dir, String.split(ids, ","), opts) do
       {:ok, prepared} -> invoke_prepared(prepared)
       {:error, %{} = reason} -> error(70, reason)
     end
@@ -294,6 +304,7 @@ defmodule AiOrchestrator.CLI do
            ai-orchestrator list [--json]
            ai-orchestrator list --root <runs-root> [--json]
            ai-orchestrator cancel <run-dir>
+           ai-orchestrator resolve <run-dir> <attention-id>[,<attention-id>...]
     """
   end
 end
