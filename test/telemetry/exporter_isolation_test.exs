@@ -371,4 +371,136 @@ defmodule AiOrchestrator.Telemetry.ExporterIsolationTest do
       refute Enum.any?(:telemetry.list_handlers(@start), &(&1.id == id)), "the raising handler was not detached"
     end
   end
+
+  # NS-03.F.000 / NS-03.F.001. The raising-handler row above pins the FACT half of "observability
+  # failure changes no domain behavior". These rows pin what is left, and they exist because
+  # `commands/telemetry.ex:21-24` states the rest as an EXPECTATION that nothing enforces:
+  # `:telemetry` runs handlers synchronously in the invoking process with no timeout and no
+  # supervision, and `Commands.Telemetry.span/4` calls `:telemetry.execute/3` directly. So the honest
+  # statement of this boundary's guarantee is "an observability failure changes no FACT", never "a
+  # handler has no effect": a handler demonstrably CAN change timing, and R4 asserts the delay rather
+  # than asserting its absence. Whether a handler-induced delay may consume a recorded gate or
+  # observation deadline is a separate question for NS-18 / NS-19 and is not answered here.
+  describe "handler effects that are real (NS-03.F.001, stated rather than assumed)" do
+    @blocking_ms 300
+
+    test "R4 a blocking handler delays the invocation itself and leaves the journal bytes and the result identical",
+         %{run_dir: run_dir} do
+      baseline = run_full_command_path!(run_dir)
+      assert_completed_run!(baseline)
+
+      test = self()
+      observer = "ns26-f001-observer-#{System.unique_integer([:positive])}"
+      blocking = "ns26-f001-blocking-#{System.unique_integer([:positive])}"
+
+      # the product's OWN measurement, read off the terminal event: `emit/3` computes
+      # `duration = now - start_mono` with `start_mono` taken before the `:start` handlers ran, so a
+      # handler that held the calling process during `:start` is inside this number by construction --
+      # and is outside it if handlers ever stop running in the calling process.
+      :ok =
+        :telemetry.attach_many(
+          observer,
+          [@stop, @exception],
+          fn _event, %{duration: duration}, %{invocation_ref: ref}, _config ->
+            send(test, {:observed_duration, ref, duration})
+          end,
+          nil
+        )
+
+      on_exit(fn -> :telemetry.detach(observer) end)
+
+      :ok =
+        :telemetry.attach(
+          blocking,
+          @start,
+          fn _event, _measurements, %{invocation_ref: ref}, _config ->
+            entered = System.monotonic_time()
+            Process.sleep(@blocking_ms)
+            send(test, {:handler_blocked, ref, System.monotonic_time() - entered})
+          end,
+          nil
+        )
+
+      on_exit(fn -> :telemetry.detach(blocking) end)
+
+      perturbed = run_perturbed!(run_dir)
+
+      assert_receive {:handler_blocked, ref, held}, 5_000
+      assert_receive {:observed_duration, ^ref, duration}, 5_000
+
+      held_ms = System.convert_time_unit(held, :native, :millisecond)
+      duration_ms = System.convert_time_unit(duration, :native, :millisecond)
+
+      assert held_ms >= @blocking_ms, "the blocking handler did not hold the process: #{held_ms} ms"
+
+      assert duration_ms >= held_ms,
+             "the handler did not block the invocation: the invocation measured #{duration_ms} ms " <>
+               "while its own handler held the calling process for #{held_ms} ms"
+
+      # the fact half: the invocation was slower and nothing else about it moved
+      assert_same_outcome!(baseline, perturbed)
+    end
+
+    test "R5 a handler that returns a large term changes no fact: a handler's return value is discarded",
+         %{run_dir: run_dir} do
+      baseline = run_full_command_path!(run_dir)
+      assert_completed_run!(baseline)
+
+      id = "ns26-f001-large-term-#{System.unique_integer([:positive])}"
+      test = self()
+
+      :ok =
+        :telemetry.attach_many(
+          id,
+          @events,
+          fn _event, _measurements, %{invocation_ref: ref}, _config ->
+            send(test, {:large_term_handler, ref})
+            :binary.copy("x", 1_000_000)
+          end,
+          nil
+        )
+
+      on_exit(fn -> :telemetry.detach(id) end)
+
+      perturbed = run_perturbed!(run_dir)
+
+      assert_receive {:large_term_handler, _ref}, 5_000
+      assert_same_outcome!(baseline, perturbed)
+
+      assert Enum.any?(:telemetry.list_handlers(@start), &(&1.id == id)),
+             "a handler that answered a value rather than raising must stay attached"
+    end
+
+    test "R6 a handler that detaches itself mid-invocation is not called again and changes no fact",
+         %{run_dir: run_dir} do
+      baseline = run_full_command_path!(run_dir)
+      assert_completed_run!(baseline)
+
+      id = "ns26-f001-self-detaching-#{System.unique_integer([:positive])}"
+      test = self()
+
+      :ok =
+        :telemetry.attach_many(
+          id,
+          @events,
+          fn event, _measurements, %{invocation_ref: ref}, _config ->
+            :telemetry.detach(id)
+            send(test, {:self_detached, ref, List.last(event)})
+          end,
+          nil
+        )
+
+      on_exit(fn -> :telemetry.detach(id) end)
+
+      perturbed = run_perturbed!(run_dir)
+
+      assert_receive {:self_detached, _ref, :start}, 5_000
+      assert_same_outcome!(baseline, perturbed)
+
+      refute Enum.any?(:telemetry.list_handlers(@stop), &(&1.id == id)),
+             "the self-detaching handler is still attached to the terminal event"
+
+      refute_received {:self_detached, _ref, :stop}
+    end
+  end
 end

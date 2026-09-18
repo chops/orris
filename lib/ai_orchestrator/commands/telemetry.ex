@@ -19,8 +19,19 @@ defmodule AiOrchestrator.Commands.Telemetry do
   process-global or mutable state, so every escape produces exactly one `:exception` event.
 
   `:telemetry` runs handlers synchronously in the calling process: a handler that raises is caught and
-  detached by `:telemetry` and cannot change the command outcome; a handler that blocks blocks the
-  invocation. Handlers are expected to be nonblocking; exporter isolation is a separate boundary. An abrupt
+  detached by `:telemetry` and cannot change the command outcome, a handler's return value is discarded, and a
+  handler that detaches itself is not called again in the same invocation. What a handler CAN change is TIMING:
+  a handler that blocks blocks the invocation, and the `duration` reported on the terminal event includes the
+  time this invocation's own handlers held the calling process.
+
+  Handlers are expected to be nonblocking and NOTHING ENFORCES THAT EXPECTATION. There is no timeout, no
+  separate process and no supervision here or in `:telemetry`: `span/4` calls `:telemetry.execute/3` directly.
+  Moving emission off the calling process to bound a handler would change what these events mean, so the
+  expectation is documented as unenforced (docs/contracts/command-lifecycle-telemetry.org) and MEASURED rather
+  than assumed by `test/telemetry/exporter_isolation_test.exs` R4-R6. The guarantee this boundary carries is
+  therefore "an observability failure changes no FACT", never "a handler has no effect".
+
+  Exporter isolation is a separate boundary. An abrupt
   external process death can prevent terminal emission: the absence of a `:stop` / `:exception` is not an outcome.
   """
 

@@ -90,8 +90,33 @@ original kind, reason and stacktrace. No retry, no journal write, no change to =
 
 * Handler isolation (stated, not overstated)
 =:telemetry= executes attached handlers synchronously in the invoking process. A handler that raises is
-caught and detached by =:telemetry= (with a logged warning) and cannot change the command outcome. A handler
-that blocks blocks the invocation: handlers attached to these events are expected to be nonblocking.
+caught and detached by =:telemetry= (with a logged warning) and cannot change the command outcome. A
+handler's return value is discarded, and a handler that detaches itself is not called again in the same
+invocation.
+
+What a handler CAN change is TIMING. A handler that blocks blocks the invocation, and the =duration=
+reported on the terminal event includes the time this invocation's own handlers held the calling process,
+because =emit/3= takes =start_mono= before the =:start= handlers run.
+
+Handlers attached to these events are expected to be nonblocking, and THAT EXPECTATION IS UNENFORCED. This
+contract states it as unenforced rather than as a guarantee. Nothing in this product bounds, times out,
+supervises or moves a handler off the invoking process: =AiOrchestrator.Commands.Telemetry.span/4= calls
+=:telemetry.execute/3= directly (=lib/ai_orchestrator/commands/telemetry.ex:55, 92=) and =:telemetry= itself
+offers no timeout. Enforcing it would mean emitting from another process, which would lose the caller's
+process context and the one-event-per-invocation property this contract fixes; that is a contract change to
+propose, not an omission to fill in silently.
+
+The expectation is therefore MEASURED rather than assumed, by =test/telemetry/exporter_isolation_test.exs=:
+- R4 :: a handler that sleeps a measured interval leaves =events.jsonl= byte-identical and the result term
+  identical, while the invocation's own reported =duration= is at least as long as the interval the handler
+  held the calling process. The row asserts the delay; it does not assert its absence.
+- R5 :: a handler that answers a large term changes no fact and stays attached.
+- R6 :: a handler that detaches itself during =:start= is not called on the terminal event and changes no fact.
+
+So the guarantee this boundary carries is "an observability failure changes no FACT", never "a handler has
+no effect". Whether a handler-induced delay may consume a recorded gate or observation deadline is a
+separate question for NS-18 / NS-19 and is NOT answered here.
+
 The application-boundary span handler itself belongs to a later slice; the exporter boundary it will rely on
 is pinned now (below).
 
