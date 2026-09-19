@@ -134,6 +134,70 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
 
   defp wait_for_file(path), do: wait_until(fn -> File.exists?(path) end, 5_000)
 
+  # ---- a REAL three-deep descendant tree: worker bash -> child bash -> grandchild sleep ----
+  #
+  # The worker records its own pid; the child bash (which ignores TERM, so the sleep it forks
+  # inherits SIG_IGN and only KILL reaches either) records its pid and its parent, forks the
+  # grandchild and records THAT pid. `tail` is what the worker does after forking the child:
+  # "wait" keeps the worker alive (a hung gate), "exit 0" makes the direct child exit at once
+  # while the descendants live on. Every pid the tests reason about comes from these files or
+  # from the guardian's READY identity, never from pgrep.
+  defp tree_argv(run_dir, tail) do
+    child =
+      ~s(trap "" TERM; echo $BASHPID > "$1/child.pid"; echo $PPID > "$1/child.ppid"; ) <>
+        "sleep 30 & echo $! > \"$1/grandchild.pid\"; wait"
+
+    ["/bin/bash", "-c", "echo $$ > \"$1/worker.pid\"; bash -c '#{child}' child \"$1\" & #{tail}", "worker", run_dir]
+  end
+
+  # exited, whether or not reaped: the kernel lists no such pid, or lists it with state Z.
+  # `signal_zero/1` cannot say this -- kill -0 answers a zombie as alive.
+  defp exited?(pid) when is_integer(pid) do
+    case System.cmd("ps", ["-o", "stat=", "-p", Integer.to_string(pid)], stderr_to_stdout: true) do
+      {out, 0} -> String.starts_with?(String.trim(out), "Z")
+      {"", _} -> true
+      {out, status} -> flunk("ps proved no state for #{pid} (#{status}): #{inspect(out)}")
+    end
+  end
+
+  defp parent_of(pid) do
+    case System.cmd("ps", ["-o", "ppid=", "-p", pid], stderr_to_stdout: true) do
+      {out, 0} -> String.trim(out)
+      {out, status} -> flunk("ps proved no parent for #{pid} (#{status}): #{inspect(out)}")
+    end
+  end
+
+  defp pid_file!(run_dir, name) do
+    path = Path.join(run_dir, name)
+
+    assert wait_until(fn -> match?({:ok, <<_, _::binary>>}, File.read(path)) end, 5_000),
+           "the fixture never wrote #{name}"
+
+    path |> File.read!() |> String.trim()
+  end
+
+  # Proves, from the OS, that the fixture built the chain it claims and that the descendants
+  # are members of the guardian's owned group BEFORE any deadline acts: the worker that wrote
+  # worker.pid is the guardian's worker, the child's parent is the worker, the grandchild's
+  # parent is the child, and child and grandchild are alive in the group. (The worker's own
+  # liveness is not asserted here: the failure-control fixture exits it on purpose.)
+  defp descendant_tree!(run_dir, %{worker: worker, pgid: pgid}) do
+    grandchild = pid_file!(run_dir, "grandchild.pid")
+    worker_pid = pid_file!(run_dir, "worker.pid")
+    child = pid_file!(run_dir, "child.pid")
+    child_ppid = pid_file!(run_dir, "child.ppid")
+
+    assert worker_pid == Integer.to_string(worker), "worker.pid was written by a process other than the guardian's worker"
+    assert child_ppid == worker_pid, "the child bash is not a child of the worker"
+    assert parent_of(grandchild) == child, "the grandchild is not a child of the child bash"
+    assert signal_zero(child) == :alive
+    assert signal_zero(grandchild) == :alive
+    group = members(pgid)
+    assert String.to_integer(child) in group, "the child bash is not in the owned group #{pgid}: #{inspect(group)}"
+    assert String.to_integer(grandchild) in group, "the grandchild is not in the owned group #{pgid}: #{inspect(group)}"
+    %{child: child, grandchild: grandchild}
+  end
+
   # a monitored owner: runs `fun`, reports its result, then parks until killed
   defp owner(fun) do
     parent = self()
@@ -615,6 +679,99 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
       assert {:timeout, termination} = Execution.await(running, opts)
       assert %{kind: "timeout", settled: true, proof: "gone"} = termination
       assert dead?(identity), "a TERM-ignoring descendant is escalated to KILL"
+    end
+
+    # ---- NS-18.D.001: the deadline over a REAL descendant tree, not only the direct child ----
+    #
+    # Every earlier deadline row's "descendant" was the worker's own child (`sleep 30 &` under
+    # the worker bash). These rows build worker -> child bash -> grandchild sleep, prove the
+    # chain from the OS (parent pids) and the group membership of all three BEFORE the
+    # deadline, and prove the grandchild is gone AFTER it, on both deadline paths: the owner
+    # harness timer (`expire/1`) and the guardian's own backstop with the owner stuck. The third
+    # row is the failure control: the direct child exits 0 at once while a TERM-ignoring
+    # grandchild survives; the gate never answers over that survivor, and the answer it gives
+    # once the group is settled by force is the exit the worker reported -- and when the group
+    # cannot be proven settled (seam fault), that same exit 0 is not a pass.
+
+    test "the owner timer reaches a grandchild: worker -> child -> grandchild all gone, proof gone", %{
+      run_dir: run_dir,
+      opts: opts
+    } do
+      {prepared, ack} = acked(run_dir, tree_argv(run_dir, "wait"), opts)
+      identity = Execution.identity(prepared)
+      assert {:ok, running} = Execution.release(prepared, ack)
+      tree = descendant_tree!(run_dir, identity)
+
+      Process.put(:gate_exec_now, @deadline)
+      assert {:timeout, termination} = Execution.expire(running)
+      assert %{kind: "timeout", settled: true, leftovers: "0", proof: "gone"} = termination
+      refute Map.get(termination, :backstop, false), "this is the owner path, not the native backstop"
+
+      assert signal_zero(tree.grandchild) == :gone, "the grandchild survived the owner deadline"
+      assert signal_zero(tree.child) == :gone, "the child survived the owner deadline"
+      assert dead?(identity)
+    end
+
+    test "the guardian backstop reaches a grandchild with the owner stuck: settled by force, reported as backstop",
+         %{run_dir: run_dir, opts: opts} do
+      {prepared, ack} = acked(run_dir, tree_argv(run_dir, "wait"), opts, %{deadline_unix: @now + 1})
+      identity = Execution.identity(prepared)
+      assert {:ok, running} = Execution.release(prepared, ack)
+      tree = descendant_tree!(run_dir, identity)
+
+      # nobody expires the handle; the guardian's own --timeout-ms (1 s + 2 s grace) does it
+      assert wait_until(fn -> signal_zero(tree.grandchild) == :gone end, 8_000),
+             "the grandchild survived the guardian backstop deadline"
+
+      assert wait_until(fn -> dead?(identity) end, 8_000), "the guardian settled the group with nobody asking"
+      Process.put(:gate_exec_now, @now + 3)
+      assert {:timeout, termination} = Execution.await(running, opts)
+      assert %{kind: "timeout", backstop: true, settled: true, leftovers: "0", proof: "gone"} = termination
+    end
+
+    test "direct child exit while a TERM-ignoring grandchild survives: no answer over the survivor, exit 0 is not a pass when the group is unproven",
+         %{run_dir: run_dir, opts: opts, seam: seam} do
+      # the worker exits 0 at once; its child bash ignores TERM and so does the sleep it forks.
+      # A wider settle round makes the window between the worker's exit and the guardian's
+      # KILL round measurable (3 s) instead of a 200 ms race.
+      opts = Keyword.put(opts, :settle_ms, 3_000)
+      # the worker leaves only once the grandchild exists, so the chain it leaves behind is the
+      # chain the OS oracle below proves (a child started after its parent exited reports PPID 1)
+      leave = ~s(until test -s "$1/grandchild.pid"; do sleep 0.05; done; echo left > "$1/worker.left"; exit 0)
+      {prepared, ack} = acked(run_dir, tree_argv(run_dir, leave), opts)
+      identity = Execution.identity(prepared)
+      assert {:ok, running} = Execution.release(prepared, ack)
+      tree = descendant_tree!(run_dir, identity)
+
+      # MEASURED antecedent: the direct child has exited (its marker is written and the kernel
+      # reports it a zombie or gone -- `kill -0` still answers a zombie, and the guardian reaps
+      # only after settlement) while the grandchild is alive, in the group.
+      assert wait_until(fn -> File.exists?(Path.join(run_dir, "worker.left")) and exited?(identity.worker) end, 5_000),
+             "the worker (direct child) did not exit"
+
+      assert signal_zero(tree.grandchild) == :alive, "the fixture must leave a live grandchild behind"
+      assert String.to_integer(tree.grandchild) in members(identity.pgid)
+
+      # the answer arrives only once the group is settled by force (TERM ignored, KILL round)
+      assert {:exit, outcome} = Execution.await(running, opts)
+      assert %{"exit_status" => 0, "settled" => true, "leftovers" => "0", "proof" => "gone"} = outcome
+      assert signal_zero(tree.grandchild) == :gone, "the answer was given while the grandchild still lived"
+      assert dead?(identity)
+
+      # FAILURE CONTROL: the same tree under a guardian that cannot enumerate the group answers
+      # exit 0 with an unproven settlement, and that is never a pass
+      seam_opts = Keyword.merge(opts, helper: seam, env: [{"GATE_GUARDIAN_FAULT", "members_fail"}])
+      run_dir2 = Path.join(run_dir, "unproven")
+      File.mkdir_p!(run_dir2)
+      leave2 = "until test -s \"$1/grandchild.pid\"; do sleep 0.05; done; exit 0"
+      {prepared2, ack2} = acked(run_dir2, tree_argv(run_dir2, leave2), seam_opts)
+      identity2 = Execution.identity(prepared2)
+      assert {:ok, running2} = Execution.release(prepared2, ack2)
+      tree2 = descendant_tree!(run_dir2, identity2)
+      assert {:exit, outcome2} = Execution.await(running2, seam_opts)
+      assert %{"exit_status" => 0, "settled" => false, "leftovers" => "unknown"} = outcome2
+      refute Execution.pass?(outcome2), "exit 0 over an unproven group is attention, never a pass"
+      assert wait_until(fn -> signal_zero(tree2.grandchild) == :gone end, 5_000)
     end
 
     test "unreadable output is a closed output_unreadable, never an invented hash", %{run_dir: run_dir, opts: opts} do
