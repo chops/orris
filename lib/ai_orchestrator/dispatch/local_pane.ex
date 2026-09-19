@@ -520,8 +520,12 @@ defmodule AiOrchestrator.Dispatch.LocalPane do
     end
   end
 
+  # The stat's TYPE is judged before any byte is requested: `File.read` on a named pipe with no
+  # writer blocks in open(2) inside the node-wide file server, so a non-regular artifact is a
+  # refusal (the same closed classes as any other read failure), never a read.
   defp artifact_snapshot(path) do
     with {:ok, before_stat} <- File.stat(path, time: :posix),
+         :ok <- regular_file(before_stat),
          {:ok, contents} <- File.read(path),
          {:ok, after_stat} <- File.stat(path, time: :posix) do
       if before_stat.size == after_stat.size and before_stat.mtime == after_stat.mtime do
@@ -539,6 +543,9 @@ defmodule AiOrchestrator.Dispatch.LocalPane do
       {:error, reason} -> {:error, reason}
     end
   end
+
+  defp regular_file(%File.Stat{type: :regular}), do: :ok
+  defp regular_file(%File.Stat{}), do: {:error, :not_regular_file}
 
   defp fetch_artifact_baseline(%{"artifact_baseline" => %{"exists" => false} = baseline}), do: {:ok, baseline}
 
