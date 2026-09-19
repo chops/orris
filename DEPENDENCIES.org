@@ -40,7 +40,7 @@ packages absent from the lockfile are not included in this snapshot.
 | [[https://hex.pm/packages/igniter/0.8.4][igniter]]                                | 0.8.4   | Transitive              | MIT              |
 | [[https://hex.pm/packages/jason/1.4.5][jason]]                                    | 1.4.5   | Direct runtime          | Apache-2.0       |
 | [[https://hex.pm/packages/mime/2.0.7][mime]]                                      | 2.0.7   | Transitive              | Apache-2.0       |
-| [[https://hex.pm/packages/mint/1.10.0][mint]]                                     | 1.10.0  | Transitive              | Apache-2.0       |
+| [[https://hex.pm/packages/mint/1.10.1][mint]]                                     | 1.10.1  | Transitive              | Apache-2.0       |
 | [[https://hex.pm/packages/mix_audit/2.1.5][mix_audit]]                            | 2.1.5   | Direct development/test | BSD-3-Clause     |
 | [[https://hex.pm/packages/nimble_options/1.1.1][nimble_options]]                  | 1.1.1   | Transitive              | Apache-2.0       |
 | [[https://hex.pm/packages/nimble_pool/1.1.0][nimble_pool]]                        | 1.1.0   | Transitive              | Apache-2.0       |
