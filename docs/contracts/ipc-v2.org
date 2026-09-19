@@ -40,10 +40,10 @@ direction being recorded.
 
 - paired_repository: ~orrisd~ (the ai-pair daemon; the producer of v2 frames)
 - paired_path: ~docs/contracts/ipc-v2.org~
-- paired_revision: ~971f0a88af0ed9496210a2da0c291eaf35937556~
-- paired_document_sha256: ~a593e1eb1e5194dc0dc122fb15896240b6547a644c28ae388bb2a85a2a47a202~
-- vendored_source_revision: ~e5da392ea0b26d89bea6e72d58e1e952a48b7600~
-- vendored_source_sha256: ~8bfdc102e8c37cb0399f169030d9bf37ff37aff2d14299b09e2325fb276bb32b~
+- paired_revision: ~d6b2e369b6bbd3e83931c665d6ec2be4c2c9b6df~
+- paired_document_sha256: ~dc936f07ef1440af011f7e8a7bda75bddeff94413a3c04a2e4b8166071bb17bc~
+- vendored_source_revision: ~3684f53e93018edf10c16bee459af340607ab115~
+- vendored_source_sha256: ~939e09474dce6cf82af1dff19c8880b2c5148c6b2c4d4fb10da60fdf8a4a5be5~
 - paired_fixture_dir: ~test/fixtures/contracts/ipc/v2/~
 - paired_fixture_contract_hash: ~78c2f64240c3c5c9da60425c65c498974a2a81c8adb3e68e0bef28613c1707dc~
 - paired_fixture_count: ~16~
@@ -55,15 +55,15 @@ THIS file whose bytes that copy vendors, and ~vendored_source_sha256~ its
 digest: the pairing is a pair of snapshots, and either side moves it by a
 deliberate re-pairing rather than by drifting.
 
-Adding this block changes this file, so the revision that carries it supersedes
-~vendored_source_revision~ as the consumer tip and the producer owes one
-re-vendoring: it re-takes these bytes and moves its ~source_revision~,
-~source_sha256~ and its own test pin together. Nothing breaks in the meantime.
-The producer's pins name a revision whose bytes are unchanged for ever, so its
-drift control keeps failing on a producer-side edit, and the fixtures and their
-~CONTRACT_HASH~ -- which are byte-identical in both repositories by design and
-pinned by ~test/contracts/ipc_v2_contract_hash_test.exs~ here -- were untouched
-by it.
+The producer performed that re-vendoring at ~d6b2e369~: it re-took these bytes at
+~3684f53e~ and moved its ~source_revision~, ~source_sha256~ and its own test pin
+together. This block is the reciprocal half moving in answer. Editing it changes
+this file again, so ~vendored_source_revision~ names the revision BEFORE this
+edit and the producer owes the next re-taking. Nothing breaks in the meantime:
+both sides' pins name revisions whose bytes are unchanged for ever, and the
+fixtures and their ~CONTRACT_HASH~ -- byte-identical in both repositories by
+design and pinned by ~test/contracts/ipc_v2_contract_hash_test.exs~ here -- were
+untouched by either move.
 
 What the control here can see: that this document still names the paired
 revision, the paired digests, and the fixture hash the fixtures in this
@@ -71,6 +71,37 @@ repository actually produce. What it CANNOT see is a change made in the producer
 repository, because this gate has no access to it -- the same stated limit the
 producer copy records in the other direction. A pairing that has gone stale is
 found by reading the two blocks, not by either gate.
+
+*** Why this pin stays over the whole producer document
+:PROPERTIES:
+:CUSTOM_ID: why-this-pin-stays-over-the-whole-producer-document
+:END:
+The producer copy records a cheaper shape for this side to adopt and leaves the
+choice here: pin the producer's VENDORED-REGION digest (its ~source_sha256~)
+instead of the whole-document digest, because that "would be stable across
+producer addenda edits and would end the alternation". Measured at ~d6b2e369~
+before deciding, and declined for two reasons that are facts rather than taste.
+
+It carries no information this block does not already carry. The producer's
+vendored region is 12671 bytes digesting to
+~939e09474dce6cf82af1dff19c8880b2c5148c6b2c4d4fb10da60fdf8a4a5be5~, and that is
+byte-for-byte the digest of THIS file at ~3684f53e~ -- the value two lines above
+as ~vendored_source_sha256~. Pinning it would replace a statement about the
+producer's document with a restatement of this repository's own bytes,
+reproducible here without ever consulting the producer. The whole document is
+24414 bytes, so 11743 bytes of producer material -- its own pairing block, its
+addenda, its fixture inventory -- would leave the pin's scope, and a reader
+comparing the two copies would no longer be told when any of it moved.
+
+It would not end the alternation either. The alternation exists because each
+side's pin lives INSIDE the bytes the other side vendors, not because of the
+digest's scope: this very edit changes this file, so the producer's region no
+longer equals this file at HEAD and the next re-taking is owed exactly as before.
+A digest over a narrower region alternates on the same schedule.
+
+What the cheaper shape would genuinely remove is invalidation caused by producer
+addenda edits alone. That is a real cost, and it is the price of the pin saying
+something about the producer at all. It stays whole.
 
 ** Framing and version
 :PROPERTIES:

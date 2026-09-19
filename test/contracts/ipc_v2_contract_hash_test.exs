@@ -15,6 +15,14 @@ defmodule AiOrchestrator.Contracts.IpcV2ContractHashTest do
   producer repository -- this gate has no access to it -- so what it detects is a
   change made here: the pairing block being dropped, edited, or left naming a fixture
   hash the fixture set no longer produces.
+
+  A cross-check that is deliberately NOT here: recomputing `vendored_source_sha256`
+  from `git show <vendored_source_revision>:docs/contracts/ipc-v2.org`. The verify job
+  checks out at depth 1 (`.github/workflows/ci.yml`), so that object is absent in CI and
+  the row would pass locally and fail hosted -- a control whose verdict depends on the
+  checkout depth rather than on the bytes. It was measured once by hand at the
+  re-pairing instead, and the pins below are exact so that a later edit of either value
+  cannot pass as a well-shaped hash.
   """
 
   use ExUnit.Case, async: true
@@ -25,8 +33,10 @@ defmodule AiOrchestrator.Contracts.IpcV2ContractHashTest do
   @expected_fixture_count 16
 
   @document Path.expand("../../docs/contracts/ipc-v2.org", __DIR__)
-  @paired_revision "971f0a88af0ed9496210a2da0c291eaf35937556"
-  @paired_document_sha256 "a593e1eb1e5194dc0dc122fb15896240b6547a644c28ae388bb2a85a2a47a202"
+  @paired_revision "d6b2e369b6bbd3e83931c665d6ec2be4c2c9b6df"
+  @paired_document_sha256 "dc936f07ef1440af011f7e8a7bda75bddeff94413a3c04a2e4b8166071bb17bc"
+  @vendored_source_revision "3684f53e93018edf10c16bee459af340607ab115"
+  @vendored_source_sha256 "939e09474dce6cf82af1dff19c8880b2c5148c6b2c4d4fb10da60fdf8a4a5be5"
 
   test "the IPC v2 fixture set matches the pinned cross-repository hash" do
     paths = @fixture_dir |> Path.join("*.json") |> Path.wildcard() |> Enum.sort()
@@ -64,8 +74,12 @@ defmodule AiOrchestrator.Contracts.IpcV2ContractHashTest do
     assert declared(document, "paired_path") == "docs/contracts/ipc-v2.org"
     assert declared(document, "paired_revision") == @paired_revision
     assert declared(document, "paired_document_sha256") == @paired_document_sha256
-    assert declared(document, "vendored_source_revision") =~ ~r/\A[0-9a-f]{40}\z/
-    assert declared(document, "vendored_source_sha256") =~ ~r/\A[0-9a-f]{64}\z/
+
+    # exact, not shaped: both halves of a re-pairing move together or this row fails. The producer
+    # took THESE bytes at @vendored_source_revision, so a silent edit of either value is a claim
+    # about a snapshot that was never taken, which a 40-hex shape check would have admitted.
+    assert declared(document, "vendored_source_revision") == @vendored_source_revision
+    assert declared(document, "vendored_source_sha256") == @vendored_source_sha256
 
     # the document is a THIRD pin on the fixture hash, beside the CONTRACT_HASH file and this module's constant:
     # a rotation that moved the fixtures, that file and this constant together but left the document fails here
