@@ -14,7 +14,13 @@ defmodule AiOrchestrator.Host do
   """
 
   use Boundary,
-    deps: [AiOrchestrator.Run, AiOrchestrator.Commands, AiOrchestrator.Contract, AiOrchestrator.Journal],
+    deps: [
+      AiOrchestrator.Run,
+      AiOrchestrator.Commands,
+      AiOrchestrator.Contract,
+      AiOrchestrator.Journal,
+      AiOrchestrator.Telemetry
+    ],
     exports: [Executor, Monitor, RunOwner, Supervisor]
 
   alias AiOrchestrator.Host.Monitor

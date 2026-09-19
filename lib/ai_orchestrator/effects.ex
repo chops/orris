@@ -16,7 +16,8 @@ defmodule AiOrchestrator.Effects do
       AiOrchestrator.Contract,
       AiOrchestrator.Dispatch,
       AiOrchestrator.Gate,
-      AiOrchestrator.Journal
+      AiOrchestrator.Journal,
+      AiOrchestrator.Telemetry
     ],
     exports: [Runtime, Interrupted, Unreachable, AdapterRunner, AdapterFailure]
 
@@ -38,6 +39,7 @@ defmodule AiOrchestrator.Effects do
   alias AiOrchestrator.Gate.Execution
   alias AiOrchestrator.Gate.Runner, as: GateRunner
   alias AiOrchestrator.Journal.Fs.SystemFs
+  alias AiOrchestrator.Telemetry.Events
 
   @file_errors FileError.errnos()
   # closed value domains shared by the gate diagnostics mapper (docs/contracts/gate-execution-wiring.org)
@@ -61,8 +63,53 @@ defmodule AiOrchestrator.Effects do
   def execute(%Effect.Notify{} = effect, %Runtime{}, _inputs), do: raise(Unreachable, effect: effect.__struct__)
 
   def execute(effect, %Runtime{} = runtime, inputs) when is_struct(effect) and is_list(inputs) do
-    run_effect(effect, runtime, Keyword.get(inputs, :opts, []), Keyword.get(inputs, :receipt))
+    {domain, operation} = span_label(effect)
+    opts = Keyword.get(inputs, :opts, [])
+
+    # the `assignment` and `gate` lifecycle spans (NS-26.F.000). They run in the process that already
+    # owns the effect -- the Worker, or the Host's own loop -- never inside a GenServer whose call
+    # deadline belongs to someone else.
+    Events.span(domain, operation, effect_identity(effect, opts), fn ->
+      run_effect(effect, runtime, opts, Keyword.get(inputs, :receipt))
+    end)
   end
+
+  # The closed effect -> lifecycle domain table. `Effect.Clock` and `Effect.Timer` map to no domain:
+  # architecture:526-527 names neither, and a clock read happens on every tick of the reducer's seam.
+  # An unlisted pair is not emitted at all (`Telemetry.Events.span/4`), so this table can only omit
+  # observation, never change execution.
+  defp span_label(%Effect.Dispatch{}), do: {:assignment, :dispatch}
+  defp span_label(%Effect.Observe{}), do: {:assignment, :observe}
+  defp span_label(%Effect.ReconcileSend{}), do: {:assignment, :reconcile_send}
+  defp span_label(%Effect.SnapshotArtifact{}), do: {:assignment, :snapshot}
+  defp span_label(%Effect.RetainPrompt{}), do: {:assignment, :retain_prompt}
+  defp span_label(%Effect.FetchPrompt{}), do: {:assignment, :fetch_prompt}
+  defp span_label(%Effect.ReadReview{}), do: {:assignment, :read_review}
+  defp span_label(%Effect.PrepareGate{}), do: {:gate, :prepare}
+  defp span_label(%Effect.ReleaseGate{}), do: {:gate, :release}
+  defp span_label(%Effect.AwaitGate{}), do: {:gate, :await}
+  defp span_label(%Effect.ReconcileGate{}), do: {:gate, :reconcile}
+  defp span_label(%Effect.RunGate{}), do: {:gate, :run}
+  defp span_label(_effect), do: {:none, :none}
+
+  # Only journaled correlation identifiers: the one the effect itself carries, plus the run id the
+  # server bound into `opts` alongside the command (run/server.ex `command_opts`). The run id is what
+  # makes NS-26.F.002's "follow run/assignment/command/gate/send IDs" true at this seam -- without it
+  # an assignment or gate span names its own scope and nothing that contains it. A caller that bound
+  # no run id (the direct Host oracle path) simply has none, and `Telemetry.Events` drops it.
+  defp effect_identity(effect, opts), do: Map.merge(run_identity(opts), effect_identity(effect))
+
+  defp run_identity(opts) do
+    case Keyword.get(opts, :run_id) do
+      run_id when is_binary(run_id) -> %{run_id: run_id}
+      _absent -> %{}
+    end
+  end
+
+  defp effect_identity(%Effect.FetchPrompt{object: %PromptObject{assignment_id: id}}), do: %{assignment_id: id}
+  defp effect_identity(%{gate_run_id: id}), do: %{gate_run_id: id}
+  defp effect_identity(%{assignment_id: id}), do: %{assignment_id: id}
+  defp effect_identity(_effect), do: %{}
 
   @doc """
   Begin one effect on the owner-resident path (docs/contracts/gate-async-await-proposal.org, AW-M3/AW-M6): every effect
@@ -231,7 +278,8 @@ defmodule AiOrchestrator.Effects do
        when is_function(runner, 2) do
     module = dispatch_module(opts)
     observe_opts = observe_opts(deadline, opts)
-    closure = fn -> module.observe(command, observe_opts) end
+    identity = dispatch_identity(intent.assignment_id, opts)
+    closure = fn -> dispatch_span(:observe, identity, fn -> module.observe(command, observe_opts) end) end
 
     case runner.(closure, %{deadline_unix: deadline}) do
       {:ok, raw} ->
@@ -264,10 +312,12 @@ defmodule AiOrchestrator.Effects do
     module = dispatch_module(opts)
     dispatch_opts = dispatch_opts(opts)
 
+    identity = dispatch_identity(intent.assignment_id, opts)
+
     closure =
       case intent do
-        %Effect.Dispatch{} -> fn -> dispatch_admitted(module, :deliver, command, dispatch_opts) end
-        %Effect.ReconcileSend{} -> fn -> dispatch_admitted(module, :reconcile, command, dispatch_opts) end
+        %Effect.Dispatch{} -> fn -> dispatch_admitted(module, :deliver, command, dispatch_opts, identity) end
+        %Effect.ReconcileSend{} -> fn -> dispatch_admitted(module, :reconcile, command, dispatch_opts, identity) end
       end
 
     case runner.(closure, %{deadline_unix: deadline}) do
@@ -933,20 +983,22 @@ defmodule AiOrchestrator.Effects do
   # ---- raw adapter results become the effect's admissible observation ----
   # A bijection with the shapes the reducer matches on; the host decides nothing. The only
   # additions are typed errors where an adapter returns a shape outside its behaviour.
-  defp adapter(%Effect.Dispatch{command: command}, opts) do
-    dispatch_admitted(dispatch_module(opts), :deliver, command, dispatch_opts(opts))
+  defp adapter(%Effect.Dispatch{command: command, assignment_id: id}, opts) do
+    dispatch_admitted(dispatch_module(opts), :deliver, command, dispatch_opts(opts), dispatch_identity(id, opts))
   end
 
   @reconcile_outcomes ~w(delivered queued absent ambiguous conflict)
   @receipt_outcomes ~w(delivered queued ambiguous)
   @snapshot_error_classes ~w(artifact_baseline_unstable artifact_baseline_failed)
 
-  defp adapter(%Effect.SnapshotArtifact{command: command}, opts) do
-    dispatch_module(opts).snapshot(command, dispatch_opts(opts))
+  defp adapter(%Effect.SnapshotArtifact{command: command, assignment_id: id}, opts) do
+    dispatch_span(:snapshot, dispatch_identity(id, opts), fn ->
+      dispatch_module(opts).snapshot(command, dispatch_opts(opts))
+    end)
   end
 
-  defp adapter(%Effect.ReconcileSend{command: command}, opts) do
-    dispatch_admitted(dispatch_module(opts), :reconcile, command, dispatch_opts(opts))
+  defp adapter(%Effect.ReconcileSend{command: command, assignment_id: id}, opts) do
+    dispatch_admitted(dispatch_module(opts), :reconcile, command, dispatch_opts(opts), dispatch_identity(id, opts))
   end
 
   # The DIRECT no-runner path only (the Host oracle, legacy direct callers): the calling process
@@ -958,8 +1010,10 @@ defmodule AiOrchestrator.Effects do
     :ok
   end
 
-  defp adapter(%Effect.Observe{command: command, deadline_unix: deadline_unix}, opts) do
-    dispatch_module(opts).observe(command, observe_opts(deadline_unix, opts))
+  defp adapter(%Effect.Observe{command: command, deadline_unix: deadline_unix, assignment_id: id}, opts) do
+    dispatch_span(:observe, dispatch_identity(id, opts), fn ->
+      dispatch_module(opts).observe(command, observe_opts(deadline_unix, opts))
+    end)
   end
 
   defp adapter(%Effect.ReadReview{path: path}, opts) do
@@ -1204,11 +1258,21 @@ defmodule AiOrchestrator.Effects do
   # Admission runs in the same closure as the adapter: a capability query consumes
   # the existing delivery deadline and belongs to the same owner. Snapshot/Observe
   # are read operations and do not gain a durable-send admission requirement.
-  defp dispatch_admitted(module, operation, command, opts) do
-    with :ok <- AiOrchestrator.Dispatch.preflight(module, opts) do
-      apply(module, operation, [command, opts])
-    end
+  defp dispatch_admitted(module, operation, command, opts, identity) do
+    dispatch_span(operation, identity, fn ->
+      with :ok <- AiOrchestrator.Dispatch.preflight(module, opts) do
+        apply(module, operation, [command, opts])
+      end
+    end)
   end
+
+  # the `dispatch` lifecycle span: ONE adapter invocation, admission included. It nests inside the
+  # `assignment` span whenever the adapter runs in the same process the effect does; when an
+  # adapter_runner places the closure in another process it is a root span, because nothing about
+  # the trace was propagated there (docs/contracts/lifecycle-telemetry.org).
+  defp dispatch_span(operation, identity, fun), do: Events.span(:dispatch, operation, identity, fun)
+
+  defp dispatch_identity(assignment_id, opts), do: Map.put(run_identity(opts), :assignment_id, assignment_id)
 
   defp dispatch_module(opts), do: Keyword.get(opts, :dispatch, AiOrchestrator.Dispatch.LocalPane)
   defp dispatch_opts(opts), do: Keyword.get(opts, :dispatch_opts, [])

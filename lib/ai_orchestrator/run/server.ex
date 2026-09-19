@@ -33,6 +33,7 @@ defmodule AiOrchestrator.Run.Server do
   alias AiOrchestrator.Run
   alias AiOrchestrator.Run.DeadlineFence
   alias AiOrchestrator.Run.Work
+  alias AiOrchestrator.Telemetry.Events
 
   # A post-admission owner loss answers `{:error, %{clause: "run_effect_owner_down", writer_generation: g}}`
   # (docs/contracts/owner-loss-generation.org): `g` is the RunLock generation of the exact Writer sibling as
@@ -763,11 +764,13 @@ defmodule AiOrchestrator.Run.Server do
       opts =
         opts
         |> Keyword.drop(@owned_bindings)
-        |> Keyword.put(:event_sink, &Writer.append(writer, &1))
+        |> Keyword.put(:event_sink, &journaled(writer, &1))
         |> Keyword.put(:run_dir, config.run_dir)
         |> Keyword.put(:run_lock_path, opened.lock_path)
         |> put_tail_repair(Writer.tail_repair_data(opened.repair))
         |> Keyword.merge(command_opts)
+
+      repaired(opened.repair, Map.get(config, :command))
 
       prior_lines = if mode == :run, do: [], else: opened.lines
       inputs = %{spec: Map.get(config, :spec), plan: Map.get(config, :plan), prior_lines: prior_lines}
@@ -908,6 +911,45 @@ defmodule AiOrchestrator.Run.Server do
 
   defp put_tail_repair(opts, nil), do: opts
   defp put_tail_repair(opts, %{} = repair), do: Keyword.put(opts, :tail_repair, repair)
+
+  # ---- lifecycle telemetry (NS-26.F.000; docs/contracts/lifecycle-telemetry.org) ----
+  #
+  # The `journal` span and the `attention` point event are emitted HERE, around the sink, and not
+  # inside `Journal.Writer`, for two independent reasons.
+  #
+  # The first is a boundary the product already pins: `test/journal/replay_purity_test.exs` requires
+  # `journal.ex` to declare `deps: [Clock, ProcessIdentity]` and nothing else, because a widened
+  # Journal boundary is a widened replay. Telemetry is an effect, and the Reader and the fold live
+  # behind that same boundary, so putting it there would let replay reach it.
+  #
+  # The second would hold even without that pin. The writer is a GenServer, and `:telemetry` runs
+  # handlers synchronously wherever they are emitted: emitting inside `handle_call/3` would spend a
+  # slow handler's time out of the CALLER's `GenServer.call` deadline and could turn a successful
+  # append into a call timeout -- an observability boundary changing a domain fact. Emitted here the
+  # start happens before the call and the stop after it returns, so a slow handler delays a caller
+  # that is already waiting and nothing else.
+  defp journaled(writer, event) do
+    result = Events.span(:journal, :append, journal_identity(event), fn -> Writer.append(writer, event) end)
+    attention(event, result)
+    result
+  end
+
+  defp journal_identity(%{"run_id" => run_id}), do: %{run_id: run_id}
+  defp journal_identity(_event), do: %{}
+
+  # attention is recorded only after the append SUCCEEDED: an attention the writer refused, or that a
+  # failed fsync never made durable, is not a fact about the run
+  defp attention(%{"type" => "human_attention_required", "data" => %{"attention_id" => id}} = event, {:ok, _persisted}),
+    do: Events.emit(:attention, :raised, Map.put(journal_identity(event), :attention_id, id))
+
+  defp attention(_event, _result), do: :ok
+
+  # the one recovery this product performs on its own: the writer's bounded tail repair, already
+  # complete by the time this run reads it back
+  defp repaired(nil, _command), do: :ok
+
+  defp repaired(%{}, %Command{run_id: run_id}), do: Events.emit(:recovery, :repaired, %{run_id: run_id})
+  defp repaired(%{}, _command), do: Events.emit(:recovery, :repaired, %{})
 
   defp trace(%{trace: pid}, message) when is_pid(pid), do: send(pid, message)
   defp trace(_config, _message), do: :ok

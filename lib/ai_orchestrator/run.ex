@@ -15,7 +15,8 @@ defmodule AiOrchestrator.Run do
       AiOrchestrator.Id,
       AiOrchestrator.Journal,
       AiOrchestrator.Lifecycle,
-      AiOrchestrator.Spec
+      AiOrchestrator.Spec,
+      AiOrchestrator.Telemetry
     ],
     exports: [
       DeadlineFence,

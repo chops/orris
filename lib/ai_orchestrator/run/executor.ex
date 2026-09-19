@@ -26,6 +26,7 @@ defmodule AiOrchestrator.Run.Executor do
   alias AiOrchestrator.Contract.Command
   alias AiOrchestrator.Journal.Schemas.RequestedBy
   alias AiOrchestrator.Run.Executor.Owner
+  alias AiOrchestrator.Telemetry.Events
 
   @verbs %{"start" => :run, "resume" => :resume, "cancel" => :cancel, "resolve_attention" => :resume}
   @owned_bindings [
@@ -64,11 +65,26 @@ defmodule AiOrchestrator.Run.Executor do
   @impl AiOrchestrator.Commands.Executor
   @spec execute(Command.t(), context()) :: {:ok, map()} | {:error, map()}
   def execute(command, context) do
-    case prepare(command, context) do
-      {:ok, %{config: config, barrier: barrier}} -> Owner.run(config, barrier)
-      {:error, _} = refusal -> refusal
-    end
+    # the `run` lifecycle span (NS-26.F.000): it wraps the WHOLE owned subtree, validation refusals
+    # included, and it runs in the caller's process, the one already blocked on the owner
+    Events.span(:run, :execute, identity(command), fn ->
+      case prepare(command, context) do
+        {:ok, %{config: config, barrier: barrier}} -> Owner.run(config, barrier)
+        {:error, _} = refusal -> refusal
+      end
+    end)
   end
+
+  @doc """
+  The journaled identifiers a lifecycle span may correlate on for this command: its run id and a
+  bounded digest of its command id. Nothing else about the command is observable.
+  """
+  @spec identity(term()) :: map()
+  def identity(%Command{run_id: run_id, requested_by: %{"command_id" => id}}),
+    do: %{run_id: run_id, command_id_digest: Events.command_id_digest(id)}
+
+  def identity(%Command{run_id: run_id}), do: %{run_id: run_id}
+  def identity(_command), do: %{}
 
   # verb precedence applies to a structured stamp; a stamp that is not even a map is a malformed stamp
   defp verb(%Command{requested_by: %{"verb" => verb}}) when is_map_key(@verbs, verb), do: {:ok, Map.fetch!(@verbs, verb)}

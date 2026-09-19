@@ -20,6 +20,8 @@ defmodule AiOrchestrator.Telemetry.ExporterIsolationTest do
 
   alias AiOrchestrator.Commands
   alias AiOrchestrator.Contract.Moment
+  alias AiOrchestrator.Telemetry.Events
+  alias AiOrchestrator.Telemetry.Handler
   alias AiOrchestrator.Test.ScenarioHarness, as: H
 
   @start [:ai_orchestrator, :commands, :invoke, :start]
@@ -207,10 +209,10 @@ defmodule AiOrchestrator.Telemetry.ExporterIsolationTest do
   # processors are replaced, after the merge, so no OTEL_* variable can substitute another exporter.
   # The processor is named explicitly: a lone builtin processor is otherwise registered as `global`,
   # which collides with the global provider's processor and would leave this provider processor-less.
-  defp start_provider!(exporter) do
+  defp start_provider!(exporter, scheduled_delay_ms \\ 20) do
     suffix = System.unique_integer([:positive])
     name = :"ns26_f001_provider_#{suffix}"
-    processor = %{name: :"ns26_f001_processor_#{suffix}", exporter: exporter, scheduled_delay_ms: 20}
+    processor = %{name: :"ns26_f001_processor_#{suffix}", exporter: exporter, scheduled_delay_ms: scheduled_delay_ms}
 
     config =
       :opentelemetry
@@ -252,6 +254,67 @@ defmodule AiOrchestrator.Telemetry.ExporterIsolationTest do
 
         send(test, {:span_ended, ref})
     end
+  end
+
+  # The PRODUCTION span producer on the failing provider, in place of the test double above. This is
+  # what makes the R7 rows a re-assertion rather than a repeat: the handler under test is the one the
+  # application attaches, reached by the same lifecycle events domain code really emits.
+  defp attach_production_handler!(tracer) do
+    id = "ns26-f001-production-#{System.unique_integer([:positive])}"
+    assert {:ok, ^id} = Handler.attach(id: id, tracer: tracer)
+    on_exit(fn -> :telemetry.detach(id) end)
+    id
+  end
+
+  # Pays the real OTLP exporter's first-connection cost BEFORE the measured window, and drains the
+  # hits it produces, so an `endpoint_hit` observed afterwards belongs to an export the RUN caused.
+  #
+  # Without this, both endpoint rows measure the network as much as the product: the connection
+  # setup is not what they are about, and MEASURED under 3x CPU oversubscription they failed 2 of 5
+  # runs on that cost alone while passing 6 of 6 unloaded. That is the same defect class as the R2
+  # hang row repaired earlier today -- an assertion that races rather than orders.
+  defp warm_endpoint!(name, tracer) do
+    captured!(fn ->
+      :otel_span.end_span(:otel_tracer.start_span(tracer, :"ns26_f001.warmup", %{}))
+      :otel_tracer_provider.force_flush(name)
+      :ok
+    end)
+
+    assert_receive {:endpoint_hit, _warm, _warm_at}, 10_000
+    drain_endpoint_hits()
+  end
+
+  defp drain_endpoint_hits do
+    receive do
+      {:endpoint_hit, _acceptor, _at} -> drain_endpoint_hits()
+    after
+      200 -> :ok
+    end
+  end
+
+  # Forces ONE export from INSIDE the run, in the process that emits, the first time a span of the
+  # run has ended. That is what makes "the export overlapped the run" a property of the ordering
+  # rather than of the scheduler: R1-R6 get it from their own probe handler, which force-flushes on
+  # `:start`; the PRODUCTION handler does no such thing and must not, so the R7 endpoint row supplies
+  # it as a test instrument beside the production handler. The spans being exported are still the
+  # production handler's.
+  defp flush_once_inside_run!(name) do
+    {:ok, latch} = Agent.start_link(fn -> false end)
+    id = "ns26-f001-inrun-flush-#{System.unique_integer([:positive])}"
+
+    config = %{latch: latch, provider: name}
+    :ok = :telemetry.attach(id, [:ai_orchestrator, :journal, :append, :stop], &__MODULE__.flush_once/4, config)
+    on_exit(fn -> :telemetry.detach(id) end)
+    :ok
+  end
+
+  @doc false
+  def flush_once(_event, _measurements, _metadata, %{latch: latch, provider: name}) do
+    if Agent.get_and_update(latch, fn flushed -> {flushed, true} end) == false do
+      :otel_tracer_provider.force_flush(name)
+    end
+
+    :ok
   end
 
   defp failing_exporter!(mode) do
@@ -378,6 +441,12 @@ defmodule AiOrchestrator.Telemetry.ExporterIsolationTest do
       {name, provider, tracer} = start_provider!(exporter)
       attach_span_handler!(name, tracer)
 
+      # This row already force-flushes from inside the invocation, so its export is ordered; what it
+      # did NOT order was the one-off connection setup that the first export pays. Measured failing
+      # 1 of 5 under 3x CPU oversubscription on that alone, so the cost is paid here instead. The
+      # row is otherwise unchanged, and the R2 hang repair in this file is untouched.
+      warm_endpoint!(name, tracer)
+
       {_result, _bytes, finished_at} = perturbed = run_perturbed!(run_dir)
 
       assert_receive {:span_ended, _ref}, 5_000
@@ -385,6 +454,111 @@ defmodule AiOrchestrator.Telemetry.ExporterIsolationTest do
       assert hit_at < finished_at, "the first refused export did not overlap the domain run"
       assert_same_outcome!(baseline, perturbed)
       assert Process.alive?(provider), "the refused export took its provider down"
+    end
+  end
+
+  # NS-26.F.001, RE-ASSERTED against the real span producer (the T2/T3 slice).
+  #
+  # Until this slice the isolation above was STRUCTURAL: `command-lifecycle-telemetry.org:99` recorded
+  # that no production module attached a handler or created a span, so domain code never reached the
+  # SDK at all and the rows were perturbing a path the product did not use. The record that delivered
+  # NS-26.F.001 disclosed exactly that and said the row must be re-asserted when a real handler lands,
+  # "because a handler in the invoking process is a new way for the exporter path to reach domain
+  # code". These rows are that re-assertion, and they are the stronger form: the handler is
+  # `AiOrchestrator.Telemetry.Handler`, the one `Application.start/2` attaches, driven by the
+  # lifecycle events the run really emits (dozens of spans per run, in several processes) rather than
+  # by one probe span on the command boundary.
+  describe "exporter failure with the PRODUCTION span producer attached (NS-26.F.001 re-asserted)" do
+    # one failure class end to end against the real producer: baseline, named provider over the
+    # failing exporter, the production handler, perturbed run, proof the failure was reached inside
+    # the run window, identical outcome, provider alive, handler still attached
+    defp production_failure_row!(run_dir, mode) do
+      baseline = run_full_command_path!(run_dir)
+      assert_completed_run!(baseline)
+
+      {exporter, switch} = failing_exporter!(mode)
+      {_name, provider, tracer} = start_provider!(exporter)
+      id = attach_production_handler!(tracer)
+
+      {_result, _bytes, finished_at} = perturbed = run_perturbed!(run_dir)
+
+      assert_receive {:export_attempted, ^mode, runner, size, attempted_at}, 5_000
+
+      assert is_integer(size) and size >= 1,
+             "the export table carried no span, so the production handler never reached the exporter"
+
+      assert attempted_at < finished_at, "the first export attempt did not overlap the domain run"
+
+      assert_same_outcome!(baseline, perturbed)
+      assert Process.alive?(provider), "the failing exporter took its provider down"
+
+      # the property the production handler adds over the test double: it catches its own escapes, so
+      # a failing tracer provider can never get it detached and thereby disable telemetry VM-wide
+      attached = Enum.map(:telemetry.list_handlers(hd(Events.span_events())), & &1.id)
+      assert id in attached, "the production handler was detached while the exporter was failing"
+
+      disarm!(switch)
+      runner
+    end
+
+    for mode <- [:not_retryable, :raise, :exit, :kill] do
+      test "R7 #{mode}: the real span producer over a failing exporter leaves the journal bytes and the result identical",
+           %{run_dir: run_dir} do
+        _runner = production_failure_row!(run_dir, unquote(mode))
+      end
+    end
+
+    test "R7 hang: a hung export under the real producer is killed by the exporting timeout and changes nothing",
+         %{run_dir: run_dir} do
+      runner = production_failure_row!(run_dir, :hang)
+      assert_runner_killed!(runner)
+    end
+
+    test "R7 endpoint: the real producer exporting to a refusing local endpoint changes nothing",
+         %{run_dir: run_dir} do
+      baseline = run_full_command_path!(run_dir)
+      assert_completed_run!(baseline)
+
+      port = refusing_endpoint!()
+      exporter = {:opentelemetry_exporter, %{endpoints: ["http://127.0.0.1:#{port}"], protocol: :http_protobuf}}
+      {name, provider, tracer} = start_provider!(exporter, 1)
+      attach_production_handler!(tracer)
+      warm_endpoint!(name, tracer)
+      flush_once_inside_run!(name)
+
+      {_result, _bytes, finished_at} = perturbed = run_perturbed!(run_dir)
+
+      assert_receive {:endpoint_hit, _acceptor, hit_at}, 5_000
+      assert hit_at < finished_at, "the refused export did not overlap the domain run"
+      assert_same_outcome!(baseline, perturbed)
+      assert Process.alive?(provider), "the refused export took its provider down"
+    end
+
+    test "R7 control: the production handler really is producing spans on this provider", %{run_dir: run_dir} do
+      # Without this row every R7 row above could pass for a handler that produced nothing at all:
+      # an exporter that is never reached cannot change a journal byte either. It proves the
+      # perturbation exists by counting what the exporter was handed.
+      baseline = run_full_command_path!(run_dir)
+      assert_completed_run!(baseline)
+
+      {exporter, switch} = failing_exporter!(:not_retryable)
+      {_name, _provider, tracer} = start_provider!(exporter)
+      attach_production_handler!(tracer)
+
+      _perturbed = run_perturbed!(run_dir)
+
+      total = drain_export_sizes(0)
+      assert total > 10, "the production handler produced only #{total} spans over a whole command path"
+
+      disarm!(switch)
+    end
+
+    defp drain_export_sizes(acc) do
+      receive do
+        {:export_attempted, _mode, _runner, size, _at} -> drain_export_sizes(acc + size)
+      after
+        1_000 -> acc
+      end
     end
   end
 

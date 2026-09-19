@@ -21,6 +21,7 @@ defmodule AiOrchestrator.Host.Executor do
   alias AiOrchestrator.Host.Monitor
   alias AiOrchestrator.Journal.Ownership
   alias AiOrchestrator.Run.Executor, as: RunExecutor
+  alias AiOrchestrator.Telemetry.Events
 
   # the generation is read from the arbiter inside the owner, bounded so a silent arbiter costs the
   # command at most this much and never its result
@@ -29,6 +30,14 @@ defmodule AiOrchestrator.Host.Executor do
   @impl AiOrchestrator.Commands.Executor
   @spec execute(Command.t(), keyword()) :: {:ok, map()} | {:error, map()}
   def execute(%Command{} = command, context) when is_list(context) do
+    # the `host` lifecycle span: this route mounts the owned subtree into the host registry, which is
+    # the host-domain work the `run` span inside it does not do
+    Events.span(:host, :mount, RunExecutor.identity(command), fn -> mount(command, context) end)
+  end
+
+  def execute(command, context), do: RunExecutor.execute(command, context)
+
+  defp mount(%Command{} = command, context) do
     {monitor, context} = Keyword.pop(context, :host_monitor, Monitor)
 
     case Keyword.get(context, :barrier) do
@@ -48,8 +57,6 @@ defmodule AiOrchestrator.Host.Executor do
         RunExecutor.execute(command, context)
     end
   end
-
-  def execute(command, context), do: RunExecutor.execute(command, context)
 
   defp compose(user_barrier, monitor, command, run_dir, ownership, caller, token) do
     fn

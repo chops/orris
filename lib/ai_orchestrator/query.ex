@@ -10,7 +10,13 @@ defmodule AiOrchestrator.Query do
   """
 
   use Boundary,
-    deps: [AiOrchestrator.Host, AiOrchestrator.Journal, AiOrchestrator.Prepare, AiOrchestrator.Projection],
+    deps: [
+      AiOrchestrator.Host,
+      AiOrchestrator.Journal,
+      AiOrchestrator.Prepare,
+      AiOrchestrator.Projection,
+      AiOrchestrator.Telemetry
+    ],
     exports: []
 
   alias AiOrchestrator.Host
@@ -19,6 +25,7 @@ defmodule AiOrchestrator.Query do
   alias AiOrchestrator.Prepare.Scope
   alias AiOrchestrator.Projection.RunContext
   alias AiOrchestrator.Projection.RunSummary
+  alias AiOrchestrator.Telemetry.Events
 
   @default_budget_ms 1_000
 
@@ -62,6 +69,13 @@ defmodule AiOrchestrator.Query do
          {:ok, loaded, state} <- verified_state(run_dir, server_opts) do
       summary = Fold.summary(state)
 
+      # The `projection` lifecycle span covers the RENDER, not the journal read that precedes it.
+      # That is deliberate and it is what makes the span correlatable at all: a run handle is an
+      # operator's word for a directory, and the run id only exists once the verified prefix has been
+      # folded, so a span opened around the read could carry no journaled identifier.
+      rendered =
+        Events.span(:projection, :run_summary, %{run_id: summary["run_id"]}, fn -> RunSummary.render(state) end)
+
       {:ok,
        %{
          run_ref: run_ref,
@@ -69,7 +83,7 @@ defmodule AiOrchestrator.Query do
          status: summary["status"],
          last_seq: summary["last_seq"],
          summary: summary,
-         rendered: RunSummary.render(state),
+         rendered: rendered,
          pending_repair: loaded.pending_repair
        }}
     end
@@ -80,7 +94,10 @@ defmodule AiOrchestrator.Query do
   def run_context(run_ref, server_opts) do
     with {:ok, run_dir} <- Scope.resolve(run_ref, server_opts),
          {:ok, loaded, state} <- verified_state(run_dir, server_opts) do
-      {:ok, %{run_ref: run_ref, rendered: RunContext.render(state), pending_repair: loaded.pending_repair}}
+      rendered =
+        Events.span(:projection, :run_context, %{run_id: state.run_id}, fn -> RunContext.render(state) end)
+
+      {:ok, %{run_ref: run_ref, rendered: rendered, pending_repair: loaded.pending_repair}}
     end
   end
 
