@@ -1,0 +1,244 @@
+#+TITLE: Lifecycle telemetry and the application-boundary span producer
+#+PROPERTY: status implemented; scope = the lifecycle emit sites and the OTel span handler (NS-26.F.000, NS-26.F.002)
+
+* Scope
+This contract covers two things the command-boundary slice
+(=docs/contracts/command-lifecycle-telemetry.org=) explicitly left planned:
+
+- the =:telemetry= emit sites for the lifecycle domains =north-star-architecture.org:526-527= names
+  (host, run, assignment, dispatch, gate, journal, projection, attention, recovery), produced by
+  =AiOrchestrator.Telemetry.Events=; and
+- the application-boundary handler that turns those events into local OpenTelemetry spans,
+  =AiOrchestrator.Telemetry.Handler=, which =north-star-architecture.org:528= ratifies and which is
+  the FIRST span producer this product has ever had.
+
+The command boundary keeps its own producer, =AiOrchestrator.Commands.Telemetry=, UNCHANGED. This
+contract consumes its three events and does not alter their shape, cardinality or metadata.
+
+Nothing here adds a journal field, an event type, a command verb, an IPC message or a dependency.
+The reducer is untouched: =test/contracts/reducer_purity_test.exs= forbids any effect reference in
+=lifecycle/core/reducer.ex= and every emit site below sits at an EFFECT or HOST boundary instead.
+
+* Events
+** Spans
+For every ={domain, operation}= in =AiOrchestrator.Telemetry.Events.operations/0=:
+
+| Event | When | Measurements |
+|-------+------+--------------|
+| =[:ai_orchestrator, domain, operation, :start]= | on entry, every call | =%{monotonic_time, system_time}= |
+| =[:ai_orchestrator, domain, operation, :stop]= | normal return | =%{monotonic_time, duration}= |
+| =[:ai_orchestrator, domain, operation, :exception]= | a trappable =:error=, =:throw= or =:exit= escapes | =%{monotonic_time, duration}= |
+
+=duration= is =terminal.monotonic_time - start.monotonic_time= in native units, never wall-clock
+arithmetic. Cardinality is the command boundary's: exactly one =:start=, then exactly one =:stop= OR
+exactly one =:exception=. An abrupt external process death can prevent terminal emission, so a
+missing terminal event is NOT an outcome.
+
+A ={domain, operation}= pair outside =operations/0= emits NOTHING and still runs the wrapped
+function. A mislabelled call site therefore loses observation and can never fail a run.
+
+** Point events
+For every ={domain, operation}= in =Events.points/0= -- =[{:attention, :raised}, {:recovery, :repaired}]= --
+one =[:ai_orchestrator, domain, operation]= with =%{monotonic_time, system_time}=. A point event has no
+duration this boundary can measure.
+
+* Where the events are emitted, and why there
+Every emit site was placed to run in the process that ALREADY owns the work, because =:telemetry=
+runs handlers synchronously in the emitting process (see "Handler isolation" below). Emitting inside
+a =GenServer= callback would spend a slow handler's time out of a CALLER's =GenServer.call= deadline
+and could turn a successful operation into a call timeout -- an observability boundary changing a
+domain fact.
+
+| Domain / operation | Site | Note |
+|--------------------+------+------|
+| =host.mount= | =Host.Executor.execute/2= | wraps the whole mount, including =Run.Executor.execute/2= |
+| =run.execute= | =Run.Executor.execute/2= | wraps the whole owned subtree, validation refusals included; runs in the caller's process |
+| =assignment.*=, =gate.*= | =Effects.execute/3= | one span per effect, in the process that owns the effect |
+| =dispatch.*= | =Effects= adapter seam | ONE adapter invocation, admission included |
+| =journal.append= | =Run.Server=, around the =event_sink= closure | NOT inside =Journal.Writer= |
+| =projection.run_summary=, =projection.run_context= | =Query= | covers the RENDER, not the journal read before it |
+| =attention.raised= | =Run.Server=, after the append SUCCEEDED | an attention the writer refused is not a fact about the run |
+| =recovery.repaired= | =Run.Server=, on the writer's bounded tail repair | already complete when this run reads it back |
+
+Two placements need their reason recorded rather than inferred:
+
+- *The journal span is emitted around the sink, not inside the Writer.* =Journal.Writer= is a
+  GenServer, and =test/journal/replay_purity_test.exs= requires =journal.ex= to declare
+  =deps: [Clock, ProcessIdentity]= and nothing else, because a widened Journal boundary is a widened
+  replay. Telemetry is an effect, and the Reader and the fold live behind that same boundary.
+  Emitted around the sink, the =:start= happens before the call and the =:stop= after it returns.
+- *The projection span covers the render, not the read.* A run handle is an operator's word for a
+  directory; the run id only exists once the verified prefix has been folded. A span opened around
+  the read could carry no journaled identifier at all.
+
+Deliberately NOT instrumented: =Effect.Clock= and =Effect.Timer=. Neither is one of the named
+domains, and a clock read happens on every tick of the reducer's seam.
+
+* Metadata allowlist (exact keys; closed values)
+| Event | Keys |
+|-------+------|
+| start | =span_ref=, =domain=, =operation=, + admitted identity keys |
+| stop | start keys + =outcome=, =result_class= |
+| exception | start keys + =kind=, =class=, =stack_depth= |
+| point | start keys |
+
+- =span_ref= :: a fresh =reference()= per span, identical on its =:start= and its terminal event.
+  Never derived from run, assignment or command bytes.
+- =domain=, =operation= :: from this module's own closed table, never a caller's word.
+- identity keys :: exactly =run_id=, =assignment_id=, =gate_run_id=, =send_id=, =attention_id=,
+  =command_id_digest= -- the journaled correlation identifiers NS-26.F.002 names. A key outside that
+  list is DROPPED. A value outside =~r/\A[A-Za-z0-9_.:@-]{1,128}\z/=, or one that is not a binary, is
+  also DROPPED, so nothing an adapter, a caller or a journal payload carries can widen this map.
+- =outcome= :: =:ok | :error | :refused | :other=, this module's own word for the shape of the
+  returned term and never the callee's.
+- =result_class= :: =Contract.Diagnostic.result_class/1= of the returned term.
+- =kind= :: =:error | :throw | :exit=; =class= :: the reason's result class; =stack_depth= ::
+  =length(stacktrace)=.
+- =command_id_digest= :: the first 16 hex characters of SHA-256 over the command id, never the id.
+
+Never emitted: arguments, options, prompts, paths, raw payloads, rejection maps, observation structs,
+adapter replies, exception structs or messages, stack frames, tokens, or any actor identity.
+
+* Domain preservation
+The wrapped function's term is returned unchanged, and an escape is re-raised with
+=:erlang.raise/3= carrying its original kind, reason and stacktrace -- the same construction, for the
+same reason, as =AiOrchestrator.Commands.Telemetry=. No retry, no journal write, no branch a caller
+can take on whether an event was observed: =Events.emit/3= answers =:ok= whether or not the pair was
+in the table.
+
+* The span producer
+=AiOrchestrator.Telemetry.Handler.attach/1= attaches to every name in =Events.events/0= -- the
+command boundary's three, this module's spans, and its point events -- and creates one local OTel
+span per instrumented operation. =AiOrchestrator.Application.start/2= attaches it before the
+supervisor starts and =stop/1= detaches it.
+
+It is attached rather than mounted as a supervision child because it IS NOT A PROCESS: a
+=:telemetry= handler is a function in that library's ETS table, invoked in whichever process emits,
+keeping its per-process span state in that process's dictionary. A child holding nothing could not
+restart state the handler does not have.
+
+** Parentage follows propagated identity, never proximity (NS-26.F.002)
+A span is parented ONLY when the event carries the identifier of a scope this handler opened IN THAT
+PROCESS and has not yet closed.
+
+| Domain | Parent scope looked up | Scope it opens |
+|--------+------------------------+----------------|
+| =host= | none (root) | ={:run, run_id}= |
+| =run= | ={:run, run_id}= | ={:run, run_id}=, if none is open |
+| =assignment= | ={:run, run_id}= | ={:assignment, assignment_id}= |
+| =dispatch= | ={:assignment, assignment_id}= | none |
+| =gate=, =journal=, =projection=, =attention=, =recovery= | ={:run, run_id}= | none |
+| =commands= | none (root) | none |
+
+The ambient OpenTelemetry context is NEVER read. Every span starts from an explicitly built
+=:otel_ctx=, EMPTY for a root and carrying exactly the looked-up parent otherwise. That is what makes
+"temporal proximity cannot manufacture parentage" a property of the code rather than of the workload:
+a span that starts while an unrelated scope is open in the same process at the same instant is a ROOT
+span, because its identifier names no open scope.
+
+=host= opens the run scope and =run= looks it up because =Host.Executor.execute/2= ENCLOSES
+=Run.Executor.execute/2= in the same process. On the direct route, where no host span ran, =run=
+finds nothing, becomes a root and opens the scope itself.
+
+=commands= is a root and opens nothing, and that is a property of the event rather than a choice:
+=Commands.Telemetry= reports =command_id_digest= on the TERMINAL event only, because at =:start= no
+command has been built yet. No journaled identifier exists at the instant a command scope would have
+to open, and the only thing left to key it on would be arrival order. The command and the run it ran
+join on =command_id_digest=, which both carry as an attribute.
+
+** What that measurably produces
+MEASURED at this head, one =gated_run_seed= start command through the Host route: *53 spans in 50
+distinct traces*. Three spans have a parent -- =run.execute= under =host.mount=, and two
+=dispatch.snapshot= under their =assignment.snapshot=. The other 50 are roots, among them all 32
+=journal.append= spans and every =assignment=, =gate= and =dispatch.deliver= / =dispatch.observe=
+span.
+
+The reason is a process boundary, not a defect in the rule. The run's effects, journal appends and
+gates execute in the owned subtree's own processes while the =run= span is open in the CALLER's
+process, and =dispatch.deliver= / =dispatch.observe= additionally go through an =adapter_runner=
+that places the closure in a further process. A parent lookup across any of those finds nothing and
+answers a root.
+
+This product propagates no trace context across process boundaries yet: the envelope's =traceparent=
+field exists and has no producer. Stamping it is a separate slice with its own fixture cost, and
+inventing parentage from a BEAM-global registry instead would join spans by "same node, same time",
+which is exactly what NS-26.F.002 forbids.
+
+Until then the joins the rule names are carried as ATTRIBUTES on every span -- =run_id=,
+=assignment_id=, =gate_run_id=, =command_id_digest= -- which is the rule's own acceptance wording
+("follow run/assignment/command/gate/send IDs"). The parentage that exists is a strict subset of it.
+Every span of a run carries that run's =run_id=, with exactly one legitimate exception: the command
+boundary's own span, emitted before a command and therefore a run id exists.
+
+** Attributes
+A span's attributes are a closed allowlist of the metadata keys of this product's own lifecycle
+events and of =Commands.Telemetry=, each prefixed =ai_orchestrator.=. Nothing else is read off an
+event, whatever it carries.
+
+* Handler isolation (stated, not overstated)
+Everything =command-lifecycle-telemetry.org= says under "Handler isolation" holds here unchanged and
+is NOT restated: =:telemetry= runs handlers synchronously in the emitting process, there is no
+timeout, the nonblocking expectation is UNENFORCED and documented as such, and the guarantee is "an
+observability failure changes no FACT", never "a handler has no effect".
+
+This producer adds one property of its own. =Handler.handle/4= catches every escape of its own body,
+so a failing tracer provider neither raises into the caller NOR gets the handler detached by
+=:telemetry= -- which would silently disable telemetry for the whole VM. That is the difference
+between this handler and the raising handler of =exporter_isolation_test.exs= R3, and
+=span_production_test.exs= D3 measures it.
+
+* Exporter isolation, re-asserted (NS-26.F.001)
+The delivered NS-26.F.001 isolation was STRUCTURAL: no production module attached a handler or
+created a span, so domain code never reached the SDK and the rows perturbed a path the product did
+not use. Its own record disclosed that and required re-assertion when a real handler landed, because
+a handler in the invoking process is a NEW way for the exporter path to reach domain code.
+
+=test/telemetry/exporter_isolation_test.exs= R7 is that re-assertion, with this handler attached to a
+named failing provider instead of the test double: for each of the soft-failure, raise, exit,
+killed-runner, hung-export and refusing-endpoint classes, the same start command produces
+byte-identical =events.jsonl= and an identical result term, the failing export is proven to have been
+reached INSIDE the run window carrying real spans, the provider survives, and the handler is still
+attached afterwards. An R7 control counts the spans the exporter was handed, so no R7 row can pass
+for a handler that produced nothing.
+
+* Export is off by default
+=config/config.exs= sets =config :opentelemetry, traces_exporter: :none=. Spans are still created,
+sampled and ended, so the producer is exercised; nothing leaves the process. The alternative is that
+every CLI invocation tries to reach a collector nobody configured and reports the failure on the
+operator's stderr -- an observability default that changes what the operator sees. An operator with a
+collector sets the ordinary =OTEL_TRACES_EXPORTER= / =OTEL_EXPORTER_OTLP_ENDPOINT= environment, which
+the SDK merges over this.
+
+* Tests
+=test/telemetry/span_production_test.exs=:
+- A :: the emit vocabulary is closed and total -- the declared operations are exactly the scenario-swept
+  ones plus a DECLARED remainder; =events/0= is exactly the three families; every declared span
+  operation produces exactly one span and every point event exactly one; an undeclared pair emits
+  nothing and still runs the function.
+- B :: production over the real command path -- a sweep of every shipped scenario reaches exactly the
+  declared swept set and nothing outside the vocabulary; the run span nests under the host span; the
+  projection spans come from the read seam.
+- C :: correlation -- every span of a run carries that run's id; the measured parentage AND the
+  measured roots, each with its reason, so a future propagation slice fails these rows rather than
+  inheriting them; temporal proximity cannot manufacture parentage (three spans nested in time inside
+  one open scope, of which exactly the one naming that scope is its child); an identifier outside the
+  closed shape is dropped and buys neither an attribute nor a parent, with a control proving parenting
+  works for the admitted shape.
+- D :: non-interference -- term pass-through for every answer shape; an escape re-raised with kind,
+  reason and stacktrace and exactly one terminal event; a raising tracer neither reaches the caller
+  nor detaches the handler; two handler instances keep separate state.
+- E :: attributes -- only allowlisted keys become attributes, every one prefixed, proven both through
+  the producer and by handing the handler metadata directly.
+
+=test/telemetry/exporter_isolation_test.exs= R7: the NS-26.F.001 re-assertion described above. R1-R6
+are unchanged.
+
+* What this contract does NOT claim
+- No =traceparent= is stamped on any journal line. The field exists and still has no producer.
+- Cross-process spans are NOT joined. Most spans of a run are roots and this contract says so with a
+  measured count.
+- =assignment.fetch_prompt=, =assignment.reconcile_send=, =dispatch.reconcile=, =gate.reconcile= and
+  =gate.run= are real emit sites that NO shipped scenario reaches. They are driven directly by row A3
+  and declared as unswept; what is missing is a fixture, not a producer.
+- The nonblocking-handler expectation is unenforced, exactly as the command-boundary contract states.
+  Nothing here narrows it.

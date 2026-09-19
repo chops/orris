@@ -117,15 +117,22 @@ So the guarantee this boundary carries is "an observability failure changes no F
 no effect". Whether a handler-induced delay may consume a recorded gate or observation deadline is a
 separate question for NS-18 / NS-19 and is NOT answered here.
 
-The application-boundary span handler itself belongs to a later slice; the exporter boundary it will rely on
-is pinned now (below).
+The application-boundary span handler has since been delivered and is specified in
+=docs/contracts/lifecycle-telemetry.org=. It CONSUMES the three events above and changes nothing about
+them: their cardinality, correlation and metadata allowlist are exactly as this contract fixes them.
 
 * Exporter isolation (NS-26.F.001)
-No production module attaches a handler or creates a span today; the OpenTelemetry SDK and OTLP exporter
-are started as applications and are never reached by domain code. The isolation is therefore structural:
-spans end with a non-blocking ETS insert in the invoking process, export runs in the batch processor's own
-runner process, and every exporter escape (raise, exit, killed runner, export timeout, refused endpoint,
-uninitialisable exporter) is contained inside the SDK's supervision tree.
+This section was written when NO production module attached a handler or created a span, so the
+OpenTelemetry SDK and OTLP exporter were started as applications and never reached by domain code, and
+the isolation was STRUCTURAL. That is no longer true: =AiOrchestrator.Telemetry.Handler= is attached by
+=AiOrchestrator.Application.start/2= and is the product's span producer
+(=docs/contracts/lifecycle-telemetry.org=). The row was therefore RE-ASSERTED against that real
+producer rather than left resting on a premise that had changed; see R7 in the test named below.
+
+The structural containment the original rows relied on still holds and is still what makes the
+isolation work: spans end with a non-blocking ETS insert in the emitting process, export runs in the
+batch processor's own runner process, and every exporter escape (raise, exit, killed runner, export
+timeout, refused endpoint, uninitialisable exporter) is contained inside the SDK's supervision tree.
 =test/telemetry/exporter_isolation_test.exs= pins that boundary over the full command path
 (=Commands.invoke/4= -> =Run.Executor= -> owned subtree -> =Journal.Writer=): the same start command,
 under FixedClock/FixedId, must produce byte-identical =events.jsonl= and an identical result term with
@@ -133,6 +140,12 @@ and without a failing exporter. The exporter is installed on a NAMED tracer prov
 its own processor and exporter (never through =OTEL_*= environment), a test handler on the lifecycle
 events creates and force-flushes spans so the first export attempt overlaps the domain run, and every
 failure class proves it was exercised from inside the failing path.
+
+R7 repeats that sweep with the PRODUCTION handler in place of the test double, driven by the lifecycle
+events a run really emits rather than by one probe span, and additionally requires that the handler is
+still attached afterwards -- a handler that raised would have been detached by =:telemetry=, silently
+disabling telemetry VM-wide. An R7 control counts the spans the failing exporter was handed, so no R7
+row can pass for a handler that produced nothing.
 
 * Tests
 =test/commands/command_telemetry_red_test.exs= (CT-1..CT-16, CT-11b): cardinality and correlation for
