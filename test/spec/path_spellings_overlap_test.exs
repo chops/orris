@@ -12,6 +12,7 @@ defmodule AiOrchestrator.Spec.PathSpellingsOverlapTest do
   """
 
   use ExUnit.Case, async: true
+  use ExUnitProperties
 
   alias AiOrchestrator.Contracts.FixtureHelper, as: F
   alias AiOrchestrator.Journal.Fold
@@ -76,6 +77,46 @@ defmodule AiOrchestrator.Spec.PathSpellingsOverlapTest do
       lines = with_lease_paths(lines, "wsl_as_0001", ["lib"], "wsl_as_0002", ["./test/"])
 
       assert {:ok, _state} = Fold.fold_lines(lines)
+    end
+
+    # The fold may reach neither `Spec.PathBoundary` nor `Path` (replay purity: the boundary is
+    # pinned and `Path.expand` consults `:os`), so it repeats the expansion as a pure segment walk.
+    # This is the control that the walk and `PathBoundary.overlapping?/2` never drift apart: over
+    # generated spellings (dotted, doubled, trailing, `..`-climbing, absolute), the lease overlap
+    # refuses exactly the pairs the containment rule calls one directory or nested.
+    property "the lease overlap and PathBoundary.overlapping?/2 agree on every generated spelling pair",
+             %{lease_lines: lines} do
+      check all(left <- spelling(), right <- spelling()) do
+        lines = with_lease_paths(lines, "wsl_as_0001", [left], "wsl_as_0002", [right])
+
+        case Fold.fold_lines(lines) do
+          {:error, rejection} ->
+            assert PathBoundary.overlapping?(left, right),
+                   "refused a pair the rule keeps apart: #{inspect({left, right})}"
+
+            F.assert_rejection_matches(rejection, %{"clause" => "workspace_lease_overlap", "entity_id" => "wsl_as_0002"})
+
+          {:ok, _state} ->
+            refute PathBoundary.overlapping?(left, right),
+                   "admitted a pair the rule calls one directory: #{inspect({left, right})}"
+        end
+      end
+    end
+  end
+
+  @segments ["lib", "test", "nested", ".", "..", ""]
+
+  # every spelling the event schema admits as an allowed path (a non-empty string); the empty
+  # spelling is the schema's own refusal (`invalid_event_data`), not the overlap's
+  defp spelling do
+    gen all(
+          segments <- list_of(member_of(@segments), min_length: 1, max_length: 4),
+          lead <- member_of(["", "./", "/"]),
+          trail <- member_of(["", "/"]),
+          path = lead <> Enum.join(segments, "/") <> trail,
+          path != ""
+        ) do
+      path
     end
   end
 

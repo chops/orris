@@ -2,7 +2,6 @@ defmodule AiOrchestrator.Journal.Fold do
   @moduledoc false
 
   alias AiOrchestrator.Journal.Event
-  alias AiOrchestrator.Spec.PathBoundary
 
   @type rejection :: %{required(:clause) => String.t(), optional(atom()) => term()}
 
@@ -818,9 +817,32 @@ defmodule AiOrchestrator.Journal.Fold do
     end)
   end
 
-  # judged through the containment rule's own expansion (the one plan admission applies to these same
-  # allowed paths), so `./lib`, `lib/` and `lib//x/./y` are one directory to the lease overlap too
-  defp path_overlap?(left, right), do: PathBoundary.overlapping?(String.trim(left), String.trim(right))
+  # The containment rule's expansion (`Spec.PathBoundary.expanded/1`, `Path.expand(name, "/")`),
+  # which plan admission applies to these same allowed paths, repeated here as a pure segment walk:
+  # the fold may alias nothing outside the journal and `Path.expand` consults `:os.type/0`, which
+  # the replay-purity spy counts as an effect. Empty and `.` segments collapse and `..` climbs but
+  # never above the anchor, so `lib`, `./lib`, `lib/` and `lib//x/./y` are one name to the lease
+  # overlap exactly as they are to admission. test/spec/path_spellings_overlap_test.exs holds this
+  # walk and `PathBoundary.overlapping?/2` in step.
+  defp path_overlap?(left, right) do
+    left = expanded(left)
+    right = expanded(right)
+
+    List.starts_with?(left, right) or List.starts_with?(right, left)
+  end
+
+  defp expanded(path) do
+    path
+    |> String.trim()
+    |> String.split("/")
+    |> Enum.reduce([], fn
+      segment, acc when segment in ["", "."] -> acc
+      "..", [] -> []
+      "..", [_parent | rest] -> rest
+      segment, acc -> [segment | acc]
+    end)
+    |> Enum.reverse()
+  end
 
   defp first_mismatch(left_ids, right_ids) do
     left_ids

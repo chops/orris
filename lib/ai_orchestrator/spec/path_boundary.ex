@@ -22,10 +22,12 @@ defmodule AiOrchestrator.Spec.PathBoundary do
   (renaming an in-scope file out of scope, or an out-of-scope file in, is a mutation of both names).
   The rejection carries the clause and the offending path exactly as it was given -- nothing else.
 
-  `overlapping?/2` is the same lexical expansion applied to two allowed roots: the concurrent-writer
-  refusals (`Spec.Plan`'s stretch overlap and the fold's workspace-lease overlap) judge whether two
-  roots name one directory, or one under the other, through it, so every spelling this module admits
-  as one directory is one directory to them too.
+  `overlapping?/2` is the same lexical expansion applied to two allowed roots: `Spec.Plan`'s
+  concurrent-writer refusal judges whether two roots name one directory, or one under the other,
+  through it, so every spelling this module admits as one directory is one directory to it too. The
+  journal fold's workspace-lease overlap repeats the expansion as a pure segment walk (it may reach
+  neither this boundary nor `Path`, which consults `:os`); test/spec/path_spellings_overlap_test.exs
+  holds the two in step.
 
   TRUSTED LOCAL FILESYSTEM ASSUMPTION: the physical layer is point in time; a symlink planted after the
   check is not defended by it (the same assumption `Prepare.Scope` makes for run directories).
