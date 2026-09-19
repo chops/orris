@@ -51,8 +51,38 @@ specifies.
 - PE-4a oracle agreement :: the pinned set equals the set derived from Mix's own production graph
   (=mix deps.tree --only prod=, a source independent of the archive) plus the same fixed members.
 - PE-5 preservation :: the Boundary compiler stays registered in the test environment.
+- PE-6 prohibited applications :: the packaged archive carries no SQL, Ash or Oban application, with a witness first
+  so an empty or unreadable archive cannot satisfy the emptiness.
+- PE-7 interrupt :: an interrupt ends the foreground =status --watch= process, which has written nothing. It has to be
+  this artifact: under bare =elixir= the ERTS break handler takes the signal and the process hangs instead.
+- PE-8 containment :: building and launching a real artifact in place at the project root leaves the working tree
+  exactly as it was found. This was =bin/verify='s assertion around its own escript stage; it belongs with the build
+  it is about.
 - CO-1 / CO-2 oracle controls :: an extra dev-only transitive application (=sourceror=) and a missing required
   transitive application (=grpcbox=) are each rejected by the comparison.
+
+* Build identity (NS-32.M.001)
+The artifact must be able to say what it is: source revision, IPC protocol version and build identity, which
+=phase0/north-star-architecture.org= requires to be observable in EVERY artifact. =ai-orchestrator version [--json]=
+answers, from values =AiOrchestrator.BuildIdentity= captures at compile time; an escript carries no repository to ask
+at run time. The IE rows ask the BUILT artifact, reusing the one build above, and hold each answer to a measurement
+taken independently of it.
+- IE-1 surface :: =version --json= exits 0 and reports exactly the ten declared keys.
+- IE-2 provenance :: =source_revision= equals this repository's HEAD, read here rather than taken from the artifact;
+  =source_worktree= is =clean= or =modified=. When git cannot answer, both are the literal =unknown= rather than a guess.
+- IE-3 protocol :: =ipc_protocol_version= equals the version every pinned v2 fixture declares, so the wire version and
+  the contract fixtures cannot move apart.
+- IE-4 build identity :: =build_elixir=, =build_otp=, =build_env=, =version=, =application=, =artifact= equal the
+  running toolchain and =mix.exs=. =build_env= is what makes PE-4 mean anything: a dev build reaching these rows fails.
+- IE-5 rendering :: the org rendering carries every field the JSON reports.
+
+* The canonical verifier no longer builds a second escript
+=bin/verify= used to build a DEV escript (the 43-application artifact measured above) and re-probe it by hand, so
+every gate run paid for two escript builds and the hand-written probe measured the artifact that does not ship. Its
+three controls that PE-3 did not carry -- stderr may never carry the result, the OTLP exporter may never lose its
+startup race with =:inets=, and the working tree must be unchanged -- moved into PE-3 and PE-8, and the stage was
+removed. The dev-environment escript is consequently no longer built by the root gate; the production one is, on
+every gate run, and =console/bin/c1-core-escript-check= builds the production one again in the console job.
 Expected RED at b693ef5: PE-1..PE-4 fail (PE-1 carries the retained "compile.boundary" build output; PE-2/3/4 have no
 artifact); PE-4a, PE-5, CO-1, CO-2 pass (4/8). Expected GREEN: all eight pass.
 

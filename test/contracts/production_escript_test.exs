@@ -39,6 +39,9 @@ defmodule AiOrchestrator.Contracts.ProductionEscriptTest do
 
   setup_all do
     root = File.cwd!()
+    # taken BEFORE the build: PE-8 holds this module to leaving the working tree as it found it,
+    # which is the control bin/verify used to perform around its own duplicate escript build
+    {dirt_before, 0} = System.cmd("git", ["status", "--porcelain"], cd: root)
     original = preserve(Path.join(root, @artifact_path))
     build_path = fresh_directory(Path.dirname(Mix.Project.build_path()), "prod-clean")
     work = fresh_directory(System.tmp_dir!(), "prod_escript")
@@ -60,7 +63,18 @@ defmodule AiOrchestrator.Contracts.ProductionEscriptTest do
     if File.regular?(built) and original != nil, do: File.cp!(built, artifact)
     File.write!(Path.join(evidence, "build.exit"), Integer.to_string(exit))
     File.write!(Path.join(evidence, "build.log"), output)
-    {:ok, build: %{exit: exit, output: output, artifact: artifact, work: work, evidence: evidence}}
+
+    build = %{
+      exit: exit,
+      output: output,
+      artifact: artifact,
+      work: work,
+      evidence: evidence,
+      dirt_before: dirt_before,
+      root: root
+    }
+
+    {:ok, build: build}
   end
 
   # ---- rows ----
@@ -91,6 +105,31 @@ defmodule AiOrchestrator.Contracts.ProductionEscriptTest do
     assert String.starts_with?(out, "#+title: Run summary"), "stdout is not the structured run summary: #{tail(out)}"
     assert out =~ ~r/^\* Status: cancelled$/m
     assert File.regular?(Path.join(run_dir, "events.head")), "no writer ever opened the probe run directory"
+
+    diagnostics = File.read!(stderr)
+
+    # stderr may carry third-party diagnostics; it may never carry the result
+    refute diagnostics =~ ~r/^#\+title:|^\{"/m,
+           "stderr carries result output, which belongs on stdout alone: #{tail(diagnostics)}"
+
+    # One diagnostic is never legitimate: it means the OTLP exporter reached initialisation before `:inets` was
+    # started and the whole process is running with no telemetry at all, from identical inputs and
+    # nondeterministically. test/application_test.exs is the deterministic guard -- it pins the application order
+    # that makes the race impossible. This is the end-to-end backstop, in the only process that actually starts
+    # the application the way an operator does.
+    refute diagnostics =~ "OTLP exporter failed to initialize",
+           "the OTLP exporter lost its startup race with :inets"
+  end
+
+  # Building and launching a real artifact in place at the project root is the one thing in this suite that could
+  # leave something behind. bin/verify used to assert this around its own duplicate build; the assertion belongs
+  # with the build it is about.
+  test "PE-8 building and launching the production artifact leaves the working tree as it found it", %{build: build} do
+    assert artifact?(build), "no production artifact was built (build exit #{build.exit})"
+    {dirt_now, 0} = System.cmd("git", ["status", "--porcelain"], cd: build.root)
+
+    assert dirt_now == build.dirt_before,
+           "the production escript build or launch changed the working tree:\nbefore:\n#{build.dirt_before}after:\n#{dirt_now}"
   end
 
   test "PE-4 the packaged inventory equals the exact expected set", %{build: build} do
