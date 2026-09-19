@@ -4,7 +4,7 @@ defmodule AiOrchestrator.Contracts.ConcurrentWriterRefusalTest do
 
   `Spec.Plan.validate_stretch_overlap/2` refuses a plan whose writer items are DAG-independent and
   whose `allowed_paths` overlap by prefix, with clause `stretch_paths_overlap` (plan.ex:306-315,
-  361-406). It is OPT-IN: it runs only when the spec carries `stretch_worktrees: true` and otherwise
+  361-403). It is OPT-IN: it runs only when the spec carries `stretch_worktrees: true` and otherwise
   answers `:ok` unconditionally (plan.ex:306, 317; run_spec.ex:89, 110). These rows state that
   exactly, including the opt-in, so the row cannot later be read as more than it is.
 
@@ -106,6 +106,17 @@ defmodule AiOrchestrator.Contracts.ConcurrentWriterRefusalTest do
     # and the overlap is judged by prefix, not by string equality: a subpath still overlaps
     nested = update_in(disjoint_plan(), ["work_items", Access.at(1), "allowed_paths"], fn _ -> ["lib/nested"] end)
     assert Plan.validate(nested, spec) == {:error, %{clause: "stretch_paths_overlap"}}
+  end
+
+  # Regression (2026-09-19): the overlap is judged through the containment rule's own expansion, so a
+  # spelling `validate_allowed_paths` admits as the same directory (`./lib`) cannot slip past the
+  # refusal as a different string. The spelling table is test/spec/path_spellings_overlap_test.exs.
+  test "T6-6 the same root under a dotted spelling is still the same root to the refusal",
+       %{plan: plan, spec: spec} do
+    dotted = update_in(plan, ["work_items", Access.at(1), "allowed_paths"], fn ["lib"] -> ["./lib"] end)
+
+    assert Enum.map(dotted["work_items"], & &1["allowed_paths"]) == [["lib"], ["./lib"]]
+    assert Plan.validate(dotted, spec) == {:error, %{clause: "stretch_paths_overlap"}}
   end
 
   # The control the audit asks for: the refusal above must never be read as evidence that concurrent

@@ -22,6 +22,7 @@ defmodule AiOrchestrator.Contracts.FoldRejectionTest do
         "reject_dispatch_without_pane_lease",
         "reject_writer_dispatch_without_workspace_lease",
         "reject_workspace_lease_overlap",
+        "reject_workspace_lease_overlap_spelling",
         "reject_completion_without_fresh_gate",
         "reject_review_completes_item",
         "reject_agent_ratified_contract_change",
