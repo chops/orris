@@ -44,6 +44,12 @@
               pkgs.cargo
               pkgs.rustfmt
               pkgs.ripgrep
+              # Real isolated tmux for the dispatch row in
+              # test/dispatch/local_pane_real_tmux_test.exs (NS-31 element "real
+              # isolated tmux tests under tmux -L"). The test owns a private
+              # socket directory (TMUX_TMPDIR) and a private server (-L), so the
+              # operator's default server is unreachable by construction.
+              pkgs.tmux
             ];
 
             shellHook = ''
