@@ -4,7 +4,7 @@ defmodule C1.HarnessControlsTest do
   alias AiOrchestrator.Query
   alias C1.{Doubles, Harness, Oracles}
 
-  @core_lock_sha "52c10c350f69cfd9cd8c9c8c70959566c11b9c212ff66149bd128b35e93440fd"
+  @core_lock_sha "d04f9211a05a567d1d1e9c340de53fc0d5d6b1d6a2cfac27844d892979149f41"
 
   test "H-1 the scaffold reaches the public core: a real fixture root lists through Query with its run identity" do
     {root, ids} = Harness.fixture_root(["alpha_run"])
