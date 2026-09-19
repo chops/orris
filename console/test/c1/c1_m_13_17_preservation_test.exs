@@ -234,7 +234,7 @@ defmodule C1.MutationPreservationTest do
     100644 blob 19621e64b39eda66e1ba845d833a1f3c619bd511\tflake.nix
     040000 tree 3a795ea3e1b0848a21ba420e46b7adf71a2770e1\tlib
     100644 blob 6f8544e74c5907bebfdba64381e9320b07fcd7e3\tmix.exs
-    100644 blob 54b8c07475cf6c51b61b6ea63eade94966c0e27b\tmix.lock
+    100644 blob 8efca92c081a2c902a8b5952b0aeb96c7c1d2887\tmix.lock
     040000 tree 950aae97c234450184c6cf696d2dadd28520f48f\tnative
     040000 tree 9cda4b376a7c3fafc29d5261b607e9aacaac3927\ttest
     """
