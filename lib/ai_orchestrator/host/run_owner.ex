@@ -16,7 +16,10 @@ defmodule AiOrchestrator.Host.RunOwner do
   Waiters (`await`, `ready`, `stop`) are recorded with a monitor on the caller and a timer-driven deadline.
   A late identity message carrying this owner's handoff reference is retained under `:late` and swept at
   teardown. Registration with `AiOrchestrator.Host.Monitor` happens inside the `:subtree_started` helper
-  before the user barrier; the record is unregistered explicitly at teardown.
+  before the user barrier; the record is unregistered explicitly at teardown. An arbiter that did not answer
+  the generation lookup at that barrier leaves no record, so the owner would answer no census and never
+  register; the lookup is therefore re-attempted, bounded, when a census request arrives in a state past the
+  barrier. The registration rule itself is unchanged - all five identities, or no record.
   """
 
   @behaviour :gen_statem
@@ -38,6 +41,10 @@ defmodule AiOrchestrator.Host.RunOwner do
   }
   @default_retention_ms 60_000
   @identity_roles [:supervisor, :server, :work, :writer, :worker]
+  # the census-time re-attempt of the generation lookup, bounded exactly as the foreground host route bounds
+  # the same question (`AiOrchestrator.Host.Executor`): a silent arbiter costs this owner that much and never
+  # its result. A caller that named its own `:acquire_timeout` keeps it.
+  @generation_retry_budget 1_000
 
   @type args :: %{
           required(:config) => map(),
@@ -335,18 +342,13 @@ defmodule AiOrchestrator.Host.RunOwner do
 
   def handle_event(:state_timeout, :expire_retention, :terminal, data), do: {:stop, :normal, data}
 
-  # ---- census request from the Monitor: answered only while active and registered ----
-  def handle_event(:info, {:census, ref, monitor}, state, %{record: record}) when state != :terminal and record != nil do
-    send(monitor, {:census_reply, ref, record, state})
-    :keep_state_and_data
-  end
+  # ---- census request from the Monitor: answered while active, registering first if the barrier could not ----
+  def handle_event(:info, {:census, ref, monitor}, state, data) when state != :terminal,
+    do: census_answer(ref, monitor, state, data)
 
   def handle_event(:info, _other, _state, _data), do: :keep_state_and_data
 
-  defp census_or_ignore({:census, ref, monitor}, state, %{record: record}) when record != nil do
-    send(monitor, {:census_reply, ref, record, state})
-    :keep_state_and_data
-  end
+  defp census_or_ignore({:census, ref, monitor}, state, data), do: census_answer(ref, monitor, state, data)
 
   defp census_or_ignore({:run_worker_registered, ref, worker, _server}, _state, %{ref: ref} = data),
     do: {:keep_state, %{data | owned: Map.update(data.owned, :late, [worker], &[worker | &1])}}
@@ -380,26 +382,57 @@ defmodule AiOrchestrator.Host.RunOwner do
   defp run_barrier(data, label) do
     owner = self()
     tref = make_ref()
-    payload = Map.put(Map.take(data.owned, @identity_roles), :owner, owner)
+    payload = identity_payload(data.owned, owner)
     %{barrier: barrier, host: host, config: config} = data
 
-    record =
-      if label == :subtree_started do
-        case Ownership.status(config.run_dir, ownership_opts(config)) do
-          {:ok, %{generation: generation}} ->
-            HostExecutor.registration(config.run_dir, config.command.run_id, payload, generation)
-
-          _ ->
-            nil
-        end
-      else
-        data.record
-      end
+    record = if label == :subtree_started, do: build_record(config, payload, ownership_opts(config)), else: data.record
 
     pid = spawn_link(fn -> helper(owner, tref, label, payload, barrier, host, record) end)
 
     %{data | task: {pid, Process.monitor(pid), tref}, record: record}
   end
+
+  # A record built at the barrier is answered as it stands. A NIL record in a state PAST that barrier means
+  # the arbiter did not answer the generation lookup there (run_barrier/2), which leaves a subtree whose five
+  # identities are all present permanently unregistered and silent to every census - `Host.status` then reports
+  # `registered: false` for a live mounted run. The lookup is re-attempted here, once per census request, under
+  # the bounded budget the foreground host route already uses for the same question (executor.ex:25-27, :71),
+  # so a still-silent arbiter costs this owner that much and never its result. The registration rule is
+  # UNCHANGED: `HostExecutor.registration/4` still requires all five identities, so a subtree that is genuinely
+  # missing one produces no record and is still not answered, exactly as before.
+  defp census_answer(ref, monitor, state, %{record: record}) when record != nil do
+    send(monitor, {:census_reply, ref, record, state})
+    :keep_state_and_data
+  end
+
+  defp census_answer(ref, monitor, state, data) when state in [:barrier_subtree, :awaiting] do
+    config = data.config
+    lookup = Keyword.merge([acquire_timeout: @generation_retry_budget], ownership_opts(config))
+
+    case build_record(config, identity_payload(data.owned, self()), lookup) do
+      nil ->
+        :keep_state_and_data
+
+      record ->
+        guarded(fn -> Monitor.register(data.host.monitor, record) end)
+        send(monitor, {:census_reply, ref, record, state})
+        {:keep_state, %{data | record: record}}
+    end
+  end
+
+  defp census_answer(_ref, _monitor, _state, _data), do: :keep_state_and_data
+
+  defp build_record(config, payload, lookup) do
+    case Ownership.status(config.run_dir, lookup) do
+      {:ok, %{generation: generation}} ->
+        HostExecutor.registration(config.run_dir, config.command.run_id, payload, generation)
+
+      _ ->
+        nil
+    end
+  end
+
+  defp identity_payload(owned, owner), do: Map.put(Map.take(owned, @identity_roles), :owner, owner)
 
   # the helper registers (guarded) before the user barrier and reports the barrier's value or its escape as a
   # closed digest, never crashing with a raw reason

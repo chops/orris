@@ -28,6 +28,33 @@ defmodule AiOrchestrator.Host.MountRedTest.HandoffRelay do
   def handle_info(_other, state), do: {:noreply, state}
 end
 
+# A silenceable arbiter for MR-19: forwards every call to the real arbiter, EXCEPT a `{:status, _}` asked by
+# ONE named caller, which answers exactly the value `Ownership.status/2` produces for an arbiter that never
+# answers at all (its own `call/4` catches the exit and returns that term, ownership.ex:125, :133-137).
+# Acquire, release, and every status asked by anyone else, are forwarded untouched, so the run subtree starts,
+# confirms its Writer, locks and releases through the REAL arbiter. Silencing ONE caller is what makes the row
+# exact: the defect is the mounted owner getting no answer at its own barrier, not an arbiter that is down.
+defmodule AiOrchestrator.Host.MountRedTest.SilenceableArbiter do
+  @moduledoc false
+  use GenServer
+
+  def start_link(opts), do: GenServer.start_link(__MODULE__, Map.new(opts), name: Keyword.fetch!(opts, :name))
+  def silence(name, pid), do: GenServer.call(name, {:silence, pid})
+  def speak(name), do: GenServer.call(name, :speak)
+
+  @impl true
+  def init(state), do: {:ok, Map.put_new(state, :silent, nil)}
+
+  @impl true
+  def handle_call({:silence, pid}, _from, state), do: {:reply, :ok, %{state | silent: pid}}
+  def handle_call(:speak, _from, state), do: {:reply, :ok, %{state | silent: nil}}
+
+  def handle_call({:status, _run_dir}, {caller, _tag}, %{silent: caller} = state),
+    do: {:reply, {:error, %{clause: "ownership_unavailable"}}, state}
+
+  def handle_call(request, _from, %{target: target} = state), do: {:reply, GenServer.call(target, request, 15_000), state}
+end
+
 # A discovery stand-in for MR-15: forwards every call to the real host supervisor after a fixed delay.
 defmodule AiOrchestrator.Host.MountRedTest.DelayingProxy do
   @moduledoc false
@@ -63,6 +90,7 @@ defmodule AiOrchestrator.Host.MountRedTest do
   alias AiOrchestrator.Contract.Moment
   alias AiOrchestrator.Host.MountRedTest.DelayingProxy
   alias AiOrchestrator.Host.MountRedTest.HandoffRelay
+  alias AiOrchestrator.Host.MountRedTest.SilenceableArbiter
   alias AiOrchestrator.Journal.Fs.SystemFs
   alias AiOrchestrator.Journal.Ownership
   alias AiOrchestrator.Journal.RunLock
@@ -77,6 +105,7 @@ defmodule AiOrchestrator.Host.MountRedTest do
   @now %Moment{wall_ts: "2026-09-09T06:00:00Z", unix: 1_788_933_600}
   @owned [:event_sink, :run_dir, :run_lock_path, :tail_repair, :requested_by, :cancel_reason, :recovery_reason]
   @budgets %{close: 3_000, stop: 8_000, join: 1_000, handoff: 5_000, helper_join: 500}
+  @identity_roles [:owner, :supervisor, :server, :writer, :worker]
 
   # ---- late-bound receivers ----
   defp host, do: Module.concat(["AiOrchestrator", "Host"])
@@ -973,6 +1002,114 @@ defmodule AiOrchestrator.Host.MountRedTest do
       for z <- [a, x, e, r2, y], do: assert(match?({:ok, %{}}, host().await(z, @deadline)))
     end
 
+    # The decision-free half of the R07 audit slice S3, named by the S1-S3 lane and left undone
+    # (R07-S1-S3-RECORD.org section 4.5). At the `:subtree_started` barrier the mounted owner builds its
+    # identity record from `Ownership.status/2` (run_owner.ex run_barrier/2); when the arbiter does not
+    # answer THERE, the `_ ->` clause sets `record = nil` with no retry and no diagnostic, and the owner
+    # then answers no census (it required `record != nil`) and never registers - for a subtree whose FIVE
+    # identities are all present and whose generation the arbiter is perfectly able to report a moment
+    # later. `Host.status` therefore reports `registered: false` for a live mounted run, permanently.
+    #
+    # This is NOT the worker-less hole (audit HOLE B). That one needs a ruling on what `Host.status`
+    # answers for a subtree with no worker, and is STOPPED. Here every identity exists, the registration
+    # rule (`HostExecutor.registration/4`, all five pids) is unchanged, and no public shape, contract
+    # sentence or existing row moves: the only change is that the lookup is re-attempted when a census
+    # request arrives.
+    #
+    # Three independently failing parts: the `:awaiting` path (part 1), the negative control that proves
+    # the census alone registers nothing (part 2), and the `:barrier_subtree` path, which is a different
+    # clause in the owner (part 3).
+    test "MR-19 a silent arbiter at the barrier does not make a complete subtree permanently invisible",
+         %{dir: dir} do
+      # ---- part 1: the owner is :awaiting when the census arrives ----
+      h = start_host!()
+      proxy = silenceable!(h.arb, :one)
+      {handle, payload, ref, helper} = stage_silent_barrier!(h, dir, proxy)
+
+      # the generation lookup has already run inside run_barrier/2 and answered nothing, so no record was
+      # built and the registration the helper performs before the user barrier never happened
+      assert {:ok, %{registered: false}} = host().status(dir, monitor: h.mon, ownership: h.arb)
+
+      # a SUSPENDED Server cannot answer the owner's :await, so the owner enters :awaiting and STAYS there:
+      # the row observes a LIVE run in that state instead of racing a run that has already finished
+      :ok = :sys.suspend(payload.server)
+      send(helper, {:release, ref})
+      assert {:ok, %{generation: nil, supervisor: sup} = view} = host().ready(handle, @deadline)
+      assert {:ok, %{registered: false}} = host().status(dir, monitor: h.mon, ownership: h.arb)
+
+      # the arbiter answers this owner again; a census is the only thing that reaches it
+      :ok = SilenceableArbiter.speak(proxy)
+      seen = start_census_monitor!([host_supervisor: h.hsup], :"retry_census_one_#{unique()}", h.hsup)
+
+      wait_until(fn ->
+        match?({:ok, %{registered: true, live: true}}, host().status(dir, monitor: seen, ownership: h.arb))
+      end)
+
+      assert {:ok, %{registered: true, live: true, generation: generation} = entry} =
+               host().status(dir, monitor: seen, ownership: h.arb)
+
+      assert is_integer(generation) and generation >= 1
+
+      # the record is the COMPLETE eight-key one built under the unchanged rule: its five identities are the
+      # run subtree's own children, read from the supervisor rather than from the owner's own bookkeeping
+      trusted = sup |> trusted_map!() |> Map.put(:owner, handle.owner)
+      assert Map.take(entry, @identity_roles) == Map.take(trusted, @identity_roles)
+
+      # it registers with the OWNER'S OWN monitor too, exactly as the barrier helper would have
+      wait_until(fn -> match?({:ok, %{registered: true}}, host().status(dir, monitor: h.mon, ownership: h.arb)) end)
+
+      # and the ready view now carries the generation it could not report before; its key set is unchanged
+      assert {:ok, %{generation: ^generation} = after_view} = host().ready(handle, @deadline)
+      assert Enum.sort(Map.keys(view)) == Enum.sort(Map.keys(after_view)), "the ready view key set moved"
+
+      :ok = :sys.resume(payload.server)
+
+      # ---- part 2: NEGATIVE CONTROL. The same staging as part 1 in every respect except that the arbiter is
+      # never let speak. The census still runs, still reaches a live owner in :awaiting, and still learns
+      # nothing - so part 1 cannot be passing because a census happened, only because the lookup answered.
+      mute = start_host!()
+      mute_dir = dir <> "_mute"
+      File.mkdir_p!(mute_dir)
+      on_exit(fn -> File.rm_rf!(mute_dir) end)
+      silent = silenceable!(mute.arb, :two)
+      {mute_handle, mute_payload, mute_ref, mute_helper} = stage_silent_barrier!(mute, mute_dir, silent)
+      :ok = :sys.suspend(mute_payload.server)
+      send(mute_helper, {:release, mute_ref})
+      assert {:ok, %{generation: nil}} = host().ready(mute_handle, @deadline)
+
+      unseen = start_census_monitor!([host_supervisor: mute.hsup], :"retry_census_two_#{unique()}", mute.hsup, 600)
+      wait_until(fn -> match?({:ok, %{census: :complete}}, host().census(monitor: unseen)) end)
+      assert {:ok, %{census: :complete, skipped: 1}} = host().census(monitor: unseen)
+      assert {:ok, %{registered: false}} = host().status(mute_dir, monitor: unseen, ownership: mute.arb)
+      assert {:ok, %{registered: false}} = host().status(mute_dir, monitor: mute.mon, ownership: mute.arb)
+      :ok = SilenceableArbiter.speak(silent)
+      :ok = :sys.resume(mute_payload.server)
+
+      # ---- part 3: the same repair reached through the OTHER owner clause, held at :subtree_started ----
+      held = start_host!()
+      held_dir = dir <> "_held"
+      File.mkdir_p!(held_dir)
+      on_exit(fn -> File.rm_rf!(held_dir) end)
+      quiet = silenceable!(held.arb, :three)
+      {held_handle, _held_payload, held_ref, held_helper} = stage_silent_barrier!(held, held_dir, quiet)
+      assert {:ok, %{registered: false}} = host().status(held_dir, monitor: held.mon, ownership: held.arb)
+
+      :ok = SilenceableArbiter.speak(quiet)
+      held_seen = start_census_monitor!([host_supervisor: held.hsup], :"retry_census_three_#{unique()}", held.hsup)
+
+      wait_until(fn ->
+        match?({:ok, %{registered: true, live: true}}, host().status(held_dir, monitor: held_seen, ownership: held.arb))
+      end)
+
+      assert {:ok, %{owner: held_owner}} = host().status(held_dir, monitor: held.mon, ownership: held.arb)
+      assert held_owner == held_handle.owner
+
+      send(held_helper, {:release, held_ref})
+      assert match?({:ok, %{}}, host().await(held_handle, @deadline))
+
+      for z <- [handle, mute_handle], do: assert(match?({:ok, %{}}, host().await(z, @deadline)))
+    end
+
     test "MR-15 Host.mounted: delayed discovery then stalled owners under ONE deadline; concurrent per-batch queries give partial results; a fresh budget per leg is rejected",
          %{dir: dir} do
       h = start_host!()
@@ -1137,13 +1274,55 @@ defmodule AiOrchestrator.Host.MountRedTest do
     args
   end
 
+  defp unique, do: System.unique_integer([:positive])
+
+  # a barrier that holds the mounted run at EVERY label until the test releases that one, so a row can act
+  # between the handoff and the :subtree_started barrier
+  defp holding_each(test_pid) do
+    fn label, payload ->
+      ref = make_ref()
+      send(test_pid, {:held, label, ref, payload, self()})
+
+      receive do
+        {:release, ^ref} -> :ok
+      after
+        @deadline -> exit(:never_released)
+      end
+    end
+  end
+
+  # Stages the exact defect of R07 S3's decision-free half: the run reaches the handoff with EVERY identity
+  # present, the arbiter is then silenced FOR THE OWNER ONLY, and the owner runs its `:subtree_started`
+  # barrier - so the generation lookup inside `run_barrier/2` gets no answer and no record is built, for a
+  # subtree that is otherwise complete. Returns the handle, the payload the owner carried into that barrier,
+  # and the held barrier so the row decides when it returns.
+  defp stage_silent_barrier!(h, dir, proxy) do
+    handle = mount!(h, dir, holding_each(self()), ownership: [server: proxy])
+    {handoff_ref, handoff_payload, handoff_helper} = await_held!(:handoff_received)
+
+    assert Enum.all?(@identity_roles, &is_pid(handoff_payload[&1])),
+           "this row stages a COMPLETE subtree; the worker-less case is the STOPPED half: #{inspect(handoff_payload)}"
+
+    :ok = SilenceableArbiter.silence(proxy, handle.owner)
+    send(handoff_helper, {:release, handoff_ref})
+    {ref, payload, helper} = await_held!(:subtree_started)
+    {handle, payload, ref, helper}
+  end
+
+  # a forwarding arbiter whose generation lookup is silent until the row lets it speak (MR-19)
+  defp silenceable!(target, tag) do
+    name = :"silenceable_arb_#{tag}_#{unique()}"
+    start_supervised!(%{id: name, start: {SilenceableArbiter, :start_link, [[name: name, target: target]]}})
+    name
+  end
+
   # a monitor started from `args`, rebinding ONLY the instance-valued seams of this row's isolated root: the
   # registered name, the injected census deadline, and `:host_supervisor` where `args` already carries that key
-  defp start_census_monitor!(args, name, hsup) do
+  defp start_census_monitor!(args, name, hsup, census_timeout \\ 20_000) do
     args =
       args
       |> Keyword.put(:name, name)
-      |> Keyword.put(:census_timeout, 20_000)
+      |> Keyword.put(:census_timeout, census_timeout)
       |> then(fn a -> if Keyword.has_key?(a, :host_supervisor), do: Keyword.put(a, :host_supervisor, hsup), else: a end)
 
     start_supervised!(%{id: {:census_monitor, name}, start: {monitor_mod(), :start_link, [args]}})
