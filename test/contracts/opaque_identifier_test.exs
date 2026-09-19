@@ -136,7 +136,7 @@ defmodule AiOrchestrator.Contracts.OpaqueIdentifierTest do
   defp expand_pipes(ast) do
     Macro.prewalk(ast, fn
       {:|>, _meta, [left, {_target, _right_meta, args} = right]} when is_list(args) -> Macro.pipe(left, right, 0)
-      node -> node
+      ast_node -> ast_node
     end)
   end
 
@@ -147,7 +147,7 @@ defmodule AiOrchestrator.Contracts.OpaqueIdentifierTest do
        when function in @regex_ops, do: reported(meta, "Regex.#{function}", subject)
 
   defp site({:binary_part, meta, [subject | _rest]}), do: reported(meta, "binary_part", subject)
-  defp site(_node), do: []
+  defp site(_ast_node), do: []
 
   defp reported(meta, call, subject) do
     case identity_name(subject) do
