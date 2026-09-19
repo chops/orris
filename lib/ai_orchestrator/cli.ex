@@ -3,6 +3,7 @@ defmodule AiOrchestrator.CLI do
 
   use Boundary,
     deps: [
+      AiOrchestrator.BuildIdentity,
       AiOrchestrator.Commands,
       AiOrchestrator.Config,
       AiOrchestrator.Id,
@@ -16,6 +17,7 @@ defmodule AiOrchestrator.CLI do
     ],
     exports: []
 
+  alias AiOrchestrator.BuildIdentity
   alias AiOrchestrator.CLI.Discovery
   alias AiOrchestrator.CLI.Read
   alias AiOrchestrator.CLI.Watch
@@ -49,6 +51,12 @@ defmodule AiOrchestrator.CLI do
 
   @spec run([String.t()], keyword()) :: result()
   def run(argv, opts \\ [])
+
+  # `version [--json]`: what this artifact is (NS-32.M.001). It reads nothing, claims nothing and
+  # opens no writer, so it is answerable by a packaged binary with no run directory in sight --
+  # which is the point: an operator holding only the artifact can still ask what they are holding.
+  def run(["version"], _opts), do: ok(BuildIdentity.render())
+  def run(["version", "--json"], _opts), do: json(0, BuildIdentity.report(), :stdout)
 
   def run(["validate", run_dir], _opts), do: validate_run_dir(run_dir)
 
@@ -381,7 +389,8 @@ defmodule AiOrchestrator.CLI do
 
   defp usage do
     """
-    usage: ai-orchestrator validate <run-dir>
+    usage: ai-orchestrator version [--json]
+           ai-orchestrator validate <run-dir>
            ai-orchestrator run [--gate-guardian <path>] <run-dir>
            ai-orchestrator run [--gate-guardian <path>] --resume <run-dir>
            ai-orchestrator status [--json] <run-dir>

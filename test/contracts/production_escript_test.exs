@@ -4,6 +4,11 @@ defmodule AiOrchestrator.Contracts.ProductionEscriptTest do
   root into a freshly created private build directory, then measured: exit, packaged inventory against an exact
   oracle, the build-only exception, and a launch that opens a writer. A pre-existing operator artifact in bin/ is
   preserved byte for byte and restored.
+
+  The IE rows (NS-32.M.001) ask that same artifact what it IS -- source revision, IPC protocol version, build
+  identity -- and hold each answer to something measured independently of the artifact: the repository's own HEAD,
+  the pinned v2 fixture bytes, and the running toolchain. They reuse the one build above; no second build, and no
+  new machinery.
   """
 
   use ExUnit.Case, async: false
@@ -26,6 +31,11 @@ defmodule AiOrchestrator.Contracts.ProductionEscriptTest do
   @pinned_production_closure ~w(acceptor_pool chatterbox ctx gproc grpcbox hpack jason opentelemetry
     opentelemetry_api opentelemetry_exporter ssl_verify_fun telemetry tls_certificate_check zoi)a
   @expected_packaged MapSet.new([:ai_orchestrator, :elixir, :logger] ++ @build_only ++ @pinned_production_closure)
+
+  # The exact identity surface the artifact publishes. A field added or dropped without review fails IE-1.
+  @identity_keys ~w(application artifact build_elixir build_env build_otp ipc_protocol_version product
+    source_revision source_worktree version)
+  @v2_fixtures "test/fixtures/contracts/ipc/v2/*.json"
 
   setup_all do
     root = File.cwd!()
@@ -154,6 +164,65 @@ defmodule AiOrchestrator.Contracts.ProductionEscriptTest do
     assert directory_digest(run_dir) == before
   end
 
+  # ---- build identity: the artifact says what it is, and every answer is held to an outside measurement ----
+
+  test "IE-1 the artifact answers `version --json` with exactly the declared identity keys", %{build: build} do
+    assert artifact?(build), "no production artifact to launch (build exit #{build.exit})"
+    assert Enum.sort(Map.keys(identity(build))) == Enum.sort(@identity_keys)
+  end
+
+  # The strong row: the artifact's claim about its own provenance is compared against this repository's HEAD,
+  # read here rather than taken from the artifact. A hard-coded, stale or fabricated revision fails here.
+  test "IE-2 the reported source revision is the revision the artifact was built from", %{build: build} do
+    assert artifact?(build), "no production artifact to launch (build exit #{build.exit})"
+    report = identity(build)
+    {head, 0} = System.cmd("git", ["rev-parse", "HEAD"])
+
+    assert report["source_revision"] == String.trim(head)
+    assert report["source_revision"] =~ ~r/\A[0-9a-f]{40}\z/
+    assert report["source_worktree"] in ["clean", "modified"]
+  end
+
+  # The protocol version is not a free-standing literal: it is held to the number the pinned v2 fixture bytes
+  # declare, so bumping the wire version without the contract fixtures (or the reverse) fails here.
+  test "IE-3 the reported protocol version is the version the pinned v2 fixtures declare", %{build: build} do
+    assert artifact?(build), "no production artifact to launch (build exit #{build.exit})"
+    paths = Path.wildcard(@v2_fixtures)
+    assert paths != [], "the v2 fixture set is missing, so this row would be vacuous"
+
+    declared =
+      for path <- paths,
+          into: MapSet.new(),
+          do: path |> File.read!() |> Jason.decode!() |> Map.fetch!("protocol_version")
+
+    assert MapSet.size(declared) == 1, "the v2 fixtures disagree on protocol_version: #{inspect(declared)}"
+    assert identity(build)["ipc_protocol_version"] == declared |> MapSet.to_list() |> List.first()
+  end
+
+  # `build_env` is not decoration: it is what makes PE-4's packaged inventory mean anything. An artifact built in
+  # dev carries a different closure, so a dev build reaching this row is a finding rather than a passing test.
+  test "IE-4 the reported build identity is the toolchain and environment that built it", %{build: build} do
+    assert artifact?(build), "no production artifact to launch (build exit #{build.exit})"
+    report = identity(build)
+
+    assert report["build_elixir"] == System.version()
+    assert report["build_otp"] == otp_version()
+    assert report["build_env"] == "prod"
+    assert report["version"] == to_string(Mix.Project.config()[:version])
+    assert report["application"] == to_string(Mix.Project.config()[:app])
+    assert report["artifact"] == to_string(Mix.Project.config()[:escript][:name])
+    assert report["product"] == "orris"
+  end
+
+  test "IE-5 the org rendering carries every field the JSON reports", %{build: build} do
+    assert artifact?(build), "no production artifact to launch (build exit #{build.exit})"
+    report = identity(build)
+    {out, 0} = System.cmd(build.artifact, ["version"])
+
+    assert String.starts_with?(out, "#+title: Build identity")
+    for {key, value} <- report, do: assert(out =~ "- #{key}: #{value}")
+  end
+
   # ---- oracle controls: the comparison rejects both directions ----
 
   test "CO-1 an extra dev-only transitive application is rejected by the oracle" do
@@ -205,6 +274,24 @@ defmodule AiOrchestrator.Contracts.ProductionEscriptTest do
   end
 
   defp artifact?(build), do: build.exit == 0 and File.regular?(build.artifact)
+
+  # the artifact answers as an OS process; a non-zero exit or any non-JSON stdout is the row's failure
+  defp identity(build) do
+    {out, status} = System.cmd(build.artifact, ["version", "--json"])
+    assert status == 0, "the artifact refused `version --json` (exit #{status}): #{tail(out)}"
+    Jason.decode!(out)
+  end
+
+  # the running OTP version, read the way bin/verify reads it, independent of what the artifact claims
+  defp otp_version do
+    release = List.to_string(:erlang.system_info(:otp_release))
+    path = Path.join([List.to_string(:code.root_dir()), "releases", release, "OTP_VERSION"])
+
+    case File.read(path) do
+      {:ok, contents} -> String.trim(contents)
+      {:error, _reason} -> release
+    end
+  end
 
   defp oracle_verdict(expected, actual) do
     extra = actual |> MapSet.difference(expected) |> Enum.sort()
