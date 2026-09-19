@@ -164,10 +164,10 @@ defmodule AiOrchestrator.Contracts.ProductionEscriptTest do
   # status, on the `--for-ms` horizon, after a bounded cycle count -- each of which test/cli/cli_watch_test.exs
   # drives with injected seams -- "or when the operator interrupts the foreground process", which no row asserted.
   # It has to be THIS artifact. Measured on 2026-09-18 with the same Port shape, run directory and signal:
-  #   elixir <script>                  STILL RUNNING 12s after SIGINT   (the ERTS break handler takes the signal
-  #   elixir --erl "-noinput" <script> STILL RUNNING 12s after SIGINT    and waits for a keystroke that a pipe
-  #   elixir --erl "+Bi" <script>      STILL RUNNING 12s after SIGINT    never delivers)
-  #   elixir --erl "+Bd" <script>      EXITED status=130
+  #   elixir SCRIPT                    STILL RUNNING 12s after SIGINT   (the ERTS break handler takes the signal
+  #   elixir --erl "-noinput" SCRIPT   STILL RUNNING 12s after SIGINT    and waits for a keystroke that a pipe
+  #   elixir --erl "+Bi" SCRIPT        STILL RUNNING 12s after SIGINT    never delivers)
+  #   elixir --erl "+Bd" SCRIPT        EXITED status=130
   #   bin/ai-orchestrator (escript)    EXITED status=130
   # So the row is a property of the packaged escript, which starts its emulator with the break handler off, and a
   # version of it run under bare `elixir` would hang rather than pass. 130 is 128 + SIGINT: the runtime exits on
