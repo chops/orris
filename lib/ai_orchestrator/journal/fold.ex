@@ -2,6 +2,7 @@ defmodule AiOrchestrator.Journal.Fold do
   @moduledoc false
 
   alias AiOrchestrator.Journal.Event
+  alias AiOrchestrator.Spec.PathBoundary
 
   @type rejection :: %{required(:clause) => String.t(), optional(atom()) => term()}
 
@@ -817,14 +818,9 @@ defmodule AiOrchestrator.Journal.Fold do
     end)
   end
 
-  defp path_overlap?(left, right) do
-    left = normalize_path(left)
-    right = normalize_path(right)
-
-    left == right or String.starts_with?(left, right <> "/") or String.starts_with?(right, left <> "/")
-  end
-
-  defp normalize_path(path), do: path |> String.trim() |> String.trim_trailing("/")
+  # judged through the containment rule's own expansion (the one plan admission applies to these same
+  # allowed paths), so `./lib`, `lib/` and `lib//x/./y` are one directory to the lease overlap too
+  defp path_overlap?(left, right), do: PathBoundary.overlapping?(String.trim(left), String.trim(right))
 
   defp first_mismatch(left_ids, right_ids) do
     left_ids

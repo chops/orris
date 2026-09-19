@@ -398,12 +398,7 @@ defmodule AiOrchestrator.Spec.Plan do
     end)
   end
 
-  defp path_overlap?(left, right) do
-    left = normalize_path(left)
-    right = normalize_path(right)
-
-    left == right or String.starts_with?(left, right <> "/") or String.starts_with?(right, left <> "/")
-  end
-
-  defp normalize_path(path), do: path |> String.trim() |> String.trim_trailing("/")
+  # judged through the containment rule's own expansion, so the spellings `validate_allowed_paths`
+  # admits as one directory (`./lib`, `lib/`, `lib//x/./y`) are one directory here too
+  defp path_overlap?(left, right), do: PathBoundary.overlapping?(String.trim(left), String.trim(right))
 end

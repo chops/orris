@@ -22,6 +22,11 @@ defmodule AiOrchestrator.Spec.PathBoundary do
   (renaming an in-scope file out of scope, or an out-of-scope file in, is a mutation of both names).
   The rejection carries the clause and the offending path exactly as it was given -- nothing else.
 
+  `overlapping?/2` is the same lexical expansion applied to two allowed roots: the concurrent-writer
+  refusals (`Spec.Plan`'s stretch overlap and the fold's workspace-lease overlap) judge whether two
+  roots name one directory, or one under the other, through it, so every spelling this module admits
+  as one directory is one directory to them too.
+
   TRUSTED LOCAL FILESYSTEM ASSUMPTION: the physical layer is point in time; a symlink planted after the
   check is not defended by it (the same assumption `Prepare.Scope` makes for run directories).
   """
@@ -44,6 +49,18 @@ defmodule AiOrchestrator.Spec.PathBoundary do
   def lexical(allowed_roots, changes) when is_list(allowed_roots) and is_list(changes) do
     roots = Enum.map(allowed_roots, &expanded/1)
     first_rejection(paths(changes), &lexical_rejection(&1, roots))
+  end
+
+  @doc """
+  Whether two allowed roots, each expanded exactly as `lexical/2` expands a worktree-relative name,
+  are one directory or one lies under the other. `lib`, `./lib`, `lib/` and `lib//x/./y` are
+  spellings, not distinct roots; a sibling is not under either.
+  """
+  @spec overlapping?(Path.t(), Path.t()) :: boolean()
+  def overlapping?(left, right) when is_binary(left) and is_binary(right) do
+    left = expanded(left)
+    right = expanded(right)
+    contained?(left, right) or contained?(right, left)
   end
 
   @doc """

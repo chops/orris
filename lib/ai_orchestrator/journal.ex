@@ -2,7 +2,7 @@ defmodule AiOrchestrator.Journal do
   @moduledoc false
 
   use Boundary,
-    deps: [AiOrchestrator.Clock, AiOrchestrator.ProcessIdentity],
+    deps: [AiOrchestrator.Clock, AiOrchestrator.ProcessIdentity, AiOrchestrator.Spec],
     exports: [
       Event,
       Fold,
