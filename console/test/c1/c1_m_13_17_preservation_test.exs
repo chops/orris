@@ -215,21 +215,28 @@ defmodule C1.MutationPreservationTest do
     # its generation lookup when a census arrives after a barrier at which the
     # arbiter was silent, so a complete subtree stops being permanently
     # unregistered; the registration rule and every public shape are unchanged,
-    # and the worker-less half of that slice stays STOPPED on its ruling).
+    # and the worker-less half of that slice stays STOPPED on its ruling), and the
+    # R13/R14 build-identity delivery (a version verb on the escript with five rows
+    # in the production escript suite that hold it to HEAD, the pinned v2 fixtures
+    # and the running toolchain; the IPC v2 re-pairing at orrisd d6b2e369 with the
+    # vendored-source pins made exact and the paired toolchain declared and held to
+    # bin/verify; DEPENDENCIES.org bound to mix.lock and to the production dependency
+    # graph; and the removal of bin/verify's duplicate DEV escript stage, whose three
+    # unique controls moved into PE-3 and the new PE-8).
     # Pin root entries so another core commit cannot silently pass. A later authorized core delivery must update
     # this snapshot explicitly in its review. Console files are outside the
     # snapshot, avoiding a self-referential commit id.
     core_paths = ~w(mix.exs mix.lock flake.nix flake.lock lib test bin native)
 
     expected = """
-    040000 tree 538b98582c5c194332306fae9559fa19f46bb33b\tbin
+    040000 tree 588f175d8b6fd718e4ce9f00bec4e501b26e34bf\tbin
     100644 blob cfbb9f900c6f1442d2552baa0063cff01b270413\tflake.lock
     100644 blob 19621e64b39eda66e1ba845d833a1f3c619bd511\tflake.nix
-    040000 tree 5a37ffbce20efd3b27b924e3fb6ba23b3b3cf0fb\tlib
+    040000 tree 4cae684485c3149c15b78521a87514f075909e6a\tlib
     100644 blob 6f8544e74c5907bebfdba64381e9320b07fcd7e3\tmix.exs
     100644 blob 54b8c07475cf6c51b61b6ea63eade94966c0e27b\tmix.lock
     040000 tree 950aae97c234450184c6cf696d2dadd28520f48f\tnative
-    040000 tree 77a09df6e7b2eac85bebc405d06b1cab5d7f52f9\ttest
+    040000 tree 081a4bd3184f6853b23a7391a00bd9b30d450853\ttest
     """
 
     {committed, 0} = System.cmd("git", ["ls-tree", "HEAD", "--"] ++ core_paths, cd: Harness.core_path())
