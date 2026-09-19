@@ -37,6 +37,7 @@ defmodule AiOrchestrator.Contracts.IpcV2ContractHashTest do
   @paired_document_sha256 "dc936f07ef1440af011f7e8a7bda75bddeff94413a3c04a2e4b8166071bb17bc"
   @vendored_source_revision "3684f53e93018edf10c16bee459af340607ab115"
   @vendored_source_sha256 "939e09474dce6cf82af1dff19c8880b2c5148c6b2c4d4fb10da60fdf8a4a5be5"
+  @toolchain_source Path.expand("../../bin/verify", __DIR__)
 
   test "the IPC v2 fixture set matches the pinned cross-repository hash" do
     paths = @fixture_dir |> Path.join("*.json") |> Path.wildcard() |> Enum.sort()
@@ -85,6 +86,34 @@ defmodule AiOrchestrator.Contracts.IpcV2ContractHashTest do
     # a rotation that moved the fixtures, that file and this constant together but left the document fails here
     assert declared(document, "paired_fixture_contract_hash") == @pinned_hash
     assert declared(document, "paired_fixture_count") == Integer.to_string(@expected_fixture_count)
+  end
+
+  # Both products refuse to verify on anything but one Elixir/OTP pair, and each carries that pair as a literal in
+  # its own bin/verify. Nothing asserted the two literals were the SAME pair, so they could drift apart one release
+  # at a time with both gates green. This is the half the consumer can mechanise: what the contract declares as the
+  # paired toolchain is held to what this repository actually refuses to verify without.
+  test "the paired toolchain the contract declares is the toolchain this repository refuses to verify without" do
+    document = File.read!(@document)
+    verify = File.read!(@toolchain_source)
+
+    elixir = pinned(verify, "required_elixir")
+    otp = pinned(verify, "required_otp")
+
+    # a witness: a bin/verify that stopped pinning versions at all would otherwise make the row vacuous
+    assert elixir =~ ~r/\A\d+\.\d+\.\d+\z/
+    assert otp =~ ~r/\A\d+\.\d+\.\d+\z/
+
+    assert declared(document, "paired_elixir") == elixir
+    assert declared(document, "paired_otp") == otp
+  end
+
+  # `name="value"` in bin/verify; exactly one such line per name, so a removed or duplicated pin fails rather
+  # than resolving to whichever line happens to come first
+  defp pinned(verify, name) do
+    case Regex.scan(~r/^#{name}="([^"]+)"$/m, verify) do
+      [[_line, value]] -> value
+      other -> flunk("#{name} is not pinned exactly once in #{@toolchain_source}: #{inspect(other)}")
+    end
   end
 
   # `- key: ~value~` in the paired block; exactly one such line per key, so a duplicated or removed key fails here

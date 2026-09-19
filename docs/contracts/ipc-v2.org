@@ -47,6 +47,18 @@ direction being recorded.
 - paired_fixture_dir: ~test/fixtures/contracts/ipc/v2/~
 - paired_fixture_contract_hash: ~78c2f64240c3c5c9da60425c65c498974a2a81c8adb3e68e0bef28613c1707dc~
 - paired_fixture_count: ~16~
+- paired_elixir: ~1.20.4~
+- paired_otp: ~29.0.5~
+
+~paired_elixir~ and ~paired_otp~ are the toolchain BOTH products pin. Each
+repository already refuses to verify on anything else -- ~bin/verify~ here and
+~bin/verify~ there each carry the two versions as literals -- but until this
+declaration nothing said the two literals were the same two versions, so they
+could drift apart one release at a time with both gates green. The row in
+~test/contracts/ipc_v2_contract_hash_test.exs~ reads this repository's own
+~bin/verify~ and holds it to what is declared here, which is the half this side
+can mechanise; the producer's literal is the producer's gate to hold, under the
+same stated limit as the digests above.
 
 ~paired_document_sha256~ is the digest of the WHOLE producer document at
 ~paired_revision~, which is the producer's pairing block, its producer addenda
