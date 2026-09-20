@@ -232,11 +232,11 @@ defmodule C1.MutationPreservationTest do
     040000 tree 588f175d8b6fd718e4ce9f00bec4e501b26e34bf\tbin
     100644 blob cfbb9f900c6f1442d2552baa0063cff01b270413\tflake.lock
     100644 blob 9b31a69229898038e39a7ba19c6a6e3ff1da3b27\tflake.nix
-    040000 tree c90d31df99c80da222b925a6cede07b3f44de5a0\tlib
+    040000 tree b47943c2a984bbc7d215da54b43e55fb5d81dc90\tlib
     100644 blob 6f8544e74c5907bebfdba64381e9320b07fcd7e3\tmix.exs
     100644 blob 8efca92c081a2c902a8b5952b0aeb96c7c1d2887\tmix.lock
     040000 tree 950aae97c234450184c6cf696d2dadd28520f48f\tnative
-    040000 tree 718c770397f41942a5fef5d74e3775d9ebaddaf6\ttest
+    040000 tree 37d8037fa7841ce295ca5349ce83d4399a88a627\ttest
     """
 
     {committed, 0} = System.cmd("git", ["ls-tree", "HEAD", "--"] ++ core_paths, cd: Harness.core_path())
