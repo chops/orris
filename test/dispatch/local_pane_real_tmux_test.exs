@@ -31,7 +31,8 @@ defmodule AiOrchestrator.Dispatch.LocalPaneRealTmuxTest do
       adopts whatever already exists) under a name unique across OS processes (OS pid,
       VM unique integer, random bytes); a colliding path is retried with a fresh name a
       bounded number of times and is never chmodded, entered or removed; cleanup is
-      registered the moment the directory exists, before any later setup step can fail;
+      registered the moment the directory exists, BEFORE its chmod (the first step that
+      can fail on it): a control forces that chmod to fail and shows no root remains;
     * every path the fake `ap` needs reaches it as DATA in the environment the `ap`
       process is started with, never as text inside the script, so a valid path byte
       that is shell syntax in source (dollar, backtick, double quote) is never shell
@@ -119,7 +120,13 @@ defmodule AiOrchestrator.Dispatch.LocalPaneRealTmuxTest do
     {uid, 0} = System.cmd("id", ["-u"])
     uid = String.trim(uid)
 
-    {root, socket} = claim_root!(uid)
+    # Ownership and its cleanup are one step: `owned` runs the moment the exclusive mkdir
+    # returns :ok, before the chmod, so no later failure can retain the directory. The three
+    # cleanups of this fixture (root removal here, server stop and the variables below) are
+    # separate on_exit callbacks: ExUnit runs them last-registered first and continues past
+    # one that raises (ExUnit.OnExitHandler, read 2026-09-20), so they run as variables,
+    # stop, remove, and none of them can skip another.
+    {root, socket} = claim_root!(uid, fn root, _socket -> on_exit(fn -> File.rm_rf!(root) end) end)
 
     # The owned root IS the socket directory (TMUX_TMPDIR points at it), unless the row asks
     # for the shell-syntax subdirectory, which is created inside the owned root.
@@ -134,13 +141,8 @@ defmodule AiOrchestrator.Dispatch.LocalPaneRealTmuxTest do
     ap = Path.join(root, "fake-ap")
     row_env = [{@env_socket_dir, socket_dir}, {@env_tmux, tmux}, {@env_socket, socket}, {@env_log, log}]
 
-    # Ownership is established: register the whole cleanup NOW, before any later step can
-    # fail. Killing a server that was never started is harmless ("no server running").
-    on_exit(fn ->
-      System.cmd(tmux, ["-L", socket, "kill-server"], env: env, stderr_to_stdout: true)
-      File.rm_rf!(root)
-      for {name, _} <- row_env, do: System.delete_env(name)
-    end)
+    # Killing a server that was never started is harmless ("no server running").
+    on_exit(fn -> System.cmd(tmux, ["-L", socket, "kill-server"], env: env, stderr_to_stdout: true) end)
 
     if socket_dir != root do
       File.mkdir!(socket_dir)
@@ -148,6 +150,7 @@ defmodule AiOrchestrator.Dispatch.LocalPaneRealTmuxTest do
     end
 
     for {name, value} <- row_env, do: System.put_env(name, value)
+    on_exit(fn -> for {name, _} <- row_env, do: System.delete_env(name) end)
 
     {out, 0} =
       System.cmd(
@@ -225,31 +228,38 @@ defmodule AiOrchestrator.Dispatch.LocalPaneRealTmuxTest do
 
   @claim_attempts 8
 
-  defp claim_root!(uid) do
-    case claim_root(uid, &unique_token/0, @claim_attempts) do
+  defp claim_root!(uid, owned) do
+    case claim_root(uid, &unique_token/0, @claim_attempts, owned) do
       {:ok, root, socket} -> {root, socket}
       {:error, reason} -> flunk("no fresh socket root claimed in #{@claim_attempts} attempts: #{inspect(reason)}")
     end
   end
 
   # Exclusive ownership. `File.mkdir/1` fails with :eexist on a path that already exists and
-  # then NOTHING is done to that path: no chmod, no read, no removal; the next token is tried.
-  # Only a directory this call created is chmodded and returned. The bound turns a namespace
-  # that never yields a fresh name into a refusal instead of an adoption.
-  defp claim_root(_uid, _token_fun, 0), do: {:error, :exhausted}
+  # then NOTHING is done to that path: no chmod, no read, no removal, no `owned` call; the
+  # next token is tried. Only a directory this call created is handed to `owned` and then
+  # chmodded, in that order: `owned` runs the moment mkdir returns :ok, so the caller's
+  # cleanup is registered before the first step that can fail on an owned directory. `mode`
+  # exists for the control that forces that failure (a mode chmod refuses); every row uses
+  # the default. The bound turns a namespace that never yields a fresh name into a refusal
+  # instead of an adoption.
+  defp claim_root(uid, token_fun, attempts, owned, mode \\ 0o700)
 
-  defp claim_root(uid, token_fun, attempts) do
+  defp claim_root(_uid, _token_fun, 0, _owned, _mode), do: {:error, :exhausted}
+
+  defp claim_root(uid, token_fun, attempts, owned, mode) do
     token = token_fun.()
     socket = "od#{token}"
     root = socket_root("orris-tmux-#{token}", uid, socket)
 
     case File.mkdir(root) do
       :ok ->
-        File.chmod!(root, 0o700)
+        owned.(root, socket)
+        File.chmod!(root, mode)
         {:ok, root, socket}
 
       {:error, :eexist} ->
-        claim_root(uid, token_fun, attempts - 1)
+        claim_root(uid, token_fun, attempts - 1, owned, mode)
 
       {:error, reason} ->
         {:error, reason}
@@ -330,8 +340,8 @@ defmodule AiOrchestrator.Dispatch.LocalPaneRealTmuxTest do
     on_exit(fn -> File.rm_rf!(planted) end)
 
     fresh_token = unique_token()
-    assert {:ok, root, socket} = claim_root(ctx.uid, scripted_tokens([planted_token, fresh_token]), 2)
-    on_exit(fn -> File.rm_rf!(root) end)
+    owned = fn root, _socket -> on_exit(fn -> File.rm_rf!(root) end) end
+    assert {:ok, root, socket} = claim_root(ctx.uid, scripted_tokens([planted_token, fresh_token]), 2, owned)
 
     refute root == planted, "the fixture adopted a directory it did not create"
     assert root == socket_root("orris-tmux-#{fresh_token}", ctx.uid, "od#{fresh_token}")
@@ -341,12 +351,42 @@ defmodule AiOrchestrator.Dispatch.LocalPaneRealTmuxTest do
     assert File.read!(sentinel) == "not yours\n"
     assert File.ls!(planted) == ["sentinel"]
 
-    # A namespace that never yields a fresh name is refused after the bound, and the planted
-    # directory is still untouched.
-    assert claim_root(ctx.uid, fn -> planted_token end, 3) == {:error, :exhausted}
+    # A namespace that never yields a fresh name is refused after the bound, the planted
+    # directory is still untouched, and nothing was handed to `owned`.
+    never = fn root, _socket -> flunk("owned was called for a directory the fixture did not create: #{root}") end
+    assert claim_root(ctx.uid, fn -> planted_token end, 3, never) == {:error, :exhausted}
     assert Bitwise.band(File.stat!(planted).mode, 0o777) == 0o755
     assert File.read!(sentinel) == "not yours\n"
     assert File.ls!(planted) == ["sentinel"]
+  end
+
+  test "a failure right after the claim leaves no root behind: cleanup is registered before the chmod", ctx do
+    token = unique_token()
+    expected = socket_root("orris-tmux-#{token}", ctx.uid, "od#{token}")
+    # Whatever the outcome below, this row does not leave that path behind.
+    on_exit(fn -> File.rm_rf!(expected) end)
+
+    # The stand-in for what setup's `owned` does with on_exit: keep the cleanup to run here.
+    owned = fn root, socket ->
+      Process.put(:owned, {root, socket})
+      Process.put(:cleanups, [fn -> File.rm_rf!(root) end | Process.get(:cleanups, [])])
+    end
+
+    # Force the chmod, the first step after the claim, to fail: -1 is a mode chmod refuses
+    # ({:error, :badarg} from :file.change_mode/2, measured 2026-09-20; no OS involved).
+    assert_raise File.Error, ~r/could not change mode for/, fn ->
+      claim_root(ctx.uid, fn -> token end, 1, owned, -1)
+    end
+
+    # ANTI-VACUITY: the directory was created and the failure left it in place, so only a
+    # cleanup registered BEFORE the failing step can remove it.
+    assert File.dir?(expected), "the claim did not create the directory"
+
+    assert Process.get(:owned) == {expected, "od#{token}"},
+           "no cleanup was registered before the chmod failed: the claimed root #{expected} is retained"
+
+    for cleanup <- Process.get(:cleanups), do: cleanup.()
+    refute File.exists?(expected), "the claimed root was left behind after the registered cleanup ran"
   end
 
   defp dispatch_command(ctx) do
