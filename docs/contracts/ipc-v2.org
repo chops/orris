@@ -182,9 +182,297 @@ positive ~delivery_attempt~ it closed) -- the client's retry bound depends on
 that distinction, so a stored receipt without a positive attempt is refused.
 ~conflict~ carries only the identities the caller presented.
 
+** The sessions read surface
+:PROPERTIES:
+:CUSTOM_ID: the-sessions-read-surface
+:END:
+*** Status: specified, not adopted
+:PROPERTIES:
+:CUSTOM_ID: status-specified-not-adopted
+:END:
+Everything from here to the end of this section specifies a surface that no
+daemon implements yet and that no paired example set contains. Read it as the
+contract an implementation must be built against, never as a description of
+something answering today.
+
+The fixtures under ~test/fixtures/contracts/ipc/v2/~ and their ~CONTRACT_HASH~
+are the PAIRED set: byte-identical with the producer snapshot the pairing block
+above names, advertising exactly ~delivery_reconcile~. This document does not
+move them, and nothing below should be read as a claim that they already carry
+~sessions_read~. The sessions examples live in a separate directory with their
+own hash and their own controls, so that specifying the surface cannot be
+mistaken for adopting it, and so that a reader comparing the two repositories
+still finds the paired set equal on both sides. The ping example and the pairing
+block move when a producer actually advertises the capability; that step is a
+later, paired change and is not this document.
+
+*** What ~sessions~ answers
+:PROPERTIES:
+:CUSTOM_ID: what-sessions-answers
+:END:
+- The command is ~sessions~ at ~protocol_version~ 2. It takes no project filter
+  and no lifecycle option. It is a read: it answers what one observation of the
+  session census said, and nothing else.
+- A daemon that implements it advertises ~sessions_read~ in its ORDINARY v2
+  ~ping~ reply, beside ~delivery_reconcile~. There is no second ping, no opt-in
+  dialect and no query parameter that reveals the capability to some callers and
+  hides it from others: one ping answers one capability list. ~sessions_read~
+  authorizes the read exactly as ~delivery_reconcile~ authorizes a send, and a
+  client that does not see it MUST NOT issue ~sessions~ at all.
+- A successful reply carries exactly three keys: ~protocol_version~, ~ok~ and
+  ~sessions~. There is no ~pong~, no count, no timestamp and no echo.
+- Each element of ~sessions~ carries exactly ~session_id~, ~session_name~ and
+  ~panes~.
+- Each element of ~panes~ is an ADDRESS, carrying exactly ~pane_id~,
+  ~window_index~, ~pane_index~ and ~registered_at_observation~. ~window_index~
+  and ~pane_index~ are nonnegative integers, not strings.
+- Nothing else appears. No path, process id, command string, working directory,
+  credential fact or inferred ownership crosses this surface, and none of it is
+  reconstructible from what does: the census rows that carry those fields are
+  read and then projected away, not summarised.
+
+*** ~registered_at_observation~
+:PROPERTIES:
+:CUSTOM_ID: registered-at-observation
+:END:
+The field is named for what it is. ~registered_at_observation~ is true when the
+pane was a member of ONE daemon pane-registry snapshot, keyed by ~pane_id~, taken
+once after a successful census; it is replicated identically to every address of
+that pane in the reply.
+
+What it does NOT say, stated here beside the field rather than in a caveats
+section a reader can skip: it is not liveness, not permission, not durable
+intent, not readiness, not proof that the identity is valid, and it carries no
+freshness interval. It is not an atomic observation either. The census and the
+registry snapshot are two reads, in that order, and a pane may be registered,
+unregistered or gone between them; the reply says what each read saw, not what
+was simultaneously true. A caller that needs any of those properties must ask
+for that property, and this surface does not offer one.
+
+*** Linked windows: addresses, not pane objects
+:PROPERTIES:
+:CUSTOM_ID: linked-windows-addresses-not-pane-objects
+:END:
+A tmux window can be linked into more than one session, and into more than one
+index of the same session. The same pane is then observable at several distinct
+~(session_id, window_index, pane_index)~ addresses, and every one of them is a
+real address rather than a duplicate record.
+
+- Enumeration MUST NOT fail because a ~pane_id~ appears more than once. A
+  projection that assumed globally unique pane ids would refuse an ordinary
+  linked-window layout, so there is no global uniqueness rule here.
+- What IS refused is a repeated address: the same ~(session_id, window_index,
+  pane_index)~ twice in one reply, which is not a layout but a contradictory
+  observation.
+- Two contradictory ~session_name~ values for one ~session_id~ are refused for
+  the same reason.
+- A count of ~panes~ entries is a count of ADDRESSES. It is not a count of
+  distinct panes, and a caller that wants distinct panes must reduce over
+  ~pane_id~ itself.
+
+*** Ordering
+:PROPERTIES:
+:CUSTOM_ID: sessions-ordering
+:END:
+The order is part of the contract, so that two observations of the same state are
+the same bytes.
+
+- ~sessions~ is sorted by ~session_id~ in BYTE order. This is a deliberate
+  choice, not an accident of implementation: the stable id is treated here as an
+  opaque presentation label, and sorting it as bytes keeps the rule true for any
+  id the daemon has, without this document asserting anything about how the id is
+  formed.
+- ~panes~ within a session is sorted by NUMERIC ~window_index~, then NUMERIC
+  ~pane_index~, then ~pane_id~ in byte order. These are actual positions, so they
+  are compared as numbers.
+- The two rules therefore disagree deliberately, and neither implies the other.
+  Byte order and numeric order are NOT claimed to coincide anywhere: a session
+  whose id ends in 10 sorts before one ending in 2, while window 2 sorts before
+  window 10. The canonical examples contain both cases so that an implementation
+  that applied one rule to both fields fails rather than passes.
+- The ~pane_id~ tiebreaker exists to make the address order total. Because a
+  repeated address is refused, two addresses within one session can never agree
+  on both indices, so the tiebreaker is unreachable while that refusal holds. It
+  is stated as a totality guarantee and is not an observable behaviour; no
+  example can exercise it without first violating the refusal above.
+
+*** The request, and why an unknown field is refused
+:PROPERTIES:
+:CUSTOM_ID: the-sessions-request
+:END:
+A ~sessions~ request carries ~cmd~ and ~protocol_version~, and may carry the
+existing W3C trace carrier fields ~traceparent~ and ~tracestate~, which are
+transport correlation and not application input.
+
+Any other application field is refused with ~invalid_sessions_request~. The
+reason is the failure this refusal prevents: a caller that sends a project or
+lifecycle filter this surface does not have would otherwise be answered with the
+WHOLE census and no indication that its filter was dropped, and would read that
+answer as filtered. Refusing is the only behaviour that makes an unsupported
+filter visible to the caller who sent it. This tightening applies to ~sessions~
+only; legacy request acceptance on every other command is unchanged.
+
+*** Sessions identities
+:PROPERTIES:
+:CUSTOM_ID: sessions-identities
+:END:
+On THIS projection only, a ~session_id~ or ~pane_id~ is a prefix character -- ~$~
+for a session, ~%~ for a pane -- followed by a nonempty run of decimal digits,
+which is what tmux actually mints. An identity outside that grammar is a
+malformed observation and is refused with ~invalid_sessions_census~.
+
+This narrowing is deliberately local. The delivery identity grammar in
+"Identity grammars and their refusals" above is wider, it governs what a receipt
+can be keyed by, and it is NOT changed here; every existing v1 and v2 fixture
+keeps its current identities and its current hash. Nonnumeric refusal is a
+property of the sessions projection, tested on the sessions examples, and a
+reader must not generalise it to ~send~ or ~reconcile~.
+
+*** Sessions errors
+:PROPERTIES:
+:CUSTOM_ID: sessions-errors
+:END:
+Every error reply carries ~protocol_version~ 2 and ~ok~ false, and carries no
+runner diagnostic: no stderr, no exit status, no command line, no path.
+
+| Reply                                        | The observations it answers                                                                                      |
+|----------------------------------------------+------------------------------------------------------------------------------------------------------------------|
+| ~sessions.error.sessions_unavailable.json~   | The census failed, or the registry read failed. One reply for both: the caller is told the read did not happen, not which half of it did not happen. |
+| ~sessions.error.invalid_sessions_census.json~ | The observation was malformed or self-contradictory: a bad row, an identity outside the sessions grammar, a repeated address, or two names for one ~session_id~. |
+| ~sessions.error.invalid_sessions_request.json~ | The request carried an application field this surface does not accept.                                           |
+| ~oversize.json~                              | The GENERIC v2 oversize refusal, not a sessions-specific error.                                                  |
+
+The four files are four distinct replies because they are four distinct wire
+answers. Causes that share a reply share a file: a failed census and a failed
+registry read are indistinguishable to the caller on purpose, and giving them two
+filenames would have implied a distinction the contract refuses to make.
+
+There is no ~sessions_oversize~. A reply too large to send is refused with the
+generic v2 oversize error, and the refusal is a producer decision made BEFORE the
+bytes are handed to the socket: the candidate reply is encoded, its payload byte
+length is measured, and a length above 1048576 bytes is answered with the small
+static oversize reply instead. Packet-size receiver settings do not provide this.
+A receiver limit fails the frame, or closes the connection, or truncates -- what
+it never does is produce a typed refusal the caller can read, which is the whole
+point of the outcome. The refusal reply is static and small, so it can never
+itself exceed the bound it enforces.
+
+*** What a timeout means: an inherited limitation, not a bound
+:PROPERTIES:
+:CUSTOM_ID: what-a-timeout-means
+:END:
+This section records a limitation this surface INHERITS and does not close. It is
+here because a reader would otherwise infer a guarantee from the presence of
+deadlines.
+
+A timeout means the CALLER became unavailable. It does not mean the work was
+cancelled. The server accepts at most 32 concurrent connection handlers, the
+caller receive deadline is 5 seconds and the tmux call deadline is 5 seconds.
+None of those bound the census work that accumulates after repeated caller
+timeouts while the single tmux process is blocked in a synchronous subprocess
+call: the deadline releases the caller, the subprocess keeps running, and the
+next queued call waits behind it.
+
+No retry is introduced by this command, because a retry against an uncancelled
+queue adds work to the thing that is already behind. This slice adds no
+subprocess machinery and makes no claim to have closed the limitation. Bounding
+tmux execution globally is a separate scope with its own source and control
+review; a sentence here promising it would be a guarantee nothing implements.
+
+*** One read, and what it never does
+:PROPERTIES:
+:CUSTOM_ID: one-read-and-what-it-never-does
+:END:
+One ~sessions~ request performs exactly one strict census read and, only if that
+census succeeded, one read-only registry snapshot. It performs no attach, no
+detach, no marker update, no repair, no send, no reconciliation, no receipt
+admission and no retry. A control that proves this asserts the absence of those
+calls with an injected double, and the corresponding positive witness must make
+the negative control fail.
+
+A census that returned nothing is a success carrying an empty ~sessions~ list. A
+census that FAILED is never reported as an empty success and never as partial
+output: the whole reply is refused. An absent session and an unreadable machine
+are different facts, and this surface keeps them different.
+
+*** The unadopted example set
+:PROPERTIES:
+:CUSTOM_ID: the-unadopted-example-set
+:END:
+The sessions examples are pinned separately from the paired v2 set, under their
+own directory and their own hash:
+
+- sessions_example_dir: ~test/fixtures/contracts/ipc/v2-sessions/~
+- sessions_example_contract_hash: ~5d81dcb70a06c1219854992abeabbd13a1db709dd9fa04d3d8331cc33f01271e~
+- sessions_example_count: ~12~
+- sessions_example_status: ~unadopted~
+- sessions_example_hash_rule: ~ipc-v1.org~
+
+The hash rule is the v1 rule, unchanged: byte-sorted ~*.json~ filenames, each
+followed by a NUL byte, its exact bytes and another NUL byte, hashed as SHA-256,
+stored as 64 lowercase hex characters and a final newline. The directory and
+~CONTRACT_HASH~ itself are not inputs. The v1 contract keeps its own fifteen
+fixtures and its own hash, and nothing in this section touches either.
+
+The eight successful examples, and what each one is for:
+
+| Example                                       | What it holds the projection to                                                                     |
+|-----------------------------------------------+-------------------------------------------------------------------------------------------------------|
+| ~sessions.ok.empty.json~                      | A census that saw nothing is a success with an empty list, which is not the same answer as a failure.   |
+| ~sessions.ok.multiple_sessions.json~          | Several sessions, several addresses in one window; the ordinary shape.                                  |
+| ~sessions.ok.duplicate_names.json~            | Two sessions with the same ~session_name~ and different ~session_id~ values: the name is reusable, the id is the identity. |
+| ~sessions.ok.mixed_registration.json~         | Two addresses in one session disagreeing on ~registered_at_observation~, so an implementation cannot answer a constant. |
+| ~sessions.ok.linked_window.json~              | One ~pane_id~ at addresses in two sessions: enumeration succeeds, and the two entries are not duplicates. |
+| ~sessions.ok.multi_address_consistency.json~  | One pane at three addresses across two sessions and two windows, with its registration replicated identically -- and false, so a default cannot pass for a reading. |
+| ~sessions.ok.ordering.json~                   | Byte order and numeric order disagreeing in the same file: ids ending 10, 2, 9 in that order, windows in 0, 2, 10 order and panes in 0, 1, 2, 10 order. |
+| ~sessions.ok.escaped_names.json~              | A ~session_name~ carrying a quote, a backslash, the census field separator, a tab, a newline and non-ASCII text, none of which may break the projection. |
+
+What no example can hold is the ~pane_id~ tiebreaker, which is unreachable while
+repeated addresses are refused, and the byte length boundary, which is a rule
+about an encoded candidate rather than a shape: the control constructs replies at
+1048576 and 1048577 bytes instead of storing them.
+
+They are separate for two reasons, and only the second is about tidiness. The
+first is that the paired v2 set is equal on both sides of a pairing this document
+records; adding an example the producer has never emitted would make that
+equality false while leaving the block asserting it. The second is mechanical:
+the existing v2 fixture controls dispatch every file in their directory through
+the delivery route, so a sessions example dropped in beside them would be
+exercised by the wrong producer path and would prove nothing about this surface.
+
+~unadopted~ is a claim about the world, not a label. It says no producer emits
+these bytes yet. It moves when a producer does, together with the ping example
+and the pairing block, in a change that measures the producer rather than
+predicting it.
+
+*** The CLI binding
+:PROPERTIES:
+:CUSTOM_ID: the-sessions-cli-binding
+:END:
+- The CLI defaults ~sessions~ to protocol version 2. This command has no v1
+  form, so there is nothing for a default to lose.
+- An explicitly requested v1 ~sessions~ is REFUSED. It does not fall back to v2,
+  and it does not fall back to any local enumeration: a caller that asked for a
+  version is answered about that version.
+- Capability preflight comes first. The CLI pings, and without ~sessions_read~
+  in the answer it refuses without ever sending a ~sessions~ request. An old
+  daemon is therefore refused by the preflight rather than by a request it cannot
+  parse.
+- Success and error exit conventions are the existing ones; this command
+  introduces none of its own.
+
 ** Placeholders
 :PROPERTIES:
 :CUSTOM_ID: placeholders
 :END:
 ~<msg_id>~, ~<pane_id>~, ~<payload_hash>~ and ~<version>~ are dynamic and are
 substituted by the consumer tests; everything else is exact bytes.
+
+The sessions examples add ~<pane_id_1>~ through ~<pane_id_8>~, one placeholder
+per distinct pane within a file, substituted the same way. They are placeholders
+for a measured reason rather than a stylistic one: the redaction gate
+(~bin/redaction-check~) refuses a literal tmux pane id anywhere in the tree, so a
+pane id cannot be written into a tracked file, and the existing v2 fixtures use
+~<pane_id>~ for exactly that reason. Session ids are under no such gate and are
+written as exact bytes, which is what lets the ordering examples show byte order
+being applied to ids and numeric order to indices in the same file.
