@@ -113,3 +113,41 @@ is exactly =operator=. New appends require the structured actor shape and bind
 every string value to valid UTF-8 of at most4,096bytes. Historical reads remain
 unchanged. The exported JSON Schema describes the structural version-2 append
 envelope but does not encode this runtime byte bound.
+
+* Validation-only fold dispositions (D-07, ratified 2026-09-20)
+A fold disposition is a validation or admission rule as well as a state
+transition. Six produced =clause= types are dispositioned entirely by such a
+rule: =lib/ai_orchestrator/journal/fold.ex= names each one, refuses the
+histories the rule forbids, and then changes nothing in the folded state,
+because the state change either belongs to a different event or would be
+derived replay state nothing reads back.
+
+This list is FROZEN. It is pinned in source by
+=test/contracts/event_vocabulary_test.exs= as
+=@produced_without_state_transition= (all six) and
+=@produced_named_only_in_a_predicate= (the two release requests), both asserted
+against a set derived from the fold AST at test time, so a seventh entry and a
+sixth entry alike fail the row rather than passing silently. Extending the list
+is a reviewed change requiring an independently reviewed semantic justification
+and controls -- legal and illegal history witnesses and a written explanation of
+why no derived state is needed -- of which a justified validation-only
+disposition is an admissible outcome. A test-list exemption alone never
+authorizes new no-op behaviour. Giving any of the six a real transition later is
+exactly that reviewed change, and it shrinks the list.
+
+| Type | Rule that IS the disposition | Why no state transition | Negative witness |
+|------+------------------------------+-------------------------+------------------|
+| =assignment_dispatch_sent= | =validate_assignment_dispatch/2=: the assignment exists, is not ahead of the context revision, and holds the leases its role requires | the dispatch is recorded by the events that follow it | ALREADY witnessed before D-07 by =journals/reject_dispatch_without_pane_lease= and =journals/reject_writer_dispatch_without_workspace_lease=; =journals/reject_dispatch_unknown_assignment= is additional coverage of the =fetch_assignment/2= branch those two do not reach |
+| =assignment_observation_started= | =validate_assignment_exists/2= | the deadline marker is read back from the event log, not from folded state | =journals/reject_observation_started_unknown_assignment= |
+| =assignment_prompt_projected= | =validate_assignment_exists/2= | nothing downstream reads a per-prompt derived field | =journals/reject_prompt_projected_unknown_assignment= |
+| =pane_lease_release_requested= | admission by name in =cleanup_event?/1=, read by =validate_terminal/2= | the lease stops at =pane_lease_released=, the only clause that clears =pane_lease?= | isolated removal of this one name from =cleanup_event?/1= makes =journals/fold_happy_writer_reviewer= reject at its request event |
+| =review_received= | =validate_review_received/2=: the review exists and the reviewer assignment exists | the verdict is dispositioned by =review_disposition_recorded=, which does fold | =journals/reject_review_received_unknown_review= |
+| =workspace_lease_release_requested= | admission by name in =cleanup_event?/1=, read by =validate_terminal/2= | the lease stops at =workspace_lease_released= | isolated removal of this one name from =cleanup_event?/1= makes =journals/fold_happy_writer_reviewer= reject at its request event |
+
+A release request is an intent, not an outcome: the lease stops at the matching
+=*_released= event, and a request left pending is completed later under its own
+=release_request_id=. The generic post-terminal refusal pinned by
+=journals/reject_events_after_terminal= rejects ANY type that is not a cleanup
+event, so it is a complementary control over the predicate as a whole and is not
+a witness for either release-request name. The per-type witnesses are the two
+isolated removals named in the table.
