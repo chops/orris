@@ -64,6 +64,48 @@ defmodule AiOrchestrator.Contracts.EventVocabularyTest do
   # measured at the head this list was written against. Each is validated or admitted by
   # name without changing the folded state. Extending this list is a FINDING, not a fix: a
   # promotion whose type lands here added a name to fold.ex and no disposition.
+  #
+  # D-07 (ratified 2026-09-20; ledger NS-40, architecture 307-310): a fold disposition is a
+  # validation or admission rule as well as a state transition. For these six the rule IS the
+  # final disposition, and adding a transition would invent derived replay state. The list is
+  # FROZEN. Extending it is a reviewed change needing an independently reviewed semantic
+  # justification and controls -- legal and illegal history witnesses plus a written reason
+  # why no derived state is needed -- of which a justified validation-only disposition is an
+  # admissible outcome. A test-list exemption alone never authorizes new no-op behaviour.
+  # Giving any of the six a real transition later is exactly that reviewed change, and it
+  # SHRINKS this list. The written reason and negative witness for each:
+  #
+  #   assignment_dispatch_sent -- a dispatch is admitted only against an assignment that
+  #     exists, is not ahead of the context revision, and holds the leases its role requires
+  #     (validate_assignment_dispatch/2); the dispatch's effect is recorded by the events that
+  #     follow it. Witnessed behaviourally BEFORE D-07 by two negative fixtures through this
+  #     same clause: journals/reject_dispatch_without_pane_lease and
+  #     journals/reject_writer_dispatch_without_workspace_lease. D-07 adds
+  #     journals/reject_dispatch_unknown_assignment as ADDITIONAL COVERAGE of the one branch
+  #     those two do not reach (fetch_assignment/2), not as a newly witnessed type.
+  #   assignment_observation_started -- observation start is a deadline-arming marker the
+  #     reducer reads back from the event log itself, not from folded state; the fold's only
+  #     obligation is that the observed assignment exists.
+  #     Witness: journals/reject_observation_started_unknown_assignment.
+  #   assignment_prompt_projected -- projecting a prompt records that a prompt was produced for
+  #     an assignment that must already exist; nothing downstream reads a per-prompt derived
+  #     field, so a transition would invent replay state.
+  #     Witness: journals/reject_prompt_projected_unknown_assignment.
+  #   pane_lease_release_requested -- the request is an intent, not an outcome; the lease's
+  #     state change is carried by pane_lease_released (the only clause that clears pane_lease?,
+  #     matched by pane_ref). Its admission is by name in cleanup_event?/1, read by
+  #     validate_terminal/2. Per-type witness: removing ONLY this name from cleanup_event?/1
+  #     makes journals/fold_happy_writer_reviewer reject at its seq-33 request. The generic
+  #     post-terminal refusal pinned by journals/reject_events_after_terminal is a
+  #     COMPLEMENTARY control over any type, not a witness for this one.
+  #   review_received -- the verdict a review carries is consumed by reading the event back and
+  #     is dispositioned by review_disposition_recorded, which DOES fold; a transition here
+  #     would duplicate that disposition in two places.
+  #     Witness: journals/reject_review_received_unknown_review.
+  #   workspace_lease_release_requested -- same intent-not-outcome reason as the pane request;
+  #     the state change is carried by workspace_lease_released. Per-type witness: removing ONLY
+  #     this name from cleanup_event?/1 makes journals/fold_happy_writer_reviewer reject at its
+  #     seq-31 request. Same complementary-control caveat as above.
   @produced_without_state_transition ~w(
     assignment_dispatch_sent
     assignment_observation_started
@@ -76,6 +118,11 @@ defmodule AiOrchestrator.Contracts.EventVocabularyTest do
   # Produced `:clause` types whose ONLY naming is inside a membership predicate: both are
   # release acknowledgements whose state change is carried by the matching released event.
   # A new entry means a promoted type that fold.ex neither validates nor dispositions.
+  #
+  # D-07: this pair is the admission-by-name half of the frozen list above. Their per-type
+  # negative controls are the two isolated removals from cleanup_event?/1 described there --
+  # each retained as a measured outcome, because the generic post-terminal rejection witnesses
+  # no particular type.
   @produced_named_only_in_a_predicate ~w(
     pane_lease_release_requested
     workspace_lease_release_requested

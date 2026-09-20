@@ -34,7 +34,11 @@ defmodule AiOrchestrator.Contracts.FoldRejectionTest do
         "reject_run_completed_mismatch",
         "reject_preamble_violation",
         "reject_run_id_mismatch",
-        "reject_gate_unknown_artifact"
+        "reject_gate_unknown_artifact",
+        "reject_prompt_projected_unknown_assignment",
+        "reject_dispatch_unknown_assignment",
+        "reject_observation_started_unknown_assignment",
+        "reject_review_received_unknown_review"
       ] do
     test "#{name}: fold rejects with the named EJ-13 clause" do
       name = unquote(name)
