@@ -7,11 +7,18 @@ defmodule AiOrchestrator.Contracts.IpcV2SessionsContractHashTest do
   They are deliberately NOT in the paired v2 directory. That set is byte-identical with
   the producer snapshot the contract's pairing block names, and no producer emits a
   sessions reply yet, so an example dropped in beside the delivery fixtures would make
-  the pairing block assert an equality that is false. It would also be dispatched through
-  the delivery route by the existing fixture controls, which would exercise the wrong
-  producer path. This module therefore pins the sessions set on its own, and one row here
-  holds the paired set to the bytes and hash it had before this lane existed -- so that an
-  edit which quietly advertises the new capability in the paired ping fails here too.
+  the pairing block assert an equality that is false.
+
+  The second reason belongs to the PRODUCER, not to the tests in this repository. The
+  producer's delivery-fixture harness (Orrisd test/ai_pair/ipc/contract_v2_fixture_test.exs
+  :94-116 at 1018ad9b) enumerates every JSON file in that directory and dispatches each
+  through `Delivery.dispatch`, so a sessions example placed there would be driven down
+  the delivery route on vendoring. The consumer tests here select `send.*` and
+  `reconcile.*` by glob and would not do that; the rationale is cross-repository.
+
+  This module therefore pins the sessions set on its own, and one row holds the paired
+  set to the bytes and hash it had before this lane existed -- so that an edit which
+  quietly advertises the new capability in the paired ping fails here too.
 
   Nothing in this module establishes that a daemon answers `sessions`. It measures the
   examples and the document, which is all a consumer repository can measure without the
@@ -96,6 +103,9 @@ defmodule AiOrchestrator.Contracts.IpcV2SessionsContractHashTest do
     for {name, session} <- sessions() do
       assert sorted_keys(session) == @session_keys, name
       assert is_binary(session["session_name"]), name
+      assert session["session_name"] != "", name
+      assert String.valid?(session["session_name"]), "#{name}: session_name is not UTF-8"
+      assert is_list(session["panes"]), name
 
       for address <- session["panes"] do
         assert sorted_keys(address) == @address_keys, name
@@ -104,6 +114,23 @@ defmodule AiOrchestrator.Contracts.IpcV2SessionsContractHashTest do
         assert is_boolean(address["registered_at_observation"]), name
       end
     end
+  end
+
+  # grouping is by the stable id: an implementation that emitted one session twice, or
+  # split its addresses across two objects, would satisfy every ordering rule above, so
+  # the uniqueness of the id is its own row. The duplicate-name example is the witness
+  # that this row rejects the right thing: a reused NAME is legal and must survive it.
+  test "each session_id appears exactly once, so a session is never split in two" do
+    for {name, reply} <- success_replies() do
+      ids = Enum.map(reply["sessions"], & &1["session_id"])
+      assert ids == Enum.uniq(ids), "#{name}: a session_id appears in more than one object"
+    end
+
+    duplicates = fixture("sessions.ok.duplicate_names.json")
+    names = Enum.map(duplicates["sessions"], & &1["session_name"])
+
+    assert length(duplicates["sessions"]) == 2
+    assert length(Enum.uniq(names)) == 1, "the example must reuse one name across two ids"
   end
 
   test "sessions sort by session_id byte order and addresses by numeric index" do
@@ -166,14 +193,19 @@ defmodule AiOrchestrator.Contracts.IpcV2SessionsContractHashTest do
     end
   end
 
-  test "the oversize rule is decided on the encoded payload length, on both sides" do
+  # ILLUSTRATIVE ARITHMETIC, not producer evidence. This builds a local value and applies
+  # the documented predicate to it on either side of the bound. It does not measure the
+  # producer's threshold, its encoder, where in its reply path the check sits, or whether
+  # it ever hands an oversized payload to the socket. Those controls are owed by the
+  # implementation and nothing here discharges them.
+  test "the documented oversize predicate decides both sides of the bound" do
     base = byte_size(candidate(""))
     exact = candidate(String.duplicate("a", @max_payload - base))
     over = candidate(String.duplicate("a", @max_payload - base + 1))
 
     assert byte_size(exact) == @max_payload
-    refute oversize?(exact), "a reply at the bound is sent, not refused"
-    assert oversize?(over)
+    refute documented_oversize?(exact), "a value at the bound is not over it"
+    assert documented_oversize?(over)
 
     refusal = File.read!(Path.join(@fixture_dir, "oversize.json"))
 
@@ -245,7 +277,9 @@ defmodule AiOrchestrator.Contracts.IpcV2SessionsContractHashTest do
     })
   end
 
-  defp oversize?(encoded), do: byte_size(encoded) > @max_payload
+  # the predicate the contract documents, applied to a locally built value: an example of
+  # the rule, never a measurement of a producer
+  defp documented_oversize?(encoded), do: byte_size(encoded) > @max_payload
 
   # the v1 rule, restated in ipc-v2.org: byte-sorted filenames, each followed by a NUL, its
   # exact bytes and another NUL

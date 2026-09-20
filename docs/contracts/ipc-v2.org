@@ -221,15 +221,36 @@ later, paired change and is not this document.
   client that does not see it MUST NOT issue ~sessions~ at all.
 - A successful reply carries exactly three keys: ~protocol_version~, ~ok~ and
   ~sessions~. There is no ~pong~, no count, no timestamp and no echo.
+- ~sessions~ carries exactly ONE object per ~session_id~ observed, and that
+  object collects every address observed for that session. A session is never
+  split across two objects, and two objects never share a ~session_id~. Grouping
+  is by the stable id, never by the reusable ~session_name~.
 - Each element of ~sessions~ carries exactly ~session_id~, ~session_name~ and
-  ~panes~.
+  ~panes~. ~session_name~ is a nonempty, valid UTF-8 string; ~panes~ is a list,
+  which may be empty.
 - Each element of ~panes~ is an ADDRESS, carrying exactly ~pane_id~,
   ~window_index~, ~pane_index~ and ~registered_at_observation~. ~window_index~
   and ~pane_index~ are nonnegative integers, not strings.
-- Nothing else appears. No path, process id, command string, working directory,
-  credential fact or inferred ownership crosses this surface, and none of it is
-  reconstructible from what does: the census rows that carry those fields are
-  read and then projected away, not summarised.
+- No other KEY appears. The raw census rows carry a path, a process id, a command
+  string and a working directory; none of those fields is selected into this
+  reply, and no key is added for them.
+
+That is the whole of the guarantee, and it is a guarantee about SELECTED KEYS.
+It is deliberately not a claim that nothing can be inferred from what is
+published. ~session_name~ is operator-controlled text that this surface retains
+verbatim: an operator who names a session after a path or a command has put that
+text into the name, and publishing the name publishes it. Nothing here
+sanitises, rewrites or inspects that text, and a reader must not take the list
+above as a promise that omitted facts are unreachable.
+
+The scope is narrower still in one respect worth naming rather than leaving to be
+discovered. This slice governs the keys of the sessions REPLY. It does not newly
+scrub telemetry the census already emits on its own path: the producer's tmux
+boundary writes diagnostic text into OTel span status today (Orrisd 1018ad9b
+~lib/ai_pair/tmux.ex~:760-790 with ~short_error~ at :834, called at :295), and
+this contract neither changes that nor claims to have cleaned it. It is inherited
+behaviour, named here so that the reply-shape guarantee above is not read as
+covering it.
 
 *** ~registered_at_observation~
 :PROPERTIES:
@@ -265,7 +286,9 @@ real address rather than a duplicate record.
   pane_index)~ twice in one reply, which is not a layout but a contradictory
   observation.
 - Two contradictory ~session_name~ values for one ~session_id~ are refused for
-  the same reason.
+  the same reason. Refusal is the answer, not reconciliation: the projection
+  never picks a winner, and it never emits a second session object to carry the
+  disagreement.
 - A count of ~panes~ entries is a count of ADDRESSES. It is not a count of
   distinct panes, and a caller that wants distinct panes must reduce over
   ~pane_id~ itself.
@@ -275,7 +298,14 @@ real address rather than a duplicate record.
 :CUSTOM_ID: sessions-ordering
 :END:
 The order is part of the contract, so that two observations of the same state are
-the same bytes.
+the same ORDERED DATA: the same sessions in the same sequence, each carrying the
+same addresses in the same sequence. That is an ordering rule over the values,
+and nothing more. This document specifies no canonical JSON serialization: it
+does not fix object key order, whitespace or line endings on the wire, and a
+producer is not held to reproducing a pinned file byte for byte. The pinned
+example files have exact bytes because they are pinned FILES; a real reply is
+compared to one by decoding both and substituting the documented placeholders,
+which is the convention the existing v2 fixture comparisons already use.
 
 - ~sessions~ is sorted by ~session_id~ in BYTE order. This is a deliberate
   choice, not an accident of implementation: the stable id is treated here as an
@@ -304,13 +334,15 @@ A ~sessions~ request carries ~cmd~ and ~protocol_version~, and may carry the
 existing W3C trace carrier fields ~traceparent~ and ~tracestate~, which are
 transport correlation and not application input.
 
-Any other application field is refused with ~invalid_sessions_request~. The
-reason is the failure this refusal prevents: a caller that sends a project or
-lifecycle filter this surface does not have would otherwise be answered with the
-WHOLE census and no indication that its filter was dropped, and would read that
-answer as filtered. Refusing is the only behaviour that makes an unsupported
-filter visible to the caller who sent it. This tightening applies to ~sessions~
-only; legacy request acceptance on every other command is unchanged.
+Any other application field is refused with ~invalid_sessions_request~, and the
+refusal precedes observation: the request is judged on what it carries, before
+any census or registry read is attempted. The reason is the failure this refusal
+prevents: a caller that sends a project or lifecycle filter this surface does not
+have would otherwise be answered with the WHOLE census and no indication that its
+filter was dropped, and would read that answer as filtered. Refusing is the only
+behaviour that makes an unsupported filter visible to the caller who sent it.
+This tightening applies to ~sessions~ only; legacy request acceptance on every
+other command is unchanged.
 
 *** Sessions identities
 :PROPERTIES:
@@ -383,10 +415,18 @@ review; a sentence here promising it would be a guarantee nothing implements.
 :PROPERTIES:
 :CUSTOM_ID: one-read-and-what-it-never-does
 :END:
-One ~sessions~ request performs exactly one strict census read and, only if that
-census succeeded, one read-only registry snapshot. It performs no attach, no
-detach, no marker update, no repair, no send, no reconciliation, no receipt
-admission and no retry. A control that proves this asserts the absence of those
+An ADMITTED ~sessions~ request performs exactly one strict census read and, only
+if that census succeeded, one read-only registry snapshot. It performs no attach,
+no detach, no marker update, no repair, no send, no reconciliation, no receipt
+admission and no retry.
+
+Admission comes first, and the distinction matters because the two rules would
+otherwise contradict each other. A request carrying an application field this
+surface does not accept is refused with ~invalid_sessions_request~ BEFORE any
+observation: no census runs, no registry is read, and the count for that request
+is zero reads rather than one. "Exactly one census" is therefore a statement
+about requests that were admitted, and a refused request is not a cheaper path
+through the same work but a refusal that happens before the work exists. A control that proves this asserts the absence of those
 calls with an injected double, and the corresponding positive witness must make
 the negative control fail.
 
@@ -429,16 +469,33 @@ The eight successful examples, and what each one is for:
 
 What no example can hold is the ~pane_id~ tiebreaker, which is unreachable while
 repeated addresses are refused, and the byte length boundary, which is a rule
-about an encoded candidate rather than a shape: the control constructs replies at
+about an encoded candidate rather than a shape: the control constructs values at
 1048576 and 1048577 bytes instead of storing them.
+
+That boundary control is ILLUSTRATIVE ARITHMETIC and nothing more. It shows what
+the documented predicate decides on either side of the bound, using a locally
+built value and a local byte-size test. It is not evidence about the producer: it
+does not measure the producer's threshold, its encoder, where in its reply path
+the check sits, or whether it ever hands an oversized payload to the socket. The
+controls that would establish those facts are owed by the implementation and
+remain owed; no result in this repository discharges them.
 
 They are separate for two reasons, and only the second is about tidiness. The
 first is that the paired v2 set is equal on both sides of a pairing this document
 records; adding an example the producer has never emitted would make that
-equality false while leaving the block asserting it. The second is mechanical:
-the existing v2 fixture controls dispatch every file in their directory through
-the delivery route, so a sessions example dropped in beside them would be
-exercised by the wrong producer path and would prove nothing about this surface.
+equality false while leaving the block asserting it.
+
+The second is mechanical and belongs to the PRODUCER, which is where the
+consequence lands. The producer's delivery-fixture harness -- Orrisd
+~test/ai_pair/ipc/contract_v2_fixture_test.exs~:94-116 at 1018ad9b -- enumerates
+every JSON file in that directory and dispatches each one through
+~Delivery.dispatch~ with a closed prepare mapping. A sessions example dropped in
+beside the delivery fixtures would therefore be driven down the delivery route on
+vendoring, which is the wrong producer path and proves nothing about this
+surface. The consumer tests in this repository do not have that problem, because
+they select ~send.*~ and ~reconcile.*~ by glob rather than enumerating the
+directory; the reason for the separate directory is cross-repository, and stating
+it as a fact about local consumer tests would be wrong.
 
 ~unadopted~ is a claim about the world, not a label. It says no producer emits
 these bytes yet. It moves when a producer does, together with the ping example
