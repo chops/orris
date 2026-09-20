@@ -36,7 +36,11 @@ defmodule AiOrchestrator.Dispatch.LocalPaneRealTmuxTest do
     * every path the fake `ap` needs reaches it as DATA in the environment the `ap`
       process is started with, never as text inside the script, so a valid path byte
       that is shell syntax in source (dollar, backtick, double quote) is never shell
-      source. A row runs the whole dispatch with such a path and proves nothing ran.
+      source. A row runs the whole dispatch with such a path and proves nothing ran;
+    * the `ORRIS_ROW_*` names are put back to what they held before the row, byte for
+      byte, or removed when they were absent (control: the export step run under both
+      conditions); that restore, the server stop and the root removal are three separate
+      `on_exit` callbacks, so one that raises does not skip the others.
 
   The fake `ap` is the daemon stand-in the delivered client already talks to in every
   other row; what is real here is the client, the OS process, the paste and the pane.
@@ -122,9 +126,9 @@ defmodule AiOrchestrator.Dispatch.LocalPaneRealTmuxTest do
 
     # Ownership and its cleanup are one step: `owned` runs the moment the exclusive mkdir
     # returns :ok, before the chmod, so no later failure can retain the directory. The three
-    # cleanups of this fixture (root removal here, server stop and the variables below) are
-    # separate on_exit callbacks: ExUnit runs them last-registered first and continues past
-    # one that raises (ExUnit.OnExitHandler, read 2026-09-20), so they run as variables,
+    # cleanups of this fixture (root removal here, server stop and variable restore below)
+    # are separate on_exit callbacks: ExUnit runs them last-registered first and continues
+    # past one that raises (ExUnit.OnExitHandler, read 2026-09-20), so they run as restore,
     # stop, remove, and none of them can skip another.
     {root, socket} = claim_root!(uid, fn root, _socket -> on_exit(fn -> File.rm_rf!(root) end) end)
 
@@ -149,8 +153,7 @@ defmodule AiOrchestrator.Dispatch.LocalPaneRealTmuxTest do
       File.chmod!(socket_dir, 0o700)
     end
 
-    for {name, value} <- row_env, do: System.put_env(name, value)
-    on_exit(fn -> for {name, _} <- row_env, do: System.delete_env(name) end)
+    export_row_env(row_env, &on_exit/1)
 
     {out, 0} =
       System.cmd(
@@ -165,7 +168,37 @@ defmodule AiOrchestrator.Dispatch.LocalPaneRealTmuxTest do
     File.write!(ap, "#!" <> bash <> " -p\n" <> @fake_ap_body)
     File.chmod!(ap, 0o700)
 
-    {:ok, tmux: tmux, env: env, root: root, socket_dir: socket_dir, socket: socket, uid: uid, ap: ap, log: log}
+    {:ok,
+     tmux: tmux,
+     env: env,
+     root: root,
+     socket_dir: socket_dir,
+     socket: socket,
+     uid: uid,
+     ap: ap,
+     log: log,
+     row_env: row_env}
+  end
+
+  # Exports the row's names and registers, BEFORE the first put, a cleanup that puts back
+  # what each name held (byte for byte) or removes a name that was absent. `register` is
+  # `on_exit/1` in a row and a collector in the control that runs the cleanup itself.
+  defp export_row_env(row_env, register) do
+    prior = for {name, _} <- row_env, do: {name, System.get_env(name)}
+    register.(fn -> restore_env(prior) end)
+    for {name, value} <- row_env, do: System.put_env(name, value)
+    :ok
+  end
+
+  defp restore_env(prior) do
+    for {name, value} <- prior do
+      case value do
+        nil -> System.delete_env(name)
+        value -> System.put_env(name, value)
+      end
+    end
+
+    :ok
   end
 
   defp tmux!(ctx, args) do
@@ -387,6 +420,42 @@ defmodule AiOrchestrator.Dispatch.LocalPaneRealTmuxTest do
 
     for cleanup <- Process.get(:cleanups), do: cleanup.()
     refute File.exists?(expected), "the claimed root was left behind after the registered cleanup ran"
+  end
+
+  test "exported row variables are put back byte for byte, or removed when they were absent", ctx do
+    names = for {name, _} <- ctx.row_env, do: name
+
+    # This row's own setup exported the four names, so THOSE are the pre-set values here
+    # (anti-vacuity: each is a binary, and together they are exactly the row's export).
+    preset = for name <- names, do: {name, System.get_env(name)}
+    assert preset == ctx.row_env
+    assert Enum.all?(preset, fn {_, value} -> is_binary(value) end)
+
+    nested = for name <- names, do: {name, "nested #{name} #{Base.encode16(:crypto.strong_rand_bytes(4), case: :lower)}"}
+    register = fn cleanup -> Process.put(:restore, cleanup) end
+
+    # Pre-set: after the nested export and its cleanup, every name holds its pre-set bytes.
+    export_row_env(nested, register)
+    for {name, value} <- nested, do: assert(System.get_env(name) == value)
+    Process.get(:restore).()
+
+    for {name, value} <- preset do
+      assert System.get_env(name) == value, "#{name} was not put back to its pre-set value #{inspect(value)}"
+    end
+
+    # None pre-set: after the nested export and its cleanup, every name is absent.
+    for name <- names, do: System.delete_env(name)
+    Process.put(:restore, nil)
+    export_row_env(nested, register)
+    for {name, value} <- nested, do: assert(System.get_env(name) == value)
+    Process.get(:restore).()
+
+    for name <- names do
+      assert System.get_env(name) == nil, "#{name} was left behind although it was absent before the export"
+    end
+
+    # Leave the row as its setup left it; the row's own cleanup then puts back the pre-row state.
+    for {name, value} <- preset, do: System.put_env(name, value)
   end
 
   defp dispatch_command(ctx) do
