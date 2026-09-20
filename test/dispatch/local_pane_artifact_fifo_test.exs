@@ -87,7 +87,7 @@ defmodule AiOrchestrator.Dispatch.LocalPaneArtifactFifoTest do
     %{
       "assignment_id" => "as_0001",
       "artifact_id" => "art_0001",
-      "pane_ref" => "%1",
+      "pane_ref" => "pane-fixture-1",
       "repo_root" => repo,
       "expected_artifact" => artifact,
       "artifact_baseline" => %{"exists" => false}
