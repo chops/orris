@@ -72,7 +72,7 @@
       "expected_artifacts": [
         "lib/item_d.ex"
       ],
-      "kind": "implement"
+      "kind": "integration"
     }
   ]
 }

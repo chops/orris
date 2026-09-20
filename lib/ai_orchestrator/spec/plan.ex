@@ -65,7 +65,8 @@ defmodule AiOrchestrator.Spec.Plan do
          :ok <- validate_allowed_paths(plan, validated_spec),
          :ok <- validate_dag(plan),
          :ok <- validate_stretch_overlap(plan, validated_spec),
-         {:ok, parsed} <- Zoi.parse(schema(), plan) do
+         {:ok, parsed} <- Zoi.parse(schema(), plan),
+         :ok <- validate_supported_kinds(parsed) do
       {:ok, parsed}
     else
       {:error, %{} = rejection} -> {:error, rejection}
@@ -101,6 +102,10 @@ defmodule AiOrchestrator.Spec.Plan do
         "max_attempts" => Zoi.optional(Zoi.integer()),
         "timeout_s" => Zoi.optional(Zoi.integer()),
         "effort_hint" => Zoi.optional(Zoi.enum(@effort_hints)),
+        # "integration" still PARSES although `validate_supported_kinds/1` refuses it (D-09): the
+        # parse runs last, so dropping it here would turn the named `integration_unsupported`
+        # refusal into an anonymous `invalid_run_plan_shape` on any reordering, and would stop this
+        # schema reading the historical plan documents that already declare the kind.
         "kind" => Zoi.enum(["implement", "review", "integration"])
       },
       unrecognized_keys: :error
@@ -315,6 +320,43 @@ defmodule AiOrchestrator.Spec.Plan do
   end
 
   defp validate_stretch_overlap(_plan, _spec), do: :ok
+
+  # D-09 (2026-09-20). TEMPORARY, and deleted when integration exists.
+  #
+  # No merge policy exists. Nothing in the reducer, the journal grammar or the spec says what an
+  # integration item DOES with the branches it fans in, so a plan that declares one cannot be
+  # executed. Admission names that gap instead of accepting a plan the orchestrator would then
+  # fail to run. OPEN-09 governs the eventual merge policy; when it lands, this clause, its `with`
+  # step and the `invalid_integration_kind` fixture go away together, and `valid_diamond` is re-cut
+  # back to declaring one.
+  #
+  # Ordered AFTER a successful `Zoi.parse/2`, which is itself the last step of the `with` chain,
+  # and it takes the PARSED plan. This is a capability refusal, not a well-formedness one, so it
+  # must never mask a structural diagnosis: a plan that is BOTH integration-bearing and malformed
+  # (unknown top-level key, missing title, non-string plan_id) is refused with
+  # `invalid_run_plan_shape` by the parse, and only a plan that is otherwise entirely admissible
+  # reaches this clause. Running it merely last among the VALIDATORS would NOT achieve that, since
+  # every validator runs before the parse; that was the defect this ordering fixes, and
+  # test/contracts/run_plan_validation_test.exs measures the three masking cases directly.
+  #
+  # Every other named diagnostic keeps its existing position in the chain, so `integration` items
+  # are still judged by the writer-containment and reviewer-independence rules, which is what
+  # test/spec/plan_path_boundary_test.exs and test/contracts/run_plan_validation_test.exs measure.
+  # The `kind` enum in `work_item_schema/0` MUST keep admitting "integration": the parse now runs
+  # before this clause, so dropping the member would make the parse refuse the plan first and the
+  # refusal would come back as an anonymous shape error instead of this named one.
+  defp validate_supported_kinds(%{"work_items" => work_items}) when is_list(work_items) do
+    case Enum.find(work_items, &unsupported_kind?/1) do
+      nil -> :ok
+      %{"id" => id} -> {:error, %{clause: "integration_unsupported", field: id}}
+      _work_item -> {:error, %{clause: "invalid_run_plan_shape"}}
+    end
+  end
+
+  defp validate_supported_kinds(_plan), do: {:error, %{clause: "invalid_run_plan_shape"}}
+
+  defp unsupported_kind?(%{"kind" => "integration"}), do: true
+  defp unsupported_kind?(_work_item), do: false
 
   defp duplicate(values) do
     values

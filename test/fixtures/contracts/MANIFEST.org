@@ -24,7 +24,8 @@ Any fixture seeded from an operational capture must record its source and review
 - run_specs/invalid_oracle_freeform :: synthetic · EJ-8 argv-only gate commands
 - run_specs/invalid_schema_version :: synthetic · EC-1 unknown major
 - plans/valid_linear :: synthetic · writer→reviewer chain
-- plans/valid_diamond :: synthetic · fan-out/fan-in with integration item
+- plans/valid_diamond :: synthetic · fan-out/fan-in; item_d is the fan-in item. Re-cut 2026-09-20 (D-09): item_d's kind changed from "integration" to "implement" because admission now refuses `integration` (clause integration_unsupported) while no merge policy exists. Re-cut back when OPEN-09 lands a merge policy
+- plans/invalid_integration_kind :: synthetic · D-09 (2026-09-20) `kind: "integration"` refused at admission, clause integration_unsupported, field item_d; TEMPORARY, deleted with the clause when OPEN-09 lands integration. plan.json is valid_diamond's PRE-re-cut bytes and spec.json its bytes unchanged, so this fixture and valid_diamond differ in exactly one token: the negative/positive pair that keeps the refusal from passing under a blanket refusal
 - plans/invalid_duplicate_ids · invalid_missing_dep :: synthetic · EJ-13 DAG clauses
 - plans/invalid_undeclared_agent :: synthetic · EC-12 closed-at-roster
 - plans/invalid_effort_hint_value :: synthetic · research-fold enum bound

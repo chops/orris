@@ -30,7 +30,8 @@ defmodule AiOrchestrator.Contracts.RunPlanValidationTest do
         "invalid_stretch_overlap",
         "invalid_paths_outside_roots",
         "invalid_reviewer_not_independent",
-        "invalid_nonpositive_timeout"
+        "invalid_nonpositive_timeout",
+        "invalid_integration_kind"
       ] do
     test "#{name}: plan rejected with the named clause" do
       name = unquote(name)
@@ -39,6 +40,72 @@ defmodule AiOrchestrator.Contracts.RunPlanValidationTest do
       expected = F.json("plans", name, "expected_rejection.json")
       assert {:error, rejection} = Plan.validate(plan, spec)
       F.assert_rejection_matches(rejection, expected)
+    end
+  end
+
+  # D-09 (2026-09-20): `kind: "integration"` is refused at admission while no merge policy exists
+  # (OPEN-09). These two halves are one control. The negative alone would also pass if admission
+  # refused EVERY plan, so the positive half re-admits the same fixture bytes with the one token
+  # changed: `invalid_integration_kind/plan.json` and `valid_diamond/plan.json` differ only in
+  # item_d's `kind`, and their spec.json bytes are identical.
+  describe "D-09 integration admission refusal" do
+    setup do
+      %{
+        plan: F.json("plans", "invalid_integration_kind", "plan.json"),
+        spec: F.json("plans", "invalid_integration_kind", "spec.json")
+      }
+    end
+
+    # fails if validate/2 returns {:ok, _}, or returns any other clause, or names any other item
+    test "the integration item is refused and named", %{plan: plan, spec: spec} do
+      assert Plan.validate(plan, spec) ==
+               {:error, %{clause: "integration_unsupported", field: "item_d"}}
+    end
+
+    # fails if admission refuses this plan for ANY reason -- which is what a blanket refusal, or a
+    # fixture invalid on some unrelated ground, would do. This is what makes the negative half mean
+    # "the kind was refused" rather than "something was refused".
+    test "the same plan with item_d as implement is still admitted", %{plan: plan, spec: spec} do
+      admissible =
+        update_in(plan, ["work_items", Access.at(3)], &Map.put(&1, "kind", "implement"))
+
+      assert admissible != plan
+      assert {:ok, _validated} = Plan.validate(admissible, spec)
+    end
+
+    # fails if `field` is hardcoded to item_d rather than tracking the offending work item
+    test "the refusal names whichever item carries the kind", %{plan: plan, spec: spec} do
+      moved =
+        plan
+        |> update_in(["work_items", Access.at(3)], &Map.put(&1, "kind", "implement"))
+        |> update_in(["work_items", Access.at(0)], &Map.put(&1, "kind", "integration"))
+
+      assert Plan.validate(moved, spec) ==
+               {:error, %{clause: "integration_unsupported", field: "item_a"}}
+    end
+
+    # Masking controls, added 2026-09-20 after review found the ordering defect in 3b5473f.
+    # `integration_unsupported` is a CAPABILITY refusal and must never stand in for a structural
+    # diagnosis. Every plan below carries the integration item AND a genuine shape error, so every
+    # one must come back `invalid_run_plan_shape`. Each of the three fails -- returning
+    # `integration_unsupported` instead -- if the kind check runs before `Zoi.parse/2`, which is
+    # precisely what the first cut of this slice did: it ran last among the VALIDATORS, and every
+    # validator runs before the parse. These are the controls that would have caught that.
+    test "an unknown top-level key is diagnosed, not masked by the kind refusal", %{plan: plan, spec: spec} do
+      assert Plan.validate(Map.put(plan, "unexpected_key", true), spec) ==
+               {:error, %{clause: "invalid_run_plan_shape"}}
+    end
+
+    test "an integration item missing its title is diagnosed, not masked", %{plan: plan, spec: spec} do
+      malformed = update_in(plan, ["work_items", Access.at(3)], &Map.delete(&1, "title"))
+
+      assert malformed != plan
+      assert Plan.validate(malformed, spec) == {:error, %{clause: "invalid_run_plan_shape"}}
+    end
+
+    test "a non-string plan_id is diagnosed, not masked", %{plan: plan, spec: spec} do
+      assert Plan.validate(Map.put(plan, "plan_id", 3), spec) ==
+               {:error, %{clause: "invalid_run_plan_shape"}}
     end
   end
 
