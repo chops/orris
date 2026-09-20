@@ -32,7 +32,9 @@ defmodule AiOrchestrator.Dispatch.LocalPaneRealTmuxTest do
       VM unique integer, random bytes); a colliding path is retried with a fresh name a
       bounded number of times and is never chmodded, entered or removed; cleanup is
       registered the moment the directory exists, BEFORE its chmod (the first step that
-      can fail on it): a control forces that chmod to fail and shows no root remains;
+      can fail on it): a control forces that chmod to fail and shows no root remains, and
+      the same path on a path already taken arranges no removal at all: a planted
+      directory and its sentinel survive the teardown byte for byte and mode for mode;
     * every path the fake `ap` needs reaches it as DATA in the environment the `ap`
       process is started with, never as text inside the script, so a valid path byte
       that is shell syntax in source (dollar, backtick, double quote) is never shell
@@ -393,23 +395,41 @@ defmodule AiOrchestrator.Dispatch.LocalPaneRealTmuxTest do
     assert File.ls!(planted) == ["sentinel"]
   end
 
+  # The failure-control path the two controls below share: ONE claim attempt on a fixed token
+  # with a mode chmod refuses (-1: {:error, :badarg} from :file.change_mode/2, measured
+  # 2026-09-20; no OS involved), so the first step after a successful mkdir fails. Every
+  # removal this path arranges goes through `register`, and it is called ONLY from `owned`,
+  # i.e. only after `File.mkdir/1` returned :ok for that exact path. Nothing is registered
+  # before the claim: a refused claim arranges nothing, because token uniqueness is not
+  # ownership and a directory that was already there is not this test's to remove.
+  defp forced_chmod_failure(uid, token, register) do
+    owned = fn root, socket ->
+      Process.put(:owned, {root, socket})
+      register.(fn -> File.rm_rf!(root) end)
+    end
+
+    try do
+      {:returned, claim_root(uid, fn -> token end, 1, owned, -1)}
+    rescue
+      error in File.Error -> {:raised, error}
+    end
+  end
+
+  # The stand-in for what setup's `owned` does with on_exit: keep the cleanup to run in the
+  # control itself, and hand it to on_exit as well so an assertion failure in the control
+  # still leaves no owned directory behind. Both happen inside `owned`, after the mkdir.
+  defp collect_and_register(cleanup) do
+    Process.put(:cleanups, [cleanup | Process.get(:cleanups, [])])
+    on_exit(cleanup)
+  end
+
   test "a failure right after the claim leaves no root behind: cleanup is registered before the chmod", ctx do
     token = unique_token()
     expected = socket_root("orris-tmux-#{token}", ctx.uid, "od#{token}")
-    # Whatever the outcome below, this row does not leave that path behind.
-    on_exit(fn -> File.rm_rf!(expected) end)
+    refute File.exists?(expected), "the fresh token names a path that already exists: #{expected}"
 
-    # The stand-in for what setup's `owned` does with on_exit: keep the cleanup to run here.
-    owned = fn root, socket ->
-      Process.put(:owned, {root, socket})
-      Process.put(:cleanups, [fn -> File.rm_rf!(root) end | Process.get(:cleanups, [])])
-    end
-
-    # Force the chmod, the first step after the claim, to fail: -1 is a mode chmod refuses
-    # ({:error, :badarg} from :file.change_mode/2, measured 2026-09-20; no OS involved).
-    assert_raise File.Error, ~r/could not change mode for/, fn ->
-      claim_root(ctx.uid, fn -> token end, 1, owned, -1)
-    end
+    assert {:raised, %File.Error{} = error} = forced_chmod_failure(ctx.uid, token, &collect_and_register/1)
+    assert Exception.message(error) =~ ~r/could not change mode for/
 
     # ANTI-VACUITY: the directory was created and the failure left it in place, so only a
     # cleanup registered BEFORE the failing step can remove it.
@@ -418,8 +438,51 @@ defmodule AiOrchestrator.Dispatch.LocalPaneRealTmuxTest do
     assert Process.get(:owned) == {expected, "od#{token}"},
            "no cleanup was registered before the chmod failed: the claimed root #{expected} is retained"
 
-    for cleanup <- Process.get(:cleanups), do: cleanup.()
+    for cleanup <- Process.get(:cleanups, []), do: cleanup.()
     refute File.exists?(expected), "the claimed root was left behind after the registered cleanup ran"
+  end
+
+  test "a claim refused by a colliding directory arranges no removal: the planted directory survives teardown", ctx do
+    token = unique_token()
+    planted = socket_root("orris-tmux-#{token}", ctx.uid, "od#{token}")
+
+    # Plant what another process could have left at EXACTLY the path this token names. This
+    # control creates it with an exclusive mkdir! (so the removal in the witness below is of
+    # a directory this test proved it created), mode 0755, with a file inside that is not ours.
+    File.mkdir!(planted)
+    File.chmod!(planted, 0o755)
+    sentinel = Path.join(planted, "sentinel")
+    File.write!(sentinel, "not yours\n")
+    File.chmod!(sentinel, 0o644)
+    modes = {File.stat!(planted).mode, File.stat!(sentinel).mode}
+
+    # The teardown witness, registered FIRST so ExUnit runs it LAST (callbacks run
+    # last-registered first): after every callback the failure-control path could have
+    # registered, the planted directory, its sentinel bytes and both full modes are intact,
+    # and only then is the directory this control created removed. A failure here fails the
+    # test (ExUnit.Runner.exec_on_exit, read 2026-09-20), so a removal registered anywhere
+    # in the path below, on_exit or collected, is observed.
+    on_exit(fn ->
+      assert File.dir?(planted), "the planted directory was removed by teardown: #{planted}"
+      assert File.ls!(planted) == ["sentinel"]
+      assert File.read!(sentinel) == "not yours\n", "the planted sentinel bytes changed"
+      assert {File.stat!(planted).mode, File.stat!(sentinel).mode} == modes, "a planted mode changed"
+      File.rm_rf!(planted)
+    end)
+
+    # The same path control (a) takes, on a path that is already taken: the one attempt is
+    # refused (mkdir :eexist, bound reached), nothing is raised and `owned` never runs, so
+    # the path registers no removal at all.
+    assert forced_chmod_failure(ctx.uid, token, &collect_and_register/1) == {:returned, {:error, :exhausted}}
+    assert Process.get(:owned) == nil, "owned was called for a directory this control did not create"
+    assert Process.get(:cleanups, []) == [], "a removal was registered although the claim was refused"
+
+    # In-test teardown stand-in: run whatever was collected, then the planted directory is
+    # intact byte for byte and mode for mode. The witness repeats this after the real teardown.
+    for cleanup <- Process.get(:cleanups, []), do: cleanup.()
+    assert File.ls!(planted) == ["sentinel"]
+    assert File.read!(sentinel) == "not yours\n"
+    assert {File.stat!(planted).mode, File.stat!(sentinel).mode} == modes
   end
 
   test "exported row variables are put back byte for byte, or removed when they were absent", ctx do
