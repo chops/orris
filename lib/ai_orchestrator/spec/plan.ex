@@ -399,6 +399,7 @@ defmodule AiOrchestrator.Spec.Plan do
   end
 
   # judged through the containment rule's own expansion, so the spellings `validate_allowed_paths`
-  # admits as one directory (`./lib`, `lib/`, `lib//x/./y`) are one directory here too
-  defp path_overlap?(left, right), do: PathBoundary.overlapping?(String.trim(left), String.trim(right))
+  # admits as one directory (`./lib`, `lib/`, `lib//x/./y`) are one directory here too. The bytes
+  # are passed as given: admission trims nothing, so ` . ` is a literal name, not the root.
+  defp path_overlap?(left, right), do: PathBoundary.overlapping?(left, right)
 end

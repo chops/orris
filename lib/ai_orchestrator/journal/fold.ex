@@ -822,8 +822,9 @@ defmodule AiOrchestrator.Journal.Fold do
   # the fold may alias nothing outside the journal and `Path.expand` consults `:os.type/0`, which
   # the replay-purity spy counts as an effect. Empty and `.` segments collapse and `..` climbs but
   # never above the anchor, so `lib`, `./lib`, `lib/` and `lib//x/./y` are one name to the lease
-  # overlap exactly as they are to admission. test/spec/path_spellings_overlap_test.exs holds this
-  # walk and `PathBoundary.overlapping?/2` in step.
+  # overlap exactly as they are to admission. The bytes are walked as given: admission trims
+  # nothing, so ` . ` is a literal segment, not `.`. test/spec/path_spellings_overlap_test.exs holds
+  # this walk and `PathBoundary.overlapping?/2` in step.
   defp path_overlap?(left, right) do
     left = expanded(left)
     right = expanded(right)
@@ -833,7 +834,6 @@ defmodule AiOrchestrator.Journal.Fold do
 
   defp expanded(path) do
     path
-    |> String.trim()
     |> String.split("/")
     |> Enum.reduce([], fn
       segment, acc when segment in ["", "."] -> acc
