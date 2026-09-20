@@ -1,8 +1,8 @@
 defmodule AiOrchestrator.Spec.PathSpellingsOverlapTest do
   @moduledoc """
   Invariant: two concurrent writers naming the same directory are refused whatever spelling each
-  uses for it. The admission layer (`PathBoundary.lexical/2`, path_boundary.ex:102) canonicalises a
-  worktree-relative name with `Path.expand(name, "/")`, so `lib`, `./lib`, `lib/` and `lib//x/./y`
+  uses for it. The admission layer (`PathBoundary.lexical/2`) canonicalises a worktree-relative name
+  by anchoring it under `/` and expanding it lexically, so `lib`, `./lib`, `lib/` and `lib//x/./y`
   are ONE directory to the containment rule. The two overlap predicates that guard concurrent
   writers -- `Spec.Plan.validate_stretch_overlap/2` (clause `stretch_paths_overlap`) and the fold's
   `workspace_lease_overlap` clause -- must judge the same directory the same way, or a pair the
@@ -16,14 +16,14 @@ defmodule AiOrchestrator.Spec.PathSpellingsOverlapTest do
   is disjoint from a writer on `lib`. The refusal must not trim a literal name into the root and
   refuse a pair the containment rule keeps apart (refusal correctness, both layers).
 
-  Named narrowing (pre-existing, not repaired here): a tilde-led name. `Path.expand` turns a leading
-  `~` into the home directory, so `~/lib` under the root `.` is admitted and judged as `$HOME/lib`
-  by the containment rule, while the fold's pure walk (which may not consult the environment) keeps
-  `~` as a literal segment. The two layers agree on every tilde-led pair in the table below and
-  disagree on the one pinned in the narrowing test, which is why tilde-led names are excluded from
-  the parity generator. Follow-up: judge `~` literally at every `Path.expand` site of
-  `Spec.PathBoundary` (`expanded/1`, `canonical_allowed_root/2`, `completed/2`), then admit tilde-led
-  names to the generator and invert the narrowing test.
+  A tilde is bytes too. `Path.expand` reads a LEADING `~` as the home directory, so before the
+  containment rule anchored a name first, `~/lib` under the root `.` was admitted as `$HOME/lib`
+  and overlapped the home directory spelled relative to `/`, while the fold's pure walk (which may
+  not consult the environment) kept `~` as a literal segment: the one measured disagreement
+  between the layers. A worktree-relative name never names the home directory; `~/lib` is the
+  directory `~/lib` under the worktree to the containment rule, to the physical layer (which
+  `lstat`s a directory literally named `~`) and to the fold alike, so tilde-led names run through
+  the parity generator like any other segment and the two former narrowing tests assert agreement.
   """
 
   use ExUnit.Case, async: true
@@ -53,25 +53,29 @@ defmodule AiOrchestrator.Spec.PathSpellingsOverlapTest do
     {"lib", "."}
   ]
 
-  # literal names: whitespace is part of the name, a leading `~` is a segment to the fold; each pair
-  # is two distinct directories under the root `.` to BOTH layers
+  # literal names: whitespace is part of the name, a leading `~` is a segment; each pair is two
+  # distinct directories under the root `.` to BOTH layers
   @literal_disjoint [
     {" . ", "lib"},
     {" ", "lib"},
     {" . ", " "},
     {" lib", "lib"},
     {"lib ", "lib"},
-    {"~/lib", "lib"}
+    {"~/lib", "lib"},
+    {"~", "lib"}
   ]
 
-  # the same literal name twice, or two spellings of one literal name, is one directory
+  # the same literal name twice, or two spellings of one literal name, is one directory (`./~/lib`
+  # and `~/lib` are one directory only when the leading tilde is bytes, not the home directory)
   @literal_overlaps [
     {" . ", " . "},
     {" . ", "./ . /"},
     {" ", " /"},
     {"lib ", "./lib /"},
     {"~/lib", "~/lib"},
-    {"~/lib", "~/./lib/"}
+    {"~/lib", "~/./lib/"},
+    {"~/lib", "./~/lib"},
+    {"~", "./~"}
   ]
 
   setup do
@@ -94,11 +98,11 @@ defmodule AiOrchestrator.Spec.PathSpellingsOverlapTest do
     end
 
     for {left, right} <- @literal_disjoint do
-      refute Path.expand(left, "/") == Path.expand(right, "/"), "#{inspect({left, right})} expand to one directory"
+      refute PathBoundary.overlapping?(left, right), "#{inspect({left, right})} expand to one directory"
     end
 
     for {left, right} <- @literal_overlaps do
-      assert Path.expand(left, "/") == Path.expand(right, "/"), "#{inspect({left, right})} are not one directory"
+      assert PathBoundary.overlapping?(left, right), "#{inspect({left, right})} are not one directory"
     end
 
     # the bytes the trim used to discard are the name
@@ -107,12 +111,20 @@ defmodule AiOrchestrator.Spec.PathSpellingsOverlapTest do
     assert Path.expand(" . ", "/") != Path.expand(".", "/")
   end
 
-  # the narrowing, measured: the earlier record said a tilde-led name is refused outside every root;
-  # that holds for the root `lib` and NOT for the root `.`, where `~/lib` is admitted as `$HOME/lib`
-  test "the premise of the narrowing: a tilde-led name is the home directory to admission under `.`" do
+  # the premise: a tilde-led name is the directory `~/lib` under the worktree to admission, never the
+  # home directory. `Path.expand` alone would read it as `$HOME/lib` (which is why the rule anchors
+  # first); under the root `.` it is admitted as a literal name, under `lib` it is outside, and under
+  # the home directory spelled relative to `/` it is outside too, named as the first offending path
+  test "the premise: a tilde-led name is a literal directory under the worktree to admission" do
+    assert Path.expand("~/lib", "/") == Path.join(System.user_home!(), "lib")
     assert PathBoundary.lexical(["."], ["~/lib"]) == :ok
     assert PathBoundary.lexical(["lib"], ["~/lib"]) == {:error, %{clause: "path_outside_roots", path: "~/lib"}}
-    assert Path.expand("~/lib", "/") == Path.join(System.user_home!(), "lib")
+
+    assert PathBoundary.lexical([home_relative("")], ["~/lib"]) ==
+             {:error, %{clause: "path_outside_roots", path: "~/lib"}}
+
+    assert PathBoundary.overlapping?("~/lib", "./~/lib")
+    refute PathBoundary.overlapping?("~/lib", home_relative("lib"))
   end
 
   describe "stretch_paths_overlap (Spec.Plan)" do
@@ -159,14 +171,14 @@ defmodule AiOrchestrator.Spec.PathSpellingsOverlapTest do
       end
     end
 
-    # NARROWING (pre-existing, follow-up item): the containment rule reads `~/lib` as the home
-    # directory, so a writer spelling that directory relative to `/` is refused as overlapping it.
-    # This pins what the rule does today so the follow-up that judges `~` literally must revisit it.
-    test "narrowing: a tilde-led name overlaps the home directory spelled relative to `/`", %{plan: plan, spec: spec} do
+    # the former narrowing, inverted: `~/lib` is the directory `~/lib` under the worktree, not the
+    # home directory, so a writer on the home directory spelled relative to `/` is a sibling writer
+    # and admitted, exactly as the fold judges the same pair
+    test "a tilde-led name is disjoint from the home directory spelled relative to `/`", %{plan: plan, spec: spec} do
       plan = with_writer_paths(plan, ["~/lib"], [home_relative("lib")])
 
-      assert PathBoundary.overlapping?("~/lib", home_relative("lib"))
-      assert Plan.validate(plan, under_repository_root(spec)) == {:error, %{clause: "stretch_paths_overlap"}}
+      refute PathBoundary.overlapping?("~/lib", home_relative("lib"))
+      assert {:ok, _validated} = Plan.validate(plan, under_repository_root(spec))
     end
   end
 
@@ -205,14 +217,13 @@ defmodule AiOrchestrator.Spec.PathSpellingsOverlapTest do
       end
     end
 
-    # NARROWING (pre-existing, follow-up item): the pair the Plan narrowing test refuses is admitted
-    # here, because the walk keeps `~` literal. This is the one measured disagreement between the
-    # layers; it is pinned so the follow-up must flip both tests together.
-    test "narrowing: the fold keeps `~` literal, so the pair the containment rule overlaps is admitted",
+    # the former narrowing, inverted: the walk keeps `~` literal and so does the containment rule
+    # now, so the pair is disjoint to both layers (the fold verdict is unchanged; the agreement is new)
+    test "the fold keeps `~` literal and the containment rule agrees, so the pair is admitted by both",
          %{lease_lines: lines} do
       lines = with_lease_paths(lines, "wsl_as_0001", ["~/lib"], "wsl_as_0002", [home_relative("lib")])
 
-      assert PathBoundary.overlapping?("~/lib", home_relative("lib"))
+      refute PathBoundary.overlapping?("~/lib", home_relative("lib"))
       assert {:ok, _state} = Fold.fold_lines(lines)
     end
 
@@ -243,11 +254,10 @@ defmodule AiOrchestrator.Spec.PathSpellingsOverlapTest do
     end
   end
 
-  # the three whitespace-bearing segments are literal names: ` . ` is not `.`, ` ` is not the empty
-  # segment, `lib ` is not `lib`. A `~` segment is deliberately absent: at the head of a name the
-  # containment rule reads it as the home directory and the walk as a literal segment (the pinned
-  # narrowing above), so a generator carrying it would report that known disagreement, not a new one.
-  @segments ["lib", "test", "nested", ".", "..", "", " . ", " ", "lib "]
+  # the three whitespace-bearing segments and `~` are literal names: ` . ` is not `.`, ` ` is not the
+  # empty segment, `lib ` is not `lib`, and `~` at the head of a name is the directory `~`, not the
+  # home directory, to the containment rule exactly as to the walk
+  @segments ["lib", "test", "nested", ".", "..", "", " . ", " ", "lib ", "~"]
 
   # every spelling the event schema admits as an allowed path (a non-empty string); the empty
   # spelling is the schema's own refusal (`invalid_event_data`), not the overlap's

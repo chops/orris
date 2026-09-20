@@ -166,6 +166,34 @@ defmodule AiOrchestrator.Spec.PathBoundaryTest do
     end
   end
 
+  # A worktree-relative name is bytes: `~` is a directory name, never the home directory, at every
+  # expansion site (the lexical layer, the canonical allowed root, and the lexical completion after
+  # an absent component). `Path.expand` alone would read a LEADING `~` as `$HOME`.
+  describe "a tilde is a directory name" do
+    test "a tilde-led change is under the root `.` as a literal name and outside the home directory spelled relative to `/`" do
+      home = Path.relative_to(System.user_home!(), "/")
+
+      assert PathBoundary.lexical(["."], ["~/lib", "~"]) == :ok
+      assert PathBoundary.lexical(["~"], ["~/lib", "~"]) == :ok
+      assert PathBoundary.lexical([home], ["~/lib"]) == {:error, %{clause: "path_outside_roots", path: "~/lib"}}
+      assert PathBoundary.lexical(["lib"], ["~/lib"]) == {:error, %{clause: "path_outside_roots", path: "~/lib"}}
+    end
+
+    test "an allowed root literally named `~` is the worktree directory `~`, not the home directory", %{root: root} do
+      File.mkdir_p!(Path.join(root, "~/lib"))
+
+      assert PathBoundary.check(root, ["~"], ["~/lib/x.ex", "~/lib", "~"]) == :ok
+
+      assert PathBoundary.check(root, ["src"], ["~/lib/x.ex"]) ==
+               {:error, %{clause: "path_outside_roots", path: "~/lib/x.ex"}}
+    end
+
+    test "a `~` segment after an absent component completes under the worktree, not under the home directory",
+         %{root: root} do
+      assert PathBoundary.check(root, ["src"], ["src/absent/~/x.ex", "src/~/x.ex", "src/nested/~"]) == :ok
+    end
+  end
+
   describe "the vocabulary" do
     test "every rejection carries exactly the clause and the offending path, from the closed set",
          %{root: root, outside: outside} do

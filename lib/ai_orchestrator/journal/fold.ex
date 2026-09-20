@@ -817,7 +817,8 @@ defmodule AiOrchestrator.Journal.Fold do
     end)
   end
 
-  # The containment rule's expansion (`Spec.PathBoundary.expanded/1`, `Path.expand(name, "/")`),
+  # The containment rule's expansion (`Spec.PathBoundary.expanded/2`: the name anchored under `/`
+  # by `Path.absname/2`, then `Path.expand/1`, so a leading `~` is a segment, not the home directory),
   # which plan admission applies to these same allowed paths, repeated here as a pure segment walk:
   # the fold may alias nothing outside the journal and `Path.expand` consults `:os.type/0`, which
   # the replay-purity spy counts as an effect. Empty and `.` segments collapse and `..` climbs but

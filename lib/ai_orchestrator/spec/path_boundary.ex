@@ -18,6 +18,11 @@ defmodule AiOrchestrator.Spec.PathBoundary do
     nothing exists to write through yet, so the remainder is judged lexically. An absent worktree root
     leaves only the lexical layer.
 
+  A name is bytes at every expansion site (the lexical layer, a canonical allowed root, the lexical
+  completion after an absent component): a name is anchored before it is expanded, so a leading `~`
+  is the directory `~` under the worktree, never the home directory `Path.expand/2` alone would read
+  it as. A worktree-relative name never names the home directory.
+
   A change is a path or a rename pair `{:rename, from, to}`; both sides of a rename are changed paths
   (renaming an in-scope file out of scope, or an out-of-scope file in, is a mutation of both names).
   The rejection carries the clause and the offending path exactly as it was given -- nothing else.
@@ -118,7 +123,12 @@ defmodule AiOrchestrator.Spec.PathBoundary do
   end
 
   # a worktree-relative name expanded under a fixed anchor: `.`, `//` and a trailing `/` collapse
-  defp expanded(path), do: Path.expand(path, "/")
+  defp expanded(path), do: expanded(path, "/")
+
+  # A name is bytes. `Path.expand/2` reads a LEADING `~` as the home directory, so the name is
+  # anchored first (`Path.absname/2` resolves nothing) and only then expanded: `~` is a segment like
+  # any other, and the result is otherwise exactly `Path.expand(path, anchor)`.
+  defp expanded(path, anchor), do: path |> Path.absname(anchor) |> Path.expand()
 
   defp under_any?(path, roots), do: Enum.any?(roots, &contained?(path, &1))
 
@@ -140,7 +150,7 @@ defmodule AiOrchestrator.Spec.PathBoundary do
 
   # an allowed root that exists is its resolved directory; one that does not is its lexical place
   defp canonical_allowed_root(root, allowed_root) do
-    lexical = Path.expand(allowed_root, root)
+    lexical = expanded(allowed_root, root)
 
     case walk(Path.split(lexical), "/", @max_links) do
       {:ok, canonical} -> canonical
@@ -193,7 +203,7 @@ defmodule AiOrchestrator.Spec.PathBoundary do
   end
 
   defp completed(candidate, []), do: candidate
-  defp completed(candidate, rest), do: Path.expand(Path.join(rest), candidate)
+  defp completed(candidate, rest), do: expanded(Path.join(rest), candidate)
 
   # the canonical form of an existing path: every component must exist (Prepare.Scope's walk)
   defp walk(_parts, _acc, 0), do: {:error, :unreadable}
