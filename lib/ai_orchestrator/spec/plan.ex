@@ -103,9 +103,9 @@ defmodule AiOrchestrator.Spec.Plan do
         "timeout_s" => Zoi.optional(Zoi.integer()),
         "effort_hint" => Zoi.optional(Zoi.enum(@effort_hints)),
         # "integration" still PARSES although `validate_supported_kinds/1` refuses it (D-09): the
-        # parse runs last, so dropping it here would turn the named `integration_unsupported`
-        # refusal into an anonymous `invalid_run_plan_shape` on any reordering, and would stop this
-        # schema reading the historical plan documents that already declare the kind.
+        # parse runs BEFORE that clause, so dropping it here would turn the named
+        # `integration_unsupported` refusal into an anonymous `invalid_run_plan_shape`, and would
+        # stop this schema reading the historical plan documents that already declare the kind.
         "kind" => Zoi.enum(["implement", "review", "integration"])
       },
       unrecognized_keys: :error
@@ -330,7 +330,7 @@ defmodule AiOrchestrator.Spec.Plan do
   # step and the `invalid_integration_kind` fixture go away together, and `valid_diamond` is re-cut
   # back to declaring one.
   #
-  # Ordered AFTER a successful `Zoi.parse/2`, which is itself the last step of the `with` chain,
+  # Ordered AFTER a successful `Zoi.parse/2`, and it is itself the last step of the `with` chain,
   # and it takes the PARSED plan. This is a capability refusal, not a well-formedness one, so it
   # must never mask a structural diagnosis: a plan that is BOTH integration-bearing and malformed
   # (unknown top-level key, missing title, non-string plan_id) is refused with
