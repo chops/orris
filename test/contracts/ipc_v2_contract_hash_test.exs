@@ -16,6 +16,13 @@ defmodule AiOrchestrator.Contracts.IpcV2ContractHashTest do
   change made here: the pairing block being dropped, edited, or left naming a fixture
   hash the fixture set no longer produces.
 
+  `@paired_revision` names a NAMED HISTORICAL SNAPSHOT of the producer, never the
+  producer's current head, and `@paired_document_sha256` is that snapshot's whole-document
+  digest. A later producer revision that re-vendors this repository and changes the
+  producer document again does not invalidate this pin and does not make this row stale,
+  because the pin never claimed to track a head. It is moved only by a deliberate
+  re-pairing that measures a new named snapshot.
+
   A cross-check that is deliberately NOT here: recomputing `vendored_source_sha256`
   from `git show <vendored_source_revision>:docs/contracts/ipc-v2.org`. The verify job
   checks out at depth 1 (`.github/workflows/ci.yml`), so that object is absent in CI and
@@ -29,14 +36,14 @@ defmodule AiOrchestrator.Contracts.IpcV2ContractHashTest do
 
   @fixture_dir Path.expand("../fixtures/contracts/ipc/v2", __DIR__)
   @hash_path Path.join(@fixture_dir, "CONTRACT_HASH")
-  @pinned_hash "78c2f64240c3c5c9da60425c65c498974a2a81c8adb3e68e0bef28613c1707dc"
+  @pinned_hash "a6f92d537897d30a883a04d29217ff36a4f33db759b87d4e6ccc79ad4c2232fc"
   @expected_fixture_count 16
 
   @document Path.expand("../../docs/contracts/ipc-v2.org", __DIR__)
-  @paired_revision "d6b2e369b6bbd3e83931c665d6ec2be4c2c9b6df"
-  @paired_document_sha256 "dc936f07ef1440af011f7e8a7bda75bddeff94413a3c04a2e4b8166071bb17bc"
-  @vendored_source_revision "3684f53e93018edf10c16bee459af340607ab115"
-  @vendored_source_sha256 "939e09474dce6cf82af1dff19c8880b2c5148c6b2c4d4fb10da60fdf8a4a5be5"
+  @paired_revision "7e5f5321821cbea7193bd966b39b357d9acf09bd"
+  @paired_document_sha256 "5313e99803a55a4ae9e5995ac8b4a9a57d98cd09995d7f456d427974c66b5bd4"
+  @vendored_source_revision "ffe6fb87bb049d604e269ba60891fda1b14dba57"
+  @vendored_source_sha256 "dd121abbd0f4596889d6960b4c1a6273f5c44e3fb6a463b9a56c8b7cc9973315"
   @toolchain_source Path.expand("../../bin/verify", __DIR__)
 
   test "the IPC v2 fixture set matches the pinned cross-repository hash" do
