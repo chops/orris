@@ -1,0 +1,130 @@
+# C1-07c hosted mutation experiment. PREPARED, NEVER RUN, NEVER DISPATCHED.
+#
+# GOVERNING RECORD: C107-HOSTED-PREPARATION-SCOPE-20260921.org, sha256
+# 59e7bab568d7820408c5932c9cdda507f98b76990d1463bff9e8f95f8f1b350f, 75 lines.
+#
+# TRIGGER SURFACE, STATED IN FULL because root reviews triggers before anything runs:
+#   - This workflow has exactly ONE trigger: push to the single branch named below.
+#     No pull_request, no schedule, no workflow_dispatch, no workflow_call, no
+#     repository_dispatch, no issue/comment/release/label trigger of any kind. It
+#     therefore CANNOT be started from the Actions tab or by an API dispatch.
+#   - .github/workflows/ci.yml, in this same branch, excludes this one branch from its
+#     push trigger and is otherwise untouched: every other branch still fires full CI on
+#     push, and CI's pull_request trigger is unchanged. If a pull request were ever
+#     opened FROM this branch, CI would fire on the pull_request event; the scope states
+#     no pull request will be opened for the experiment, and nothing here opens one.
+#   - NO concurrency group is declared. Consequence, deliberate: this workflow neither
+#     cancels nor is cancelled by CI, and a second push to this branch does not cancel a
+#     run already in progress. A cancelled run cannot qualify a witness, so not
+#     cancelling is the conservative choice.
+#   - permissions is contents:read only. No token write scope is requested anywhere.
+#
+# WHAT RUNS: two jobs, one per frozen variant, on SEPARATE hosted VMs, fail-fast false,
+# so neither variant's outcome can cancel the other's. Per job: two pinned checkouts,
+# Nix, then ONE controller script. No full gate, no browser, no packaging, no flake
+# check, no guardian build, and NO RETRY on any path.
+#
+# PROVENANCE: the controller commit is NOT the product tree. product/ is a fresh
+# checkout of exactly 7554f623d6695244aa3abc1fec259a14e886390e; the controller asserts
+# that commit AND its tree 222d2f6f394cfba214ac8a13eef2697e7d7e7073 before copying
+# anything, so the base stays citable and every later state is named as base plus
+# hash-checked overlay. The controller side of that provenance is recorded too: the
+# controller is handed github.sha and records it beside the OBSERVED HEAD of its own
+# checkout, separately from the product base/tree and from every overlay hash.
+#
+# CHOSEN, NOT MEASURED: 60 minutes per job and 10 minutes per focused stage. No hosted
+# timing for this module exists. These are bounds, not runtime guarantees.
+#
+# EXPECTED AND UNEXECUTED: that any of this runs, passes, or fits inside those bounds.
+
+name: C1-07c hosted mutations
+
+on:
+  push:
+    branches:
+      - "test/c107-hosted-mutations-20260921"
+
+permissions:
+  contents: read
+
+jobs:
+  mutation:
+    name: C1-07c variant ${{ matrix.variant }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: a
+            variant_file: variant-a.ex
+            variant_sha: 578cf377c93c3fbb012c9cea8a248d2601b321868828561125c093b0bfd14c75
+            witness_line: "208"
+            other_line: "232"
+          - variant: b
+            variant_file: variant-b.ex
+            variant_sha: d75d7345857706013373ab5058b1bdea130e3a682411fad62ae94fe0a434f30f
+            witness_line: "232"
+            other_line: "208"
+    steps:
+      # The controller: this branch's own commit, carrying the six permitted paths.
+      - name: Check out the controller commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          path: control
+          persist-credentials: false
+
+      # The product: the ORIGINAL base, unmodified in this branch and checked out
+      # separately so its provenance survives. The controller refuses unless this
+      # resolves to the pinned commit AND the pinned tree.
+      - name: Check out the pinned product base
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: 7554f623d6695244aa3abc1fec259a14e886390e
+          path: product
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@8aa03977d8d733052d78f4e008a241fd1dbf36b3 # v31.10.6
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      # ONE script owns dependency acquisition, both overlay transitions, both focused
+      # stages and the verdict. C1_BROWSER is deliberately never set: a missing browser
+      # must refuse qualification, not trigger an unreviewed browser acquisition.
+      #
+      # C107_WORKFLOW_SHA (r2 amendment 4) hands the controller the SHA this run was
+      # started for. The controller compares it with the ACTUAL HEAD of the control/
+      # checkout and writes both into controller-identity.txt, so the extracted evidence
+      # tree carries the controller identity on its own rather than relying on the
+      # Actions run page. This adds no permission, no token scope and no network call.
+      - name: Run the focused C1-07c mutation experiment
+        shell: bash
+        env:
+          C107_CONTROL: ${{ github.workspace }}/control
+          C107_PRODUCT: ${{ github.workspace }}/product
+          C107_OUT: ${{ runner.temp }}/c107-evidence
+          C107_VARIANT: ${{ matrix.variant }}
+          C107_VARIANT_FILE: ${{ matrix.variant_file }}
+          C107_VARIANT_SHA: ${{ matrix.variant_sha }}
+          C107_WITNESS_LINE: ${{ matrix.witness_line }}
+          C107_OTHER_LINE: ${{ matrix.other_line }}
+          C107_WORKFLOW_SHA: ${{ github.sha }}
+        run: |
+          /bin/bash --noprofile --norc \
+            "${GITHUB_WORKSPACE}/control/ci/c107-mutations/runner.bash"
+
+      # Separate per-variant evidence. if-no-files-found:error makes a missing evidence
+      # tree a JOB FAILURE rather than a silent green. A timeout or a cancellation can
+      # still cut this short: per the scope, neither can qualify a witness, and this
+      # upload is not treated as proof that one was produced.
+      - name: Retain per-variant evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: c107-mutations-${{ matrix.variant }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/c107-evidence/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14

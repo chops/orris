@@ -2,7 +2,14 @@ name: CI
 
 on:
   push:
-    branches: ["**"]
+    # Every branch still fires CI on push. The single exception below is the
+    # C1-07c hosted mutation experiment branch, which is driven only by
+    # .github/workflows/c107-mutations.yml. The negative pattern must follow the
+    # positive one: later patterns win. Nothing else is excluded, and the
+    # pull_request trigger is deliberately left untouched.
+    branches:
+      - "**"
+      - "!test/c107-hosted-mutations-20260921"
   pull_request:
 
 permissions:
