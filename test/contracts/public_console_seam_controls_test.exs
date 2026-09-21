@@ -1,6 +1,9 @@
 defmodule AiOrchestrator.Contracts.PublicConsoleSeamControlsTest do
   @moduledoc """
-  docs/contracts/public-console-seam.org, CONTROLS C-0..C-8: they hold at the base 2c33d78 and must keep holding.
+  docs/contracts/public-console-seam.org, CONTROLS C-0..C-8: they hold at the base 2c33d78 and must keep holding,
+  EXCEPT C-6. D-14 retired the cwd-inferred `list` search root, so C-6's listing leg names an explicit `--root`,
+  which `lib/ai_orchestrator/cli/discovery.ex` serves and which does not exist at 2c33d78. C-6 therefore no
+  longer holds at 2c33d78; every other row in this file is unchanged in that respect.
   """
 
   use ExUnit.Case, async: false
@@ -82,10 +85,19 @@ defmodule AiOrchestrator.Contracts.PublicConsoleSeamControlsTest do
     assert %{status: 0, stdout: ^json, stderr: ""} =
              CLI.run(["status", "--json", Path.relative_to(completed, File.cwd!())])
 
-    assert %{status: 0, stdout: listed, stderr: ""} = CLI.run(["list", "--json"], cwd: project)
-    entries = Jason.decode!(listed)
+    # D-14 retired the cwd-inferred search root, so the listing names its root. The explicit-root
+    # JSON is a MAP carrying "runs", not the retired bare array; membership and the invalid row are
+    # the same witnesses as before.
+    assert %{status: 0, stdout: listed, stderr: ""} = CLI.run(["list", "--root", runs, "--json"])
+    entries = Jason.decode!(listed)["runs"]
     assert Enum.map(entries, & &1["run_ref"]) == ["completed", "seed"]
     assert Enum.find(entries, &(&1["run_ref"] == "seed"))["status"] == "invalid"
+
+    # relative directories are this row's subject: a SUPPLIED relative root is resolved against the
+    # working directory and answers identically. Resolving a supplied path is not inferring a root.
+    relative_runs = Path.relative_to(runs, File.cwd!())
+    refute String.starts_with?(relative_runs, "/")
+    assert %{status: 0, stdout: ^listed, stderr: ""} = CLI.run(["list", "--root", relative_runs, "--json"])
     cancel = Path.join(runs, "cancel")
     File.mkdir_p!(cancel)
     File.write!(Path.join(cancel, "events.jsonl"), Rows.kill9("events_pre_dispatch.jsonl"))

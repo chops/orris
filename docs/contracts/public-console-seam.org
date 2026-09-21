@@ -48,7 +48,9 @@ The CLI keeps its directory-based path, its error maps, exit codes, projection f
 
 * Rows (literal inventory: exact test names; RED rev2 successor of 71c2ff2 for review R1-R5)
 Controls, =test/contracts/public_console_seam_controls_test.exs= (C-0..C-9 are the historical baseline: they hold at
-2c33d78 and must keep holding; C-10 and later are GREEN regressions adopted from review probes and need the new
+2c33d78 and must keep holding, EXCEPT C-6, whose listing leg names an explicit =--root= since D-14 retired the
+cwd-inferred search root; =lib/ai_orchestrator/cli/discovery.ex= does not exist at 2c33d78, so C-6 no longer holds
+there; C-10 and later are GREEN regressions adopted from review probes and need the new
 APIs, so they do NOT hold at 2c33d78):
 - "C-0 the consumer harness is valid: a public-only reference compiles under WAE"
 - "C-1 a private reference to AiOrchestrator.Journal.Writer is rejected under WAE with the forbidden-reference diagnostic"
@@ -58,7 +60,9 @@ APIs, so they do NOT hold at 2c33d78):
 - "C-5 Reader: a torn tail loads with a truncate plan and unchanged bytes; a hard-invalid journal fails closed"
   (pins =pending_repair.action == :truncate_tail=, =truncate_bytes == 18=)
 - "C-6 CLI preservation: validate, status, cancel and list with absolute and relative directories"
-  (validate abs+rel, status --json abs+rel == expected.json, list --json via =cwd:= project root, cancel rel, status 66)
+  (validate abs+rel, status --json abs+rel == expected.json, =list --json= under an EXPLICIT =--root=, absolute and
+  relative, answering identically -- D-14 retired the cwd-inferred search root, and the explicit-root JSON is a map
+  carrying =runs=, not the former bare array, with the same membership and invalid-row witnesses; cancel rel, status 66)
 - "C-7 claim lifetime: the outcome precedes release; a release failure keeps the legacy exit 70 with projections written"
   (ObservingRegistry reports whether run-summary.org exists at release; release observed exactly once; A2)
 - "C-8 the labelled FAITHFUL witness passes every counting step" (DisposableFaithful: root-filtered, own directory excluded)

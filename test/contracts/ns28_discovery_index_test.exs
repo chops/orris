@@ -48,8 +48,14 @@ defmodule AiOrchestrator.Contracts.NS28DiscoveryIndexTest do
     # replay (a fresh fold of the verified prefix) IS the status answer
     assert current.replay == Jason.decode!(current.status_json.stdout)
     assert {:ok, %{run_ref: "alpha", status: "completed", last_seq: 32, pending_repair: nil}} = current.summary
+    # the two `reads/3` comparisons below are equality only, so every listing is pinned POSITIVELY
+    # here first: equal refusals would otherwise satisfy them
     assert Enum.map(Jason.decode!(current.list_root_json.stdout)["runs"], & &1["run_ref"]) == ["alpha"]
-    assert Enum.map(Jason.decode!(current.list_legacy_json.stdout), & &1["run_ref"]) == ["alpha"]
+    assert Enum.map(Jason.decode!(current.list_relative_json.stdout)["runs"], & &1["run_ref"]) == ["alpha"]
+    assert %{status: 0, stderr: ""} = current.list_root_org
+    assert %{status: 0, stderr: ""} = current.list_relative_org
+    assert current.list_root_org.stdout =~ "| alpha | run_scenario_0001 | completed | 32 | no | - |"
+    assert current.list_relative_org.stdout =~ "| alpha | run_scenario_0001 | completed | 32 | no | - |"
 
     # index DELETED: every read is unchanged, and no read rebuilds the files
     for file <- @projections, do: File.rm!(Path.join(dir, file))
@@ -183,8 +189,10 @@ defmodule AiOrchestrator.Contracts.NS28DiscoveryIndexTest do
       status_org: CLI.run(["status", dir]),
       list_root_json: CLI.run(["list", "--root", root, "--json"]),
       list_root_org: CLI.run(["list", "--root", root]),
-      list_legacy_json: CLI.run(["list", "--json"], cwd: base),
-      list_legacy_org: CLI.run(["list"], cwd: base),
+      # D-14: the retired no-root renderings are replaced by the SUPPLIED relative root, resolved
+      # against the given working directory by discovery.ex. Resolution is not inference.
+      list_relative_json: CLI.run(["list", "--root", Path.relative_to(root, base), "--json"], cwd: base),
+      list_relative_org: CLI.run(["list", "--root", Path.relative_to(root, base)], cwd: base),
       summary: Query.run_summary(ref, root: root),
       context: Query.run_context(ref, root: root),
       replay: replayed |> Fold.summary() |> Jason.encode!() |> Jason.decode!()

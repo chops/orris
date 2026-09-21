@@ -28,10 +28,16 @@ An explicitly missing root exits 74 with =runs_root_missing=; a directory that
 cannot be listed returns =runs_root_unreadable=; unexpected failures return
 =runs_root_unavailable=. These are JSON stderr reason maps, with empty stdout.
 Missing/duplicate flags, unknown options and positional extras exit 64.
-The existing =list=, =list --json= and directory-based status commands keep
-their root choice and their results, including an empty implicit runs root.
-Their output gained exactly one additive field, the pending repair the read
-already observed; see "Pending repair in every read" below.
+A root is never inferred. Both no-root renderings, =list= and =list --json=,
+are RETIRED (D-14): with no =--root= each exits 64 with the usage reason map,
+whose usage block names =--root=. No working directory is searched, and there
+is no implicit runs root, empty or otherwise. Directory-based status commands
+keep their root choice and their results, with absolute and relative
+directories alike; a relative =--root= is still resolved against the
+invocation's working directory, because resolving a SUPPLIED relative path is
+not inferring a search root. Explicit-root output gained exactly one additive
+field, the pending repair the read already observed; see "Pending repair in
+every read" below.
 
 Query.list_runs chooses membership, then Query.run_summary supplies each row's
 facts from one verified journal-prefix read. If that read fails after discovery,
@@ -60,10 +66,13 @@ Every directory-based read reports the repair its verified load observed, as
 byte count and the receipt sequence before and after, and ONLY when one is
 pending: a clean journal's JSON summary is unchanged byte for byte. =status=
 and =replay= in Org add one =- pending_repair ::= line after the journal
-position; the rendered =run-summary.org= projection itself is untouched. The
-legacy =list --json= rows carry the same boolean =list --root= carries, and the
-legacy Org table gained a =Repair= column (=yes=, =no=, or =-= for a row that
-could not be read). Reporting is not repairing: the plan belongs to the Writer,
+position; the rendered =run-summary.org= projection itself is untouched. Both
+=list --root= renderings carry that boolean: JSON as =pending_repair=, Org as
+the =Repair needed= column (=yes=, =no=, or =-= for a row that could not be
+read). The retired no-root renderings carried the same boolean before D-14
+retired them; they are no longer a reporting surface, and no other read
+reports one under an inferred root, because no root is inferred.
+Reporting is not repairing: the plan belongs to the Writer,
 and no read truncates a tail, advances a receipt or writes a projection.
 
 * Watch
@@ -107,7 +116,8 @@ This operation does not depend on mounted start/resume, live transport or Ash.
 * Acceptance mapping
 =test/cli/cli_discovery_test.exs= exercises:
 - D1 explicit root selection, deterministic ordering, both flag orders and relative roots.
-- D2 legacy empty output and sanitized missing/unreadable explicit roots.
+- D2 the no-root refusal of both renderings, an empty explicit root, and
+  sanitized missing/unreadable explicit roots.
 - D3 projection independence and chained-byte corruption.
 - D4/D9 pending repair without changed files, bytes, receipts, locks or projections;
   a read-only filesystem seam has no write callbacks.
@@ -120,8 +130,9 @@ This operation does not depend on mounted start/resume, live transport or Ash.
   on filesystems that permit it.
 - D10 malformed argv refusals.
 
-=test/cli/cli_test.exs= pins the pending-repair reporting of =status= and the
-legacy =list= against an unchanged torn journal. =test/cli/cli_watch_test.exs=
+=test/cli/cli_test.exs= pins the pending-repair reporting of =status= and of
+=list --root= against an unchanged torn journal, and pins the no-root refusal
+of both =list= renderings. =test/cli/cli_watch_test.exs=
 exercises W1 successive values ending on the terminal status, W2 one rendering
 for an unchanged journal with deleted and lagging projections, W3 a read
 failure reported once while the loop keeps reading, W4 the explicit-root

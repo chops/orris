@@ -453,7 +453,7 @@ defmodule AiOrchestrator.CLITest do
     assert Jason.decode!(stderr) == %{"reason" => "journal_undecodable_line", "at_seq" => 1, "file" => "events.jsonl"}
   end
 
-  test "list --json reports valid and invalid run directories without aborting the list" do
+  test "list --root --json reports valid and invalid run directories without aborting the list" do
     project_dir = tmp_dir("project")
     runs_root = Path.join([project_dir, ".ai-orchestrator", "runs"])
 
@@ -461,9 +461,10 @@ defmodule AiOrchestrator.CLITest do
     runs_root |> Path.join("blocked") |> write_journal(F.lines("scenarios", "auth_blocked_pane"))
     runs_root |> Path.join("invalid") |> write_file("events.jsonl", "")
 
-    assert %{status: 0, stdout: stdout, stderr: ""} = CLI.run(["list", "--json"], cwd: project_dir)
+    assert %{status: 0, stdout: stdout, stderr: ""} = CLI.run(["list", "--root", runs_root, "--json"])
 
-    entries = Jason.decode!(stdout)
+    # the explicit-root rendering is a MAP carrying "runs", not the retired bare array
+    entries = Jason.decode!(stdout)["runs"]
 
     assert Enum.map(entries, & &1["run_ref"]) == ["blocked", "complete", "invalid"]
     assert %{"status" => "blocked", "run_id" => "run_scenario_0002"} = Enum.find(entries, &(&1["run_ref"] == "blocked"))
@@ -471,25 +472,26 @@ defmodule AiOrchestrator.CLITest do
     assert %{"status" => "completed", "run_id" => "run_scenario_0001"} =
              Enum.find(entries, &(&1["run_ref"] == "complete"))
 
-    assert %{"status" => "invalid", "error" => %{"reason" => "journal_empty"}} =
+    # the explicit-root row names its read error as a CLOSED STRING, not the retired nested map
+    assert %{"status" => "invalid", "error" => "journal_empty", "run_id" => nil} =
              Enum.find(entries, &(&1["run_ref"] == "invalid"))
   end
 
-  test "list renders an org table by default" do
+  test "list --root renders an org table by default" do
     project_dir = tmp_dir("project-list")
     runs_root = Path.join([project_dir, ".ai-orchestrator", "runs"])
     runs_root |> Path.join("complete") |> write_journal(F.lines("scenarios", "gated_run_seed"))
 
-    assert %{status: 0, stdout: stdout, stderr: ""} = CLI.run(["list"], cwd: project_dir)
-    assert stdout =~ "#+title: Runs"
-    assert stdout =~ "| complete | run_scenario_0001 | completed | 32 | no |"
+    assert %{status: 0, stdout: stdout, stderr: ""} = CLI.run(["list", "--root", runs_root])
+    assert stdout =~ "#+title: Runs in explicit root"
+    assert stdout =~ "| complete | run_scenario_0001 | completed | 32 | no | - |"
   end
 
   # S1: `Trusted.read_journal_lines/1` used to destructure only `%{lines: lines}`, so the CLI's own reads
   # dropped the loaded map's `pending_repair` while `list --root` (discovery.ex) and `Query.run_summary/2`
   # both reported it. The torn tail keeps its meaning -- the verified prefix plus the plan the WRITER would
   # execute -- and nothing here repairs, truncates or advances a receipt.
-  test "a torn tail is reported by status and by the legacy list, with the journal bytes unchanged" do
+  test "a torn tail is reported by status and by list --root, with the journal bytes unchanged" do
     project_dir = tmp_dir("torn-project")
     runs_root = Path.join([project_dir, ".ai-orchestrator", "runs"])
     torn = runs_root |> Path.join("torn") |> write_journal(F.lines("scenarios", "gated_run_seed"))
@@ -513,9 +515,9 @@ defmodule AiOrchestrator.CLITest do
     assert org =~ "* Status: completed"
     assert org =~ "- pending_repair :: truncate_tail (truncate_bytes 18, receipt_seq 0 -> 0)"
 
-    assert %{status: 0, stdout: listed, stderr: ""} = CLI.run(["list", "--json"], cwd: project_dir)
-    assert [%{"run_ref" => "torn", "pending_repair" => true}] = Jason.decode!(listed)
-    assert %{status: 0, stdout: table, stderr: ""} = CLI.run(["list"], cwd: project_dir)
+    assert %{status: 0, stdout: listed, stderr: ""} = CLI.run(["list", "--root", runs_root, "--json"])
+    assert %{"runs" => [%{"run_ref" => "torn", "pending_repair" => true}]} = Jason.decode!(listed)
+    assert %{status: 0, stdout: table, stderr: ""} = CLI.run(["list", "--root", runs_root])
     assert table =~ "| torn | run_scenario_0001 | completed | 32 | yes |"
 
     # a clean sibling keeps its exact summary: the key is added ONLY when a repair is pending
@@ -531,12 +533,24 @@ defmodule AiOrchestrator.CLITest do
     refute File.exists?(Path.join(torn, "run-summary.org"))
   end
 
-  test "list is empty when the project has no runs root yet" do
-    assert CLI.run(["list"], cwd: tmp_dir("empty")) == %{
-             status: 0,
-             stdout: "#+title: Runs\n\n* Runs\n- none\n",
-             stderr: ""
-           }
+  # D-14: the CWD-INFERRED search root is retired for BOTH renderings. The refusal is measured with a
+  # POPULATED runs root under the working directory, so it cannot be mistaken for an empty answer.
+  test "list and list --json refuse without --root, even where the working directory holds a runs root" do
+    project_dir = tmp_dir("no-root")
+    runs_root = Path.join([project_dir, ".ai-orchestrator", "runs"])
+    runs_root |> Path.join("complete") |> write_journal(F.lines("scenarios", "gated_run_seed"))
+
+    assert %{status: 0, stdout: found, stderr: ""} = CLI.run(["list", "--root", runs_root, "--json"])
+    assert Enum.map(Jason.decode!(found)["runs"], & &1["run_ref"]) == ["complete"]
+
+    for argv <- [["list"], ["list", "--json"]] do
+      assert %{status: 64, stdout: "", stderr: stderr} = CLI.run(argv, cwd: project_dir)
+      decoded = Jason.decode!(stderr)
+      assert decoded["reason"] == "usage"
+      assert decoded["usage"] =~ "ai-orchestrator list --root <runs-root> [--json]"
+      refute decoded["usage"] =~ "ai-orchestrator list [--json]"
+      refute stderr =~ "complete"
+    end
   end
 
   describe "journal durability" do
