@@ -64,10 +64,20 @@ defmodule AiOrchestrator.Contracts.NS11ProjectionIndependenceTest do
       status: CLI.run(["status", "--json", dir]),
       replay: CLI.run(["replay", dir, "--json"]),
       list_root: CLI.run(["list", "--root", root, "--json"]),
-      list_legacy: CLI.run(["list", "--json"], cwd: base),
+      # D-14: the retired no-root rendering is replaced by the SUPPLIED relative root, which
+      # discovery.ex resolves against the given working directory. That resolution is preserved.
+      list_relative_root: CLI.run(["list", "--root", Path.relative_to(root, base), "--json"], cwd: base),
       summary: Query.run_summary("alpha", root: root),
       context: Query.run_context("alpha", root: root)
     }
+
+    # The before/after checks at the end of this test are EQUALITY ONLY: two equal REFUSALS would
+    # satisfy them and prove nothing. Both listings are therefore pinned positively here -- status 0,
+    # empty stderr and the actual membership -- so the later equalities carry those properties.
+    for {label, listing} <- [list_root: reads.list_root, list_relative_root: reads.list_relative_root] do
+      assert match?(%{status: 0, stderr: ""}, listing), to_string(label)
+      assert Enum.map(Jason.decode!(listing.stdout)["runs"], & &1["run_ref"]) == ["alpha"], to_string(label)
+    end
 
     assert %{status: 0, stderr: ""} = reads.status
     assert Jason.decode!(reads.status.stdout) == F.json("scenarios", "gated_run_seed", "expected.json")
@@ -89,7 +99,9 @@ defmodule AiOrchestrator.Contracts.NS11ProjectionIndependenceTest do
     assert CLI.run(["status", "--json", dir]) == reads.status
     assert CLI.run(["replay", dir, "--json"]) == reads.replay
     assert CLI.run(["list", "--root", root, "--json"]) == reads.list_root
-    assert CLI.run(["list", "--json"], cwd: base) == reads.list_legacy
+
+    assert CLI.run(["list", "--root", Path.relative_to(root, base), "--json"], cwd: base) ==
+             reads.list_relative_root
   end
 
   # ---- helpers ----

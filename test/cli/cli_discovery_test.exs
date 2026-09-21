@@ -42,10 +42,14 @@ defmodule AiOrchestrator.CLIDiscoveryTest do
     fixture(Path.join(root, "alpha"), "auth_blocked_pane")
     File.write!(Path.join(root, "ordinary-file"), "ignored")
 
-    assert %{status: 0, stdout: old} = CLI.run(["list", "--json"], cwd: base)
-    assert Enum.map(Jason.decode!(old), & &1["run_ref"]) == ["default"]
+    # the root the retired renderings inferred is now NAMED: its membership is still its own
+    default_root = Path.join([base, ".ai-orchestrator", "runs"])
+    assert %{status: 0, stdout: old, stderr: ""} = CLI.run(["list", "--root", default_root, "--json"])
+    assert Enum.map(Jason.decode!(old)["runs"], & &1["run_ref"]) == ["default"]
 
     first = CLI.run(["list", "--root", root, "--json"])
+    # a SUPPLIED relative root is resolved against the working directory (discovery.ex): that is
+    # resolution, not inference, and D-14 preserves it in both flag orders
     assert first == CLI.run(["list", "--json", "--root", "selected"], cwd: base)
     assert %{status: 0, stdout: stdout, stderr: ""} = first
     assert Enum.map(Jason.decode!(stdout)["runs"], & &1["run_ref"]) == ["alpha", "zeta"]
@@ -55,8 +59,33 @@ defmodule AiOrchestrator.CLIDiscoveryTest do
     assert org =~ "does not establish process liveness"
   end
 
-  test "D2 legacy empty output and closed explicit-root failures", %{base: base} do
-    assert CLI.run(["list"], cwd: base) == %{status: 0, stdout: "#+title: Runs\n\n* Runs\n- none\n", stderr: ""}
+  test "D2 both no-root renderings refuse, an empty explicit root answers, explicit-root failures stay closed",
+       %{base: base} do
+    # the refusal is measured WITH the root a cwd scan would have found, and with a run inside it:
+    # against an empty working directory a refusal would be indistinguishable from an empty answer
+    fixture(Path.join([base, ".ai-orchestrator", "runs", "ambient"]))
+    ambient_root = Path.join([base, ".ai-orchestrator", "runs"])
+    assert %{status: 0, stdout: ambient, stderr: ""} = CLI.run(["list", "--root", ambient_root, "--json"])
+    assert Enum.map(Jason.decode!(ambient)["runs"], & &1["run_ref"]) == ["ambient"]
+
+    for argv <- [["list"], ["list", "--json"]] do
+      assert %{status: 64, stdout: "", stderr: stderr} = CLI.run(argv, cwd: base)
+      decoded = Jason.decode!(stderr)
+      assert decoded["reason"] == "usage"
+      # naming --root is not enough on its own: the RETIRED usage block named it too. The refute is
+      # what makes this fail if the no-root form is restored to the usage text or to the CLI.
+      assert decoded["usage"] =~ "ai-orchestrator list --root <runs-root> [--json]"
+      refute decoded["usage"] =~ "ai-orchestrator list [--json]"
+      refute stderr =~ "ambient"
+    end
+
+    # an EXPLICIT empty root still answers 0: D-14 retired root INFERENCE, not the empty listing
+    empty_root = Path.join(base, "empty_root")
+    File.mkdir_p!(empty_root)
+    assert %{status: 0, stdout: empty_org, stderr: ""} = CLI.run(["list", "--root", empty_root])
+    assert empty_org =~ "- none"
+    assert %{status: 0, stdout: empty_json, stderr: ""} = CLI.run(["list", "--root", empty_root, "--json"])
+    assert Jason.decode!(empty_json) == %{"runs" => [], "skipped_outside_root" => 0}
 
     for args <- [["list", "--root", base <> "/PRIVATE_ROOT_CANARY"], ["list", "--root", ""]] do
       result = CLI.run(args)

@@ -28,8 +28,6 @@ defmodule AiOrchestrator.CLI do
   alias AiOrchestrator.Projection.RunSummary
   alias AiOrchestrator.Run
 
-  @runs_root Path.join([".ai-orchestrator", "runs"])
-
   @type result :: %{
           required(:status) => non_neg_integer(),
           required(:stdout) => String.t(),
@@ -72,9 +70,11 @@ defmodule AiOrchestrator.CLI do
   def run(["status", run_dir], _opts), do: status_org(run_dir)
   def run(["status" | args], opts), do: watch_status(args, opts)
   def run(["replay" | args], _opts), do: replay(args)
-  def run(["list", "--json"], opts), do: list_json(opts)
-  def run(["list"], opts), do: list_org(opts)
 
+  # D-14: no `list` rendering infers a search root from the working directory. With no `--root`,
+  # both `list` and `list --json` reach the explicit-root parser below, which answers `:usage`, so
+  # the CLI exits 64 with the usage block naming `--root`. Resolving a SUPPLIED relative `--root`
+  # against the working directory (discovery.ex) is not inferring a root and is preserved.
   def run(["list" | args], opts) do
     case Watch.arguments(args) do
       {:ok, %{watch?: true} = parsed} -> watch_list_root(parsed, opts)
@@ -267,55 +267,6 @@ defmodule AiOrchestrator.CLI do
 
   defp replay_arguments(_args, _run_dir, _json?, _to_seq), do: :usage
 
-  defp list_json(opts) do
-    case list_entries(opts) do
-      {:ok, entries} -> json(0, entries, :stdout)
-      {:error, reason} -> error(74, reason)
-    end
-  end
-
-  defp list_org(opts) do
-    case list_entries(opts) do
-      {:ok, entries} -> ok(render_list(entries))
-      {:error, reason} -> error(74, reason)
-    end
-  end
-
-  defp list_entries(opts) do
-    root = runs_root(opts)
-
-    case File.ls(root) do
-      {:ok, names} ->
-        entries =
-          names
-          |> Enum.sort()
-          |> Enum.flat_map(&list_entry(root, &1))
-
-        {:ok, entries}
-
-      {:error, :enoent} ->
-        {:ok, []}
-
-      {:error, reason} ->
-        {:error, %{"reason" => "runs_root_read_failed", "detail" => inspect(reason)}}
-    end
-  end
-
-  defp list_entry(root, name) do
-    run_dir = Path.join(root, name)
-
-    if File.dir?(run_dir) do
-      [
-        case Read.load(run_dir) do
-          {:ok, loaded} -> loaded |> Read.row() |> Map.put("run_ref", name)
-          {:error, reason} -> %{"run_ref" => name, "status" => "invalid", "error" => reason, "pending_repair" => nil}
-        end
-      ]
-    else
-      []
-    end
-  end
-
   defp surface_close(result, :ok), do: result
 
   defp surface_close(%{status: 0, stdout: stdout}, {:error, rejection}) do
@@ -347,31 +298,6 @@ defmodule AiOrchestrator.CLI do
     |> Fold.fold_lines()
   end
 
-  defp runs_root(opts) do
-    opts
-    |> Keyword.get(:cwd, File.cwd!())
-    |> Path.join(@runs_root)
-  end
-
-  defp render_list([]), do: "#+title: Runs\n\n* Runs\n- none\n"
-
-  defp render_list(entries) do
-    rows =
-      Enum.map(entries, fn entry ->
-        "| #{entry["run_ref"]} | #{entry["run_id"] || "-"} | #{entry["status"]} | #{entry["last_seq"] || "-"} | " <>
-          repair_cell(entry["pending_repair"]) <> " |"
-      end)
-
-    (["#+title: Runs", "", "* Runs", "| Ref | Run | Status | Seq | Repair |", "|-----+-----+--------+-----+--------|"] ++
-       rows)
-    |> Enum.join("\n")
-    |> Kernel.<>("\n")
-  end
-
-  defp repair_cell(nil), do: "-"
-  defp repair_cell(true), do: "yes"
-  defp repair_cell(false), do: "no"
-
   defp ok(stdout), do: %{status: 0, stdout: stdout, stderr: ""}
 
   defp json(status, data, stream) do
@@ -396,7 +322,6 @@ defmodule AiOrchestrator.CLI do
            ai-orchestrator status [--json] <run-dir>
            ai-orchestrator status [--json] --watch <run-dir> [--interval-ms <n>] [--for-ms <n>]
            ai-orchestrator replay <run-dir> [--json] [--to-seq <n>]
-           ai-orchestrator list [--json]
            ai-orchestrator list --root <runs-root> [--json]
            ai-orchestrator list --root <runs-root> [--json] --watch [--interval-ms <n>] [--for-ms <n>]
            ai-orchestrator cancel <run-dir>
