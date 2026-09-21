@@ -226,6 +226,7 @@ defmodule C1.MutationPreservationTest do
     # Pin root entries so another core commit cannot silently pass. A later authorized core delivery must update
     # this snapshot explicitly in its review. Console files are outside the
     # snapshot, avoiding a self-referential commit id.
+    # C1: the reviewed sessions IPC v2 contract delta moves the test tree only; no other core entry changes.
     core_paths = ~w(mix.exs mix.lock flake.nix flake.lock lib test bin native)
 
     expected = """
@@ -236,7 +237,7 @@ defmodule C1.MutationPreservationTest do
     100644 blob 6f8544e74c5907bebfdba64381e9320b07fcd7e3\tmix.exs
     100644 blob 8efca92c081a2c902a8b5952b0aeb96c7c1d2887\tmix.lock
     040000 tree 950aae97c234450184c6cf696d2dadd28520f48f\tnative
-    040000 tree 718c770397f41942a5fef5d74e3775d9ebaddaf6\ttest
+    040000 tree 3739ee2726b3b6071e0c5553346a5b1dc01104c6\ttest
     """
 
     {committed, 0} = System.cmd("git", ["ls-tree", "HEAD", "--"] ++ core_paths, cd: Harness.core_path())
