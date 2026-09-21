@@ -4,25 +4,32 @@ defmodule AiOrchestrator.Contracts.IpcV2SessionsContractHashTest do
   docs/contracts/ipc-v2.org, pinned under test/fixtures/contracts/ipc/v2-sessions/ with
   their own CONTRACT_HASH under the v1 hash rule.
 
-  They are deliberately NOT in the paired v2 directory. That set is byte-identical with
-  the producer snapshot the contract's pairing block names, and no producer emits a
-  sessions reply yet, so an example dropped in beside the delivery fixtures would make
-  the pairing block assert an equality that is false.
-
-  The second reason belongs to the PRODUCER, not to the tests in this repository. The
+  They remain deliberately NOT in the paired v2 directory, and the reason is unchanged by
+  adoption. It belongs to the PRODUCER, not to the tests in this repository: the
   producer's delivery-fixture harness (Orrisd test/ai_pair/ipc/contract_v2_fixture_test.exs
   :94-116 at 1018ad9b) enumerates every JSON file in that directory and dispatches each
-  through `Delivery.dispatch`, so a sessions example placed there would be driven down
-  the delivery route on vendoring. The consumer tests here select `send.*` and
-  `reconcile.*` by glob and would not do that; the rationale is cross-repository.
+  through `Delivery.dispatch`, so a sessions example placed there would be driven down the
+  delivery route on vendoring, which is the wrong producer path. The consumer tests here
+  select `send.*` and `reconcile.*` by glob and would not do that; the rationale is
+  cross-repository. The sixteen delivery fixtures and the twelve sessions examples are two
+  distinct inventories and are never merged.
 
-  This module therefore pins the sessions set on its own, and one row holds the paired
-  set to the bytes and hash it had before this lane existed -- so that an edit which
-  quietly advertises the new capability in the paired ping fails here too.
+  The adoption this module records is a NAMED HISTORICAL SNAPSHOT. At the producer
+  snapshot the pairing block names, orrisd 7e5f5321, the ordinary v2 ping advertises
+  `sessions_read` beside `delivery_reconcile`, and that snapshot's own production-path
+  suite (test/ai_pair/ipc/sessions_contract_fixture_test.exs) drives its production
+  dispatch, projection and encoding with injected census and registry observations, and
+  asserts decoded semantic equivalence with these twelve examples after placeholder
+  normalization, not raw emitted bytes. The
+  paired set is therefore held to the bytes of that snapshot rather than to the bytes it
+  had before this lane existed. A later producer revision that changes the producer
+  document or its fixtures again does not invalidate this pin, because the pin names a
+  snapshot and never claimed to track a head.
 
-  Nothing in this module establishes that a daemon answers `sessions`. It measures the
-  examples and the document, which is all a consumer repository can measure without the
-  producer.
+  Nothing in this module establishes that an INSTALLED daemon answers `sessions`. It
+  measures these examples, the paired bytes and the document, which is all a consumer
+  repository can measure without the producer; the producer evidence above is a statement
+  about a named producer commit, not about a release or a running process.
   """
 
   use ExUnit.Case, async: true
@@ -49,11 +56,12 @@ defmodule AiOrchestrator.Contracts.IpcV2SessionsContractHashTest do
     "sessions.ok.ordering.json"
   ]
 
-  # the paired set, held here to what it was: this lane specifies the capability and does
-  # not advertise it
+  # the paired set, held here to the bytes of the NAMED producer snapshot the pairing block
+  # names: this lane adopted a measured producer, it did not predict one
   @paired_dir Path.expand("../fixtures/contracts/ipc/v2", __DIR__)
-  @paired_hash "78c2f64240c3c5c9da60425c65c498974a2a81c8adb3e68e0bef28613c1707dc"
-  @paired_capabilities ["delivery_reconcile"]
+  @paired_hash "a6f92d537897d30a883a04d29217ff36a4f33db759b87d4e6ccc79ad4c2232fc"
+  @paired_capabilities ["delivery_reconcile", "sessions_read"]
+  @paired_snapshot "7e5f5321821cbea7193bd966b39b357d9acf09bd"
 
   @document Path.expand("../../docs/contracts/ipc-v2.org", __DIR__)
 
@@ -73,13 +81,23 @@ defmodule AiOrchestrator.Contracts.IpcV2SessionsContractHashTest do
     assert @hash_path |> File.read!() |> String.trim() == @pinned_hash
   end
 
-  test "specifying the capability did not advertise it: the paired set is untouched" do
+  # The previous form of this row held the paired ping to ["delivery_reconcile"] and said the
+  # example "may only change with a producer that advertises it". That condition has been
+  # measured and met at the named snapshot, so the row now holds the paired set to THAT
+  # snapshot's bytes. It is still exact rather than shaped: a token added here without a
+  # producer snapshot that emits it fails, which is the same control pointed at the new pair.
+  test "the paired set is byte-identical with the named producer snapshot, ping included" do
     assert contract_hash(@paired_dir) == @paired_hash
 
     ping = @paired_dir |> Path.join("ping.ok.json") |> File.read!() |> Jason.decode!()
 
     assert ping["capabilities"] == @paired_capabilities,
-           "the paired ping example may only change with a producer that advertises it"
+           "the paired ping example may only change with a producer snapshot that advertises it"
+
+    # the document and this module must name the same producer snapshot, so that the ping
+    # bytes above cannot be justified by one revision while the pairing block names another
+    document = File.read!(@document)
+    assert declared(document, "paired_revision") == @paired_snapshot
   end
 
   test "every example names version 2 and carries exactly the keys its shape allows" do
@@ -218,14 +236,23 @@ defmodule AiOrchestrator.Contracts.IpcV2SessionsContractHashTest do
     end
   end
 
-  test "the contract document pins this set and says it is unadopted" do
+  # `adopted` is a claim about a NAMED producer snapshot, so the status and the revision it
+  # was measured at move together or this row fails. A status advanced without naming the
+  # snapshot it was measured at would be a prediction, which is what the previous
+  # `unadopted` wording exists to refuse.
+  test "the contract document pins this set and names the snapshot it was adopted at" do
     document = File.read!(@document)
     count = Integer.to_string(length(@expected_files))
 
     assert declared(document, "sessions_example_dir") == @declared_dir
     assert declared(document, "sessions_example_contract_hash") == @pinned_hash
     assert declared(document, "sessions_example_count") == count
-    assert declared(document, "sessions_example_status") == "unadopted"
+    assert declared(document, "sessions_example_status") == "adopted"
+    assert declared(document, "sessions_example_adopted_at") == @paired_snapshot
+
+    # the twelve stay twelve: adoption did not move an example into the delivery inventory
+    assert length(@expected_files) == 12
+    assert @paired_dir |> json_paths() |> length() == 16
   end
 
   defp json_paths(dir), do: dir |> Path.join("*.json") |> Path.wildcard() |> Enum.sort()

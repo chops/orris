@@ -1,1 +1,1 @@
-{"capabilities":["delivery_reconcile"],"ok":true,"pong":"<version>","protocol_version":2}
+{"capabilities":["delivery_reconcile","sessions_read"],"ok":true,"pong":"<version>","protocol_version":2}
