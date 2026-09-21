@@ -21,6 +21,7 @@ defmodule AiOrchestrator.CLI do
   alias AiOrchestrator.CLI.Discovery
   alias AiOrchestrator.CLI.Read
   alias AiOrchestrator.CLI.Watch
+  alias AiOrchestrator.Commands.CommandId
   alias AiOrchestrator.Journal.Fold
   alias AiOrchestrator.Prepare.Prepared
   alias AiOrchestrator.Prepare.Trusted
@@ -145,22 +146,73 @@ defmodule AiOrchestrator.CLI do
   # the operator actor is authorization, not authentication: its id is the CLI's existing operator value
   defp invoke_prepared(prepared) do
     actor = %{"class" => "operator", "id" => Keyword.get(Prepared.context(prepared), :operator, "operator")}
+    # minted ONCE, here, and closed over: the outcome callback can then name the acceptance row THIS invocation
+    # appended without reading the last journal row and without a second, unrelated id
+    command_id = CommandId.generate()
 
-    case Trusted.invoke(actor, prepared, Run.Executor, &command_outcome(&1, Prepared.run_dir(prepared))) do
+    outcome = &command_outcome(&1, Prepared.run_dir(prepared), command_id)
+
+    case Trusted.invoke(actor, prepared, Run.Executor, outcome, command_id) do
       {:ok, result} -> result
       {:error, %{reason: reason}} -> error(70, reason)
     end
   end
 
-  defp command_outcome(result, run_dir) do
+  defp command_outcome(result, run_dir, command_id) do
     with {:ok, result} <- result,
          {:ok, state} <- state_from_events(result.events),
-         :ok <- write_projections(run_dir, state) do
+         :ok <- projection_outcome(write_projections(run_dir, state), result, state) do
       surface_close(ok(RunSummary.render(state)), Map.get(result, :close, :ok))
     else
-      {:error, %{} = reason} -> error(70, command_rejection(reason))
+      # the append this invocation committed is durable and ONLY the projection write failed (decision-debate.org:849).
+      # `result` and `state` are carried explicitly because a `with` binding is not in scope in its own `else`.
+      {:projection_failed, result, state, rejection} ->
+        projection_failure(result, state, rejection, command_id)
+
+      {:error, %{} = reason} ->
+        error(70, command_rejection(reason))
     end
   end
+
+  defp projection_outcome(:ok, _result, _state), do: :ok
+  defp projection_outcome({:error, rejection}, result, state), do: {:projection_failed, result, state, rejection}
+
+  # exit 0 is earned ONLY by a unique durable acceptance stamped with this invocation's id. Zero matches (nothing
+  # this command appended) and more than one (ambiguous, mirroring Run.Server) both stay at 70: an unknown
+  # acceptance must never be shaped into a success.
+  defp projection_failure(result, state, rejection, command_id) do
+    case acceptance(result.events, command_id) do
+      {:ok, accepted} ->
+        surfaced = %{
+          status: 0,
+          stdout: RunSummary.render(state),
+          stderr: Jason.encode!(Map.merge(rejection, accepted)) <> "\n"
+        }
+
+        surface_projection_failure(surfaced, Map.get(result, :close, :ok))
+
+      :none ->
+        error(70, rejection)
+    end
+  end
+
+  # the three acceptance types Run.Server recognises; the LAST journal row is never used
+  @acceptance_types ~w(run_created run_resumed run_cancel_requested)
+
+  defp acceptance(events, command_id) do
+    case Enum.filter(events, &acceptance_row?(&1, command_id)) do
+      [%{"event_id" => event_id, "seq" => seq}] ->
+        {:ok, %{"accepted" => true, "event_id" => event_id, "seq" => seq}}
+
+      _zero_or_ambiguous ->
+        :none
+    end
+  end
+
+  defp acceptance_row?(%{"type" => type, "data" => %{"requested_by" => %{"command_id" => id}}}, command_id),
+    do: type in @acceptance_types and id == command_id
+
+  defp acceptance_row?(_event, _command_id), do: false
 
   # a command's own closed clauses are reported by name; everything else is a journal rejection
   @command_clauses ~w(command_verb_unsupported command_stamp_invalid command_context_invalid command_inputs_mismatch
@@ -274,6 +326,15 @@ defmodule AiOrchestrator.CLI do
   end
 
   defp surface_close(result, {:error, _rejection}), do: result
+
+  # the projection-failure twin of surface_close/2, and the reason surface_close/2 itself is left alone: it binds only
+  # `status` and `stdout` and BUILDS a new map, so routing this shape through it would silently replace the projection
+  # diagnostic with the close rejection. Here both are kept, newline-delimited, projection diagnostic FIRST.
+  defp surface_projection_failure(%{status: 0} = result, :ok), do: result
+
+  defp surface_projection_failure(%{status: 0, stdout: stdout, stderr: stderr}, {:error, rejection}) do
+    %{status: 70, stdout: stdout, stderr: stderr <> Jason.encode!(journal_rejection(rejection)) <> "\n"}
+  end
 
   defp journal_rejection(rejection), do: Trusted.journal_rejection(rejection)
 

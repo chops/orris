@@ -108,9 +108,18 @@ defmodule AiOrchestrator.Contracts.NS28DiscoveryIndexTest do
     File.mkdir_p!(Path.join(blocked, "run-summary.org"))
     File.write!(Path.join(blocked, "events.jsonl"), Rows.kill9("events_pre_dispatch.jsonl"))
 
-    assert %{status: 70, stdout: "", stderr: stderr} = CLI.run(["cancel", blocked])
+    # D-15 part three: the append is durable, so the command is NOT a failure. Exit 0 carries the summary on stdout,
+    # and the exit 0 is kept distinguishable from a clean success by the diagnostic on stderr naming the failed file
+    # AND the acceptance row this invocation appended.
+    assert %{status: 0, stdout: blocked_out, stderr: stderr} = CLI.run(["cancel", blocked])
+    assert blocked_out =~ "* Status: cancelled"
     assert "run_cancel_requested" in Rows.event_kinds(blocked)
-    assert Jason.decode!(stderr)["reason"] == "output_write_failed"
+    diagnostic = Jason.decode!(stderr)
+    assert diagnostic["reason"] == "output_write_failed"
+    assert diagnostic["file"] == "run-summary.org"
+    assert diagnostic["accepted"] == true
+    assert is_binary(diagnostic["event_id"]) and diagnostic["event_id"] != ""
+    assert is_integer(diagnostic["seq"]) and diagnostic["seq"] > 0
     assert %{status: 0, stdout: after_out} = CLI.run(["status", blocked])
     assert after_out =~ "* Status: cancelled"
   end

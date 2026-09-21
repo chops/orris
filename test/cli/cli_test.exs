@@ -430,6 +430,136 @@ defmodule AiOrchestrator.CLITest do
     assert Jason.decode!(stale)["unknown_attention_ids"] == ["att_0001"]
   end
 
+  # D-15 part three G6: the reported identity must name the acceptance row THIS invocation appended. The blocked-run
+  # and resolve seams are what make the discrimination live -- a prior run leaves its OWN acceptance row in the
+  # journal, and the resolve appends one run_resumed followed by a later human_attention_required, so both
+  # "report the last journal row" and "report the earlier acceptance" are answers the fixture can actually produce.
+  test "a projection failure reports this invocation's acceptance row, not the last row and not an earlier command's" do
+    spec = "scenarios" |> F.json("gated_run_seed", "spec.json") |> Map.update!("agents", &[List.first(&1)])
+
+    run_dir =
+      "projection-acceptance"
+      |> tmp_dir()
+      |> write_json("spec.json", spec)
+      |> write_json("plan.json", F.json("scenarios", "gated_run_seed", "plan.json"))
+
+    opts =
+      "projection-acceptance-registry"
+      |> tmp_dir()
+      |> fsm_opts()
+      |> Keyword.put(:dispatch, AiOrchestrator.CLITest.BlockedDispatch)
+
+    assert %{status: 0, stdout: first} = CLI.run(["run", run_dir], opts)
+    assert first =~ "* Status: BLOCKED"
+
+    before_rows = journal_rows(run_dir)
+    summary = Path.join(run_dir, "run-summary.org")
+    File.rm!(summary)
+    File.mkdir_p!(summary)
+
+    assert %{status: 0, stdout: stdout, stderr: stderr} = CLI.run(["resolve", run_dir, "att_0001"], opts)
+    assert stdout =~ "* Status: BLOCKED"
+
+    after_rows = journal_rows(run_dir)
+    diagnostic = Jason.decode!(stderr)
+    accepted = assert_projection_failure_identity(diagnostic, before_rows, after_rows, "run-summary.org")
+    assert accepted["type"] == "run_resumed"
+
+    # the earlier run's acceptance is still in the journal under ITS command id; this one is a different command
+    snapshot_command_ids = MapSet.new(before_rows, &get_in(&1, ["data", "requested_by", "command_id"]))
+    refute MapSet.member?(snapshot_command_ids, get_in(accepted, ["data", "requested_by", "command_id"]))
+  end
+
+  # D-15 part three G8a: the FIRST projection file. Independent of G8b -- it asserts only its own status, its own
+  # file name and its own journal identity, and shares no id with any other arm.
+  test "an unwritable run-summary.org exits 0 naming that file and this command's acceptance" do
+    run_dir = "projection-first-file" |> tmp_dir() |> write_journal(kill9_lines("events_pre_dispatch.jsonl"))
+    File.mkdir_p!(Path.join(run_dir, "run-summary.org"))
+    before_rows = journal_rows(run_dir)
+
+    assert %{status: 0, stdout: stdout, stderr: stderr} = CLI.run(["cancel", run_dir])
+    assert stdout =~ "* Status: cancelled"
+
+    diagnostic = Jason.decode!(stderr)
+    accepted = assert_projection_failure_identity(diagnostic, before_rows, journal_rows(run_dir), "run-summary.org")
+    assert accepted["type"] == "run_cancel_requested"
+  end
+
+  # D-15 part three G8b: the SECOND projection file, reached because write_projections short-circuits. Same SHAPE as
+  # G8a and a different file name; its identity is compared to ITS OWN journal row, never to G8a's.
+  test "a written run-summary.org followed by an unwritable run-context.org exits 0 naming the second file" do
+    run_dir = "projection-second-file" |> tmp_dir() |> write_journal(kill9_lines("events_pre_dispatch.jsonl"))
+    File.mkdir_p!(Path.join(run_dir, "run-context.org"))
+    before_rows = journal_rows(run_dir)
+
+    assert %{status: 0, stdout: stdout, stderr: stderr} = CLI.run(["cancel", run_dir])
+    assert stdout =~ "* Status: cancelled"
+    assert File.read!(Path.join(run_dir, "run-summary.org")) =~ "* Status: cancelled"
+
+    diagnostic = Jason.decode!(stderr)
+    accepted = assert_projection_failure_identity(diagnostic, before_rows, journal_rows(run_dir), "run-context.org")
+    assert accepted["type"] == "run_cancel_requested"
+  end
+
+  # D-15 part three G6c: the ZERO-acceptance arm of projection_failure/4, reached through a TERMINAL no-op and not
+  # through a replay. `cancel` on a COMPLETED run halts in Reducer.cancel_execution/3 (lifecycle/core/reducer.ex
+  # 567-571: `if fold_state.terminal?, do: halt(state, :ok)`) without appending, while command_outcome/3 still folds
+  # the prior events and still calls write_projections/2. The projection write then fails with NOTHING this command
+  # appended to name, which is the `:none` branch of projection_failure/4: exit 70 carrying the bare rejection.
+  # command_executor_red_test.exs 4373-4377 is this same terminal cancel with the projection write left intact, and
+  # records status 0 with the journal bytes unchanged -- so the writer is reached on this path.
+  test "a projection failure with no acceptance row from this command exits 70 and appends nothing" do
+    run_dir =
+      "projection-no-acceptance"
+      |> tmp_dir()
+      |> write_json("spec.json", F.json("scenarios", "gated_run_seed", "spec.json"))
+      |> write_json("plan.json", F.json("scenarios", "gated_run_seed", "plan.json"))
+
+    assert %{status: 0, stdout: first, stderr: ""} = CLI.run(["run", run_dir], fsm_opts())
+    assert first =~ "* Status: completed"
+
+    # the completed run leaves its OWN stamped acceptance behind under the FIRST command's id, so "report an earlier
+    # acceptance" is an answer this fixture can actually produce: the absence asserted below is a decision about a
+    # populated journal, never an emptiness. If that stamp were missing this assertion fails rather than quietly
+    # disarming the control.
+    before_rows = journal_rows(run_dir)
+    prior = Enum.find(before_rows, &(&1["type"] in ~w(run_created run_resumed run_cancel_requested)))
+    assert is_binary(get_in(prior, ["data", "requested_by", "command_id"]))
+
+    before_bytes = File.read!(Path.join(run_dir, "events.jsonl"))
+    before_head = File.read!(Path.join(run_dir, "events.head"))
+
+    summary = Path.join(run_dir, "run-summary.org")
+    File.rm!(summary)
+    File.mkdir_p!(summary)
+
+    assert %{status: 70, stdout: "", stderr: stderr} = CLI.run(["cancel", run_dir], fsm_opts())
+
+    # naming THIS file proves control reached write_file/3 inside write_projections/2, which is downstream of the
+    # fold and of the append decision: the 70 and the unchanged journal below therefore cannot be a preflight
+    # refusal that never ran the command. Both clauses can fail alone -- a different rejection keeps the 70 and
+    # breaks the reason, and a projection write that succeeded would return status 0 with an empty stderr.
+    diagnostic = Jason.decode!(stderr)
+    assert diagnostic["reason"] == "output_write_failed"
+    assert diagnostic["file"] == "run-summary.org"
+
+    # the three keys the ACCEPTED branch merges in, asserted absent by name and again as an exact key set, so an
+    # acceptance surfaced here fails this control instead of passing unnoticed. G8a and G8b observe these same keys
+    # PRESENT on the sibling branch, so this is a live discriminator, not a shape the code never builds.
+    refute Map.has_key?(diagnostic, "accepted")
+    refute Map.has_key?(diagnostic, "event_id")
+    refute Map.has_key?(diagnostic, "seq")
+    assert Enum.sort(Map.keys(diagnostic)) == ["detail", "file", "reason"]
+
+    # compared against the PRE-command snapshot taken above, so an appended row fails here instead of being folded
+    # into an expectation recomputed after the fact. The receipt head is snapshotted too: an append that rewrote
+    # the chain head would otherwise be invisible to a bytes-only comparison of events.jsonl.
+    assert File.read!(Path.join(run_dir, "events.jsonl")) == before_bytes,
+           "terminal cancel appended: #{length(before_rows)} rows before, #{length(journal_rows(run_dir))} after"
+
+    assert File.read!(Path.join(run_dir, "events.head")) == before_head
+  end
+
   test "status --json returns the folded journal summary" do
     run_dir = write_journal(tmp_dir("completed"), F.lines("scenarios", "gated_run_seed"))
 
@@ -668,6 +798,48 @@ defmodule AiOrchestrator.CLITest do
       assert %{status: 0} = CLI.run(["status", "--json", run_dir])
     end
 
+    # D-15 part three G7 and G10, the JOINT witness. Nothing about the composer's source proves it concatenates:
+    # a composer that returns only the close rejection, only the projection diagnostic, or the two in the wrong
+    # order all leave surface_close/2 byte-unchanged. This exercises both failures in ONE command and reads the
+    # bytes that come out. The two faults are independent by construction: the close failure is injected through
+    # the FaultFs seam, the projection failure by a real directory the CLI's own File.write must fail on.
+    test "a simultaneous projection and close failure keeps BOTH diagnostics, close last, at 70" do
+      run_dir =
+        "durable-projection-and-close-failure"
+        |> tmp_dir()
+        |> write_json("spec.json", F.json("scenarios", "gated_run_seed", "spec.json"))
+        |> write_json("plan.json", F.json("scenarios", "gated_run_seed", "plan.json"))
+
+      File.mkdir_p!(Path.join(run_dir, "run-summary.org"))
+
+      fs = FaultFs.new()
+
+      FaultFs.inject(
+        fs,
+        :link,
+        fn
+          [_tmp, "run.lock.2"] -> true
+          _ -> false
+        end,
+        {:error, :eacces}
+      )
+
+      assert %{status: 70, stdout: stdout, stderr: stderr} = CLI.run(["run", run_dir], Keyword.put(fsm_opts(), :fs, fs))
+      assert stdout =~ "* Status: completed"
+      assert String.ends_with?(stderr, "\n")
+
+      # exactly TWO newline-delimited JSON objects: one diagnostic means one of them was dropped or overwritten
+      assert [projection, close] = stderr |> String.split("\n", trim: true) |> Enum.map(&Jason.decode!/1)
+
+      assert projection["reason"] == "output_write_failed"
+      assert projection["file"] == "run-summary.org"
+      assert projection["accepted"] == true
+      assert is_binary(projection["event_id"]) and projection["event_id"] != ""
+      assert is_integer(projection["seq"]) and projection["seq"] > 0
+      assert close["reason"] == "journal_close_failed"
+      assert File.read!(Path.join(run_dir, "events.jsonl")) =~ ~s("type":"run_completed")
+    end
+
     test "a dead lower generation that cannot be compacted is surfaced as journal_cleanup_required" do
       run_dir =
         "durable-cleanup-required"
@@ -781,6 +953,45 @@ defmodule AiOrchestrator.CLITest do
   defp write_json(dir, file, data), do: write_file(dir, file, Jason.encode!(data))
 
   defp write_journal(dir, lines), do: write_file(dir, "events.jsonl", Enum.join(lines, "\n") <> "\n")
+
+  defp journal_rows(run_dir) do
+    run_dir |> Path.join("events.jsonl") |> File.read!() |> String.split("\n", trim: true) |> Enum.map(&Jason.decode!/1)
+  end
+
+  # D-15 part three, the per-arm acceptance-identity control. It is applied to ONE arm in isolation and compares the
+  # reported identity ONLY to that arm's own journal: two CLI invocations mint two independent CSPRNG command ids, so
+  # two arms are NOT expected to share an event id and nothing here compares one arm to another.
+  # It can fail four distinct ways: the arm exits 70 instead of 0; the wrong projection file is named; the identity is
+  # absent or malformed; or the identity names a row other than the one acceptance row THIS command appended -- the
+  # pre-command snapshot rows and the later rows of the same command are both live wrong answers, and the control
+  # asserts a later row EXISTS so that the last-row answer stays reachable rather than vacuously excluded.
+  defp assert_projection_failure_identity(diagnostic, before_rows, after_rows, expected_file) do
+    assert diagnostic["reason"] == "output_write_failed"
+    assert diagnostic["file"] == expected_file
+    assert diagnostic["accepted"] == true
+    assert is_binary(diagnostic["event_id"]) and diagnostic["event_id"] != ""
+    assert is_integer(diagnostic["seq"]) and diagnostic["seq"] > 0
+
+    before_ids = MapSet.new(before_rows, & &1["event_id"])
+
+    new_acceptances =
+      Enum.filter(after_rows, fn row ->
+        row["type"] in ~w(run_created run_resumed run_cancel_requested) and
+          not MapSet.member?(before_ids, row["event_id"])
+      end)
+
+    assert match?([_], new_acceptances), "exactly one acceptance row is expected to be new in this arm"
+    [accepted] = new_acceptances
+    assert diagnostic["event_id"] == accepted["event_id"]
+    assert diagnostic["seq"] == accepted["seq"]
+
+    assert Enum.any?(after_rows, &(&1["seq"] > accepted["seq"])),
+           "the fixture must append a row AFTER the acceptance, or the last-row answer is not discriminated"
+
+    assert List.last(after_rows)["event_id"] != diagnostic["event_id"]
+
+    accepted
+  end
 
   defp write_file(dir, file, contents) do
     File.mkdir_p!(dir)

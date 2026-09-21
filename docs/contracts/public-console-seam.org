@@ -13,7 +13,13 @@ ONE argument document (R08 G1, 2026-09-18): =resolve_attention= carries the list
 only command argument; the trusted tier joins them into the closed =attention_ids= grammar and validates them before
 any identity, claim or Writer activity (=attention_ids_invalid= otherwise).
 The CLI keeps its directory-based path, its error maps, exit codes, projection files and its pane-claim lifetime
-(the outcome callback runs inside the claimed operation before release, A2) byte for byte.
+(the outcome callback runs inside the claimed operation before release, A2) byte for byte, with ONE ratified
+exception (D-15 part three): when the journal append THIS invocation committed is durable and only the PROJECTION
+write then fails, the CLI exits 0 with the run summary on stdout and the =output_write_failed= map on stderr,
+extended with ="accepted" => true= and the ="event_id"= and ="seq"= of that invocation's own acceptance row. The
+exception is that path alone: zero or ambiguous acceptance matches stay non-zero, every invoke and fold rejection
+stays 70, and a close failure still wins at 70 with stdout preserved, its diagnostic appended AFTER the projection
+diagnostic as a second newline-delimited JSON object. No other exit code, error map or projection file changes.
 
 * Public API (exact shapes; A3)
 - =Prepare.validate(run_ref, server_opts)= :: ={:ok, %{spec_hash, plan_hash}} | {:error, rejection}=

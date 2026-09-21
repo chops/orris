@@ -121,8 +121,20 @@ defmodule AiOrchestrator.Prepare.Trusted do
   """
   @spec invoke(map(), Prepared.t(), module(), outcome()) ::
           {:ok, term()} | {:error, %{stage: :claim | :release, reason: reason()}}
-  def invoke(actor, prepared, executor, outcome) when is_atom(executor) and is_function(outcome, 1) do
-    run = fn claimed_opts -> outcome.(commands_invoke(actor, prepared, executor, claimed_opts)) end
+  def invoke(actor, prepared, executor, outcome) when is_atom(executor) and is_function(outcome, 1),
+    do: invoke(actor, prepared, executor, outcome, nil)
+
+  @doc """
+  `invoke/4` with the command id the caller has ALREADY minted, so that caller can later recognise the acceptance
+  row this one invocation appended (`data.requested_by.command_id`, the predicate of `Run.Server` stamped_with?/2).
+  `nil` is the `invoke/4` behaviour exactly: `Commands.build/4` mints its own id, which is the console path
+  (`Prepare.invoke/3`). Nothing else about the claimed operation differs between the two arities.
+  """
+  @spec invoke(map(), Prepared.t(), module(), outcome(), String.t() | nil) ::
+          {:ok, term()} | {:error, %{stage: :claim | :release, reason: reason()}}
+  def invoke(actor, prepared, executor, outcome, command_id)
+      when is_atom(executor) and is_function(outcome, 1) and (is_binary(command_id) or is_nil(command_id)) do
+    run = fn claimed_opts -> outcome.(commands_invoke(actor, prepared, executor, claimed_opts, command_id)) end
 
     case Prepared.claims(prepared) do
       :none -> {:ok, run.(Prepared.context(prepared))}
@@ -239,13 +251,22 @@ defmodule AiOrchestrator.Prepare.Trusted do
     })
   end
 
-  defp commands_invoke(actor, prepared, executor, claimed_opts) do
-    Commands.invoke(actor, Prepared.verb(prepared), Prepared.args(prepared),
-      run_id: Prepared.run_id(prepared),
-      executor: executor,
-      executor_opts: claimed_opts
+  defp commands_invoke(actor, prepared, executor, claimed_opts, command_id) do
+    Commands.invoke(
+      actor,
+      Prepared.verb(prepared),
+      Prepared.args(prepared),
+      command_opts(Prepared.run_id(prepared), executor, claimed_opts, command_id)
     )
   end
+
+  # `nil` leaves the id to `Commands.build/4`, which validates a supplied one and otherwise generates: the opts are
+  # then exactly what `invoke/4` has always passed
+  defp command_opts(run_id, executor, claimed_opts, nil),
+    do: [run_id: run_id, executor: executor, executor_opts: claimed_opts]
+
+  defp command_opts(run_id, executor, claimed_opts, command_id),
+    do: [run_id: run_id, executor: executor, executor_opts: claimed_opts, command_id: command_id]
 
   defp input_context(nil), do: []
 
