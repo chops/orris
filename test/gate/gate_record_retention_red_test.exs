@@ -432,7 +432,7 @@ defmodule AiOrchestrator.Gate.RecordRetentionRedTest do
       {running, port, exit_msg, _status} = exited!(d, o)
       assert wait_until(fn -> Port.info(port) == nil end, 3_000)
       assert :staged = execution().stage(running, exit_msg)
-      stranger = %{running | port: Port.open({:spawn, "/bin/true"}, [:binary])}
+      stranger = %{running | port: Port.open({:spawn_executable, System.find_executable("true")}, [:binary])}
       assert wait_until(fn -> Port.info(stranger.port) == nil end, 3_000)
       assert :not_owner = execution().stage(stranger, line(stranger.port, @exit_ok))
       assert nil == Process.get({Execution, stranger.port, :staged})
@@ -445,7 +445,7 @@ defmodule AiOrchestrator.Gate.RecordRetentionRedTest do
 
       {holder, monitor} =
         spawn_monitor(fn ->
-          port = Port.open({:spawn, "/bin/sleep 5"}, [:binary])
+          port = Port.open({:spawn_executable, "/bin/sleep"}, [:binary, args: ["5"]])
           send(test, {:held_port, port})
           receive do: (:release -> Port.close(port))
         end)
@@ -768,7 +768,7 @@ defmodule AiOrchestrator.Gate.RecordRetentionRedTest do
       {pid, cap} = worker(native_seams(ctx))
       {_, pa} = released!(pid, cap, sub!(ctx.run_dir, "a"), ["/bin/sleep", "30"], @far, "gr_a")
       {_, pb} = released!(pid, cap, sub!(ctx.run_dir, "b"), ["/bin/sleep", "30"], @far, "gr_b")
-      foreign = Port.open({:spawn, "/bin/sleep 5"}, [:binary])
+      foreign = Port.open({:spawn_executable, "/bin/sleep"}, [:binary, args: ["5"]])
       send(pid, line(foreign, @exit_ok))
       loop!(pid)
       assert nil == staged_in(pid, foreign) and nil == staged_in(pid, pa) and nil == staged_in(pid, pb)
@@ -778,7 +778,7 @@ defmodule AiOrchestrator.Gate.RecordRetentionRedTest do
     test "RT-15a control: PRE-admission (runtime nil): a Port message is dropped, loop serves", ctx do
       pid = start_supervised!(Supervisor.child_spec({Worker, self()}, restart: :temporary))
       assert %{runtime: nil} = loop!(pid)
-      stray = Port.open({:spawn, "/bin/sleep 5"}, [:binary])
+      stray = Port.open({:spawn_executable, "/bin/sleep"}, [:binary, args: ["5"]])
       send(pid, line(stray, @exit_ok))
       assert %{runtime: nil} = loop!(pid)
       assert nil == staged_in(pid, stray)
@@ -788,7 +788,7 @@ defmodule AiOrchestrator.Gate.RecordRetentionRedTest do
 
     test "RT-15b control: admitted EMPTY runtime: a Port message is dropped, loop serves", ctx do
       {pid, _cap} = worker(native_seams(ctx))
-      stray = Port.open({:spawn, "/bin/sleep 5"}, [:binary])
+      stray = Port.open({:spawn_executable, "/bin/sleep"}, [:binary, args: ["5"]])
       send(pid, line(stray, @exit_ok))
       send(pid, :unrelated)
       loop!(pid)

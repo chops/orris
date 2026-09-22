@@ -1332,7 +1332,7 @@ defmodule AiOrchestrator.Run.GateAsyncAwaitRedTest do
       assert {:error, {:pending_mismatch, ^key, %{ref_matches: false}}} =
                lr_awaiting_verdict(awaiting_state, key, make_ref(), port)
 
-      wrong_port = Port.open({:spawn, "/bin/sleep 0"}, [])
+      wrong_port = Port.open({:spawn_executable, "/bin/sleep"}, args: ["0"])
 
       assert {:error, {:pending_mismatch, ^key, %{port_matches: false}}} =
                lr_awaiting_verdict(awaiting_state, key, ref, wrong_port)
@@ -1387,7 +1387,7 @@ defmodule AiOrchestrator.Run.GateAsyncAwaitRedTest do
 
       # a wrong port on an otherwise returned runtime also fails (the handle must be the retained one)
       send(self(), {:trace, pid, :call, {Effects, :settle, [real]}})
-      other_port = Port.open({:spawn, "/bin/sleep 0"}, [])
+      other_port = Port.open({:spawn_executable, "/bin/sleep"}, args: ["0"])
       error = assert_raise(ExUnit.AssertionError, fn -> lr_latest!(pid, key, other_port) end)
       assert error.message =~ "retained running handle"
       # and the unmodified real runtime passes the same helper

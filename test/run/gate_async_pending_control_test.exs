@@ -86,8 +86,8 @@ defmodule AiOrchestrator.Run.GateAsyncPendingControlTest do
 
   describe "Effects.pending/1 carrier validation (R1)" do
     test "exactly one COMPLETE carrier names its key and port; every incomplete carrier is a closed refusal" do
-      port = Port.open({:spawn, "cat"}, [:binary])
-      other = Port.open({:spawn, "cat"}, [:binary])
+      port = Port.open({:spawn_executable, System.find_executable("cat")}, [:binary])
+      other = Port.open({:spawn_executable, System.find_executable("cat")}, [:binary])
       on_exit(fn -> Enum.each([port, other], &safe_close/1) end)
 
       effect = %Effect.AwaitGate{gate_run_id: "gr_a", attempt: 1, deadline_unix: @far}
