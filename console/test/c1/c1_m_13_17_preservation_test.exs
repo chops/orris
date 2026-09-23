@@ -224,6 +224,8 @@ defmodule C1.MutationPreservationTest do
     # graph; and the removal of bin/verify's duplicate DEV escript stage, whose three
     # unique controls moved into PE-3 and the new PE-8), and the direct-spawn
     # test delivery (nine test-only lines launch gate control executables without a shell).
+    # Also the NS-02.B.002 delivery: immutable event schemas replace the persistent_term schema
+    # caches, and the replay-purity test witnesses persistent_term mutations on the replay tree.
     # Pin root entries so another core commit cannot silently pass. A later authorized core delivery must update
     # this snapshot explicitly in its review. Console files are outside the
     # snapshot, avoiding a self-referential commit id.
@@ -233,11 +235,11 @@ defmodule C1.MutationPreservationTest do
     040000 tree 588f175d8b6fd718e4ce9f00bec4e501b26e34bf\tbin
     100644 blob cfbb9f900c6f1442d2552baa0063cff01b270413\tflake.lock
     100644 blob 9b31a69229898038e39a7ba19c6a6e3ff1da3b27\tflake.nix
-    040000 tree f6cb11f9b002ff6a5962fb0aa23ce43d7200c349\tlib
+    040000 tree c8d39f52bf4132e61d12f9e4e82fe9c2b3869236\tlib
     100644 blob 6f8544e74c5907bebfdba64381e9320b07fcd7e3\tmix.exs
     100644 blob 8efca92c081a2c902a8b5952b0aeb96c7c1d2887\tmix.lock
     040000 tree 950aae97c234450184c6cf696d2dadd28520f48f\tnative
-    040000 tree 5bc7578893bf2004d9c5ccb31d872ab05244a1b9\ttest
+    040000 tree 3508a1a238de92b124533364c5bea29aebe5b186\ttest
     """
 
     {committed, 0} = System.cmd("git", ["ls-tree", "HEAD", "--"] ++ core_paths, cd: Harness.core_path())

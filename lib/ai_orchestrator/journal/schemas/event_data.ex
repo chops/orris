@@ -6,6 +6,7 @@ defmodule AiOrchestrator.Journal.Schemas.EventData do
   string-keyed event map and persist that map without encoding this struct.
   """
 
+  alias AiOrchestrator.Journal.Schemas.EventDataSchemas
   alias AiOrchestrator.Journal.Schemas.RequestedBy
 
   defstruct [:type, :event_version, :data]
@@ -17,10 +18,6 @@ defmodule AiOrchestrator.Journal.Schemas.EventData do
   @type mode :: :read | :append | :view
 
   @hash_pattern ~r/^sha256:[0-9a-f]{64}$/
-  @schema_cache_version :crypto.hash(
-                          :sha256,
-                          [File.read!(__ENV__.file), File.read!(Path.join(__DIR__, "requested_by.ex"))]
-                        )
 
   @definitions %{
     "agent_wedge_detected" =>
@@ -113,7 +110,7 @@ defmodule AiOrchestrator.Journal.Schemas.EventData do
 
   @spec schema(mode()) :: Zoi.schema()
   def schema(mode \\ :read) when mode in [:read, :append, :view] do
-    cached_schema({:payload_union, mode}, fn -> Zoi.union(variants(mode, %{})) end)
+    Zoi.union(variants(mode, %{}))
   end
 
   # One variant per (type, version) the mode admits: append sees only current versions,
@@ -124,28 +121,22 @@ defmodule AiOrchestrator.Journal.Schemas.EventData do
         do: event_variant(type, version, mode, extra_fields)
   end
 
-  defp admitted_versions(type, :append), do: [current_version(type)]
-  defp admitted_versions(type, :view), do: [current_version(type)]
-  defp admitted_versions(type, :read), do: known_versions(type)
-
   @doc "Returns the public schema for complete chained journal envelopes."
   @spec envelope_schema() :: Zoi.schema()
   def envelope_schema do
-    cached_schema(:public_envelope, fn ->
-      envelope_fields = %{
-        "schema" => Zoi.literal("ai-orchestrator/journal-event"),
-        "schema_version" => Zoi.literal(2),
-        "seq" => positive_integer(),
-        "event_id" => nonempty_string(),
-        "ts" => nonempty_string(),
-        "run_id" => nonempty_string(),
-        "actor" => Zoi.literal("run_supervisor"),
-        "traceparent" => Zoi.optional(nonempty_string()),
-        "prev_line_sha256" => hash()
-      }
+    envelope_fields = %{
+      "schema" => Zoi.literal("ai-orchestrator/journal-event"),
+      "schema_version" => Zoi.literal(2),
+      "seq" => positive_integer(),
+      "event_id" => nonempty_string(),
+      "ts" => nonempty_string(),
+      "run_id" => nonempty_string(),
+      "actor" => Zoi.literal("run_supervisor"),
+      "traceparent" => Zoi.optional(nonempty_string()),
+      "prev_line_sha256" => hash()
+    }
 
-      Zoi.union(variants(:append, envelope_fields))
-    end)
+    Zoi.union(variants(:append, envelope_fields))
   end
 
   @spec parse(map(), mode()) :: {:ok, t()} | {:error, map()}
@@ -242,22 +233,16 @@ defmodule AiOrchestrator.Journal.Schemas.EventData do
     )
   end
 
-  defp event_schema(type, version, mode),
-    do: cached_schema({:event, type, version, mode}, fn -> event_variant(type, version, mode, %{}) end)
+  @doc false
+  def build_schema(type, version, mode) when is_binary(type) and is_integer(version) and mode in [:read, :append, :view],
+    do: event_variant(type, version, mode, %{})
 
-  defp cached_schema(name, build) do
-    key = {__MODULE__, @schema_cache_version, name}
+  @doc false
+  def admitted_versions(type, :append), do: [current_version(type)]
+  def admitted_versions(type, :view), do: [current_version(type)]
+  def admitted_versions(type, :read), do: known_versions(type)
 
-    case :persistent_term.get(key, nil) do
-      nil ->
-        schema = build.()
-        :persistent_term.put(key, schema)
-        schema
-
-      schema ->
-        schema
-    end
-  end
+  defp event_schema(type, version, mode), do: EventDataSchemas.fetch!(type, version, mode)
 
   # gate_passed (version 1) and gate_failed version 1: the stderr evidence union, exactly one of
   # stderr_hash / stderr_merged, as recorded since the first archived runs.

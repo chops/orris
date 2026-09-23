@@ -2,12 +2,12 @@ defmodule AiOrchestrator.Journal.Event do
   @moduledoc false
 
   alias AiOrchestrator.Journal.Schemas.EventData
+  alias AiOrchestrator.Journal.Schemas.LiteralSchema
 
   @type rejection :: %{required(:clause) => String.t(), optional(atom()) => term()}
 
   @schema_name "ai-orchestrator/journal-event"
   @chain_hash_pattern ~r/^sha256:[0-9a-f]{64}$/
-  @schema_cache_version :crypto.hash(:sha256, File.read!(__ENV__.file))
   @event_types MapSet.new([
                  "run_created",
                  "run_spec_loaded",
@@ -155,37 +155,27 @@ defmodule AiOrchestrator.Journal.Event do
 
   def validate_view(_event), do: {:error, %{clause: "invalid_event_shape"}}
 
-  defp envelope_schema do
-    key = {__MODULE__, @schema_cache_version, :envelope_schema}
+  @envelope_schema LiteralSchema.check!(
+                     Zoi.map(
+                       %{
+                         "schema" => Zoi.literal(@schema_name),
+                         "schema_version" => Zoi.enum([1, 2]),
+                         "event_version" => Zoi.integer(),
+                         "seq" => Zoi.integer(),
+                         "event_id" => Zoi.string(),
+                         "type" => Zoi.enum(MapSet.to_list(@event_types)),
+                         "ts" => Zoi.string(),
+                         "run_id" => Zoi.string(),
+                         "actor" => Zoi.literal("run_supervisor"),
+                         "traceparent" => Zoi.optional(Zoi.string()),
+                         "prev_line_sha256" => Zoi.optional(Zoi.regex(Zoi.string(), @chain_hash_pattern)),
+                         "data" => Zoi.map()
+                       },
+                       unrecognized_keys: :error
+                     )
+                   )
 
-    case :persistent_term.get(key, nil) do
-      nil ->
-        schema =
-          Zoi.map(
-            %{
-              "schema" => Zoi.literal(@schema_name),
-              "schema_version" => Zoi.enum([1, 2]),
-              "event_version" => Zoi.integer(),
-              "seq" => Zoi.integer(),
-              "event_id" => Zoi.string(),
-              "type" => Zoi.enum(MapSet.to_list(@event_types)),
-              "ts" => Zoi.string(),
-              "run_id" => Zoi.string(),
-              "actor" => Zoi.literal("run_supervisor"),
-              "traceparent" => Zoi.optional(Zoi.string()),
-              "prev_line_sha256" => Zoi.optional(Zoi.regex(Zoi.string(), @chain_hash_pattern)),
-              "data" => Zoi.map()
-            },
-            unrecognized_keys: :error
-          )
-
-        :persistent_term.put(key, schema)
-        schema
-
-      schema ->
-        schema
-    end
-  end
+  defp envelope_schema, do: @envelope_schema
 
   defp validate_required(event) when is_map(event) do
     required = [
