@@ -13,16 +13,16 @@ defmodule C1.NS38CoreSurfaceTest do
       the remote calls it imports and the module atoms it carries.
 
   Either measure must name `Prepare` and `Query` (so an empty scan cannot pass) and nothing else in the core.
-  The inert control `console/test/fixtures/ns38/forbidden_core_reference.ex` is outside the compile paths; both
-  measures run over it and must report exactly its forbidden references, and none of its comment, docstring or
-  string decoys.
+  The inert control `console/test/fixtures/ns38/forbidden_core_reference.ex.txt` is outside the compile paths (and,
+  not being `.ex`, outside Mix's test load filters); both measures run over it and must report exactly its
+  forbidden references, and none of its comment, docstring or string decoys.
   """
 
   use ExUnit.Case, async: true
 
   @console Path.expand("../..", __DIR__)
   @allowed [AiOrchestrator.Prepare, AiOrchestrator.Query]
-  @fixture Path.expand("../fixtures/ns38/forbidden_core_reference.ex", __DIR__)
+  @fixture Path.expand("../fixtures/ns38/forbidden_core_reference.ex.txt", __DIR__)
   @fixture_module C1.Fixtures.ForbiddenCoreReference
 
   describe "source references" do
