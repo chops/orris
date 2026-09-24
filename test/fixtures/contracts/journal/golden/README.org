@@ -6,7 +6,7 @@ the per-type versions in =@versions=). =test/journal/golden_per_version_bytes_te
 derives that list from the module and requires exactly these files, no more and no fewer.
 
 Each =<type>.v<version>.jsonl= holds one journal line and a trailing newline. The bytes are
-history: =golden.sha256= pins every file, and a reader, upcaster or fold that rewrote one
+history: =golden.sha256.txt= pins every file, and a reader, upcaster or fold that rewrote one
 would fail the byte comparison. A golden line is never edited; a new version gets a new file.
 
 Provenance (source line copied byte for byte; "authored" marks the three reserved

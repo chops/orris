@@ -5,7 +5,7 @@ defmodule AiOrchestrator.Journal.GoldenPerVersionBytesTest do
   `golden_version_bytes_test.exs` proves that SOME golden line sits below its type's current
   version. These rows take the supported list from the code -- every type in
   `EventData.typed_types/0` crossed with `EventData.known_versions/1` -- and require one golden
-  line per pair under `test/fixtures/contracts/journal/golden/`, pinned by `golden.sha256`.
+  line per pair under `test/fixtures/contracts/journal/golden/`, pinned by `golden.sha256.txt`.
   Each line must still validate at the version it was written at, upcast to its type's current
   version, and survive the read, upcast and every fold entry point with its bytes unchanged.
 
@@ -22,7 +22,7 @@ defmodule AiOrchestrator.Journal.GoldenPerVersionBytesTest do
   alias AiOrchestrator.Journal.Vocabulary
 
   @golden_root Path.expand("../fixtures/contracts/journal/golden", __DIR__)
-  @manifest "golden.sha256"
+  @manifest "golden.sha256.txt"
 
   describe "the supported (type, version) list" do
     test "is derived from the schema module and covers every vocabulary type it types" do
