@@ -206,12 +206,16 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
     %{child: child, grandchild: grandchild}
   end
 
-  # SIGTERM's bit in the kernel's ignored-signal mask, as `ps -o sigignore=` prints it (hex)
-  defp ignores_term?(pid) do
-    case System.cmd("ps", ["-o", "sigignore=", "-p", pid], stderr_to_stdout: true) do
-      {out, 0} -> out |> String.trim() |> String.to_integer(16) |> Bitwise.band(0x4000) != 0
-      {out, status} -> flunk("ps proved no signal mask for #{pid} (#{status}): #{inspect(out)}")
-    end
+  # Behavioural proof, portable across Linux and Darwin `ps`, that an owned descendant ignores
+  # TERM: re-proven to be the expected child in the owned group, sent a real TERM, and still
+  # alive with the same parent and group 100 ms later.
+  defp assert_survives_term!(pid, expected_parent, expected_pgid) do
+    assert parent_of(pid) == expected_parent, "#{pid} is not a child of #{expected_parent}"
+    assert pgid_of(pid) == expected_pgid, "#{pid} is not in the owned group #{expected_pgid}"
+    {_, 0} = System.cmd("kill", ["-TERM", pid], stderr_to_stdout: true)
+    Process.sleep(100)
+    assert signal_zero(pid) == :alive, "#{pid} did not survive TERM: the fixture must ignore it"
+    assert parent_of(pid) == expected_parent and pgid_of(pid) == expected_pgid
   end
 
   defp pgid_of(pid) do
@@ -261,20 +265,32 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
     vm = System.pid()
 
     on_exit(fn ->
-      guardian_s = Integer.to_string(guardian)
-      settled? = fn -> signal_zero(guardian_s) == :gone and dead?(identity) end
+      settled? = fn -> signal_zero(Integer.to_string(guardian)) == :gone and dead?(identity) end
 
       if !wait_until(settled?, 15_000) do
-        recorded =
-          for name <- ~w(worker.pid child.pid grandchild.pid),
-              {:ok, <<_, _::binary>> = pid} <- [File.read(Path.join(run_dir, name))],
-              do: String.trim(pid)
-
-        for pid <- recorded, pgid_of(pid) == Integer.to_string(pgid), do: System.cmd("kill", ["-KILL", pid])
-        if parent_of_or_nil(guardian_s) == vm, do: System.cmd("kill", ["-KILL", guardian_s])
+        recorded = recorded_tree_pids(run_dir)
+        kill_recorded_group(recorded, pgid)
+        kill_owned_guardian(guardian, vm)
         raise("owned tree #{pgid} (guardian #{guardian}) outlived its test; killed #{inspect(recorded)}")
       end
     end)
+  end
+
+  defp recorded_tree_pids(run_dir) do
+    for name <- ~w(worker.pid child.pid grandchild.pid),
+        {:ok, <<_, _::binary>> = pid} <- [File.read(Path.join(run_dir, name))],
+        do: String.trim(pid)
+  end
+
+  # only pids re-proven to be in the owned group now
+  defp kill_recorded_group(recorded, pgid) do
+    for pid <- recorded, pgid_of(pid) == Integer.to_string(pgid), do: System.cmd("kill", ["-KILL", pid])
+  end
+
+  # only a guardian re-proven to be this VM's child now
+  defp kill_owned_guardian(guardian, vm) do
+    guardian_s = Integer.to_string(guardian)
+    if parent_of_or_nil(guardian_s) == vm, do: System.cmd("kill", ["-KILL", guardian_s])
   end
 
   defp parent_of_or_nil(pid) do
@@ -871,7 +887,7 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
     test "the real deadline arriving kills the whole tree: worker, child and TERM-ignoring grandchild all gone",
          %{run_dir: run_dir, opts: opts} do
       opts = Keyword.merge(opts, clock: WallClock, settle_ms: 3_000)
-      deadline = WallClock.unix_now() + 3
+      deadline = WallClock.unix_now() + 5
       {prepared, ack} = acked(run_dir, tree_argv(run_dir, "wait"), opts, %{deadline_unix: deadline})
       identity = Execution.identity(prepared)
       :ok = cleanup_tree_on_exit(run_dir, identity)
@@ -881,10 +897,13 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
 
       assert {:ok, running} = Execution.release(prepared, ack)
       tree = descendant_tree!(run_dir, identity)
-      assert ignores_term?(tree.child) and ignores_term?(tree.grandchild), "the fixture must ignore TERM below the worker"
+      # the child and grandchild really ignore TERM: each survives a real one
+      pgid = Integer.to_string(identity.pgid)
+      assert_survives_term!(tree.child, Integer.to_string(identity.worker), pgid)
+      assert_survives_term!(tree.grandchild, tree.child, pgid)
 
       # survival AT the deadline: one second before it, the whole tree is still alive
-      assert wait_until(fn -> WallClock.unix_now() >= deadline - 1 end, 5_000)
+      assert wait_until(fn -> WallClock.unix_now() >= deadline - 1 end, 8_000)
       assert WallClock.unix_now() < deadline, "the tree must be observed before the deadline, not after"
       assert signal_zero(Integer.to_string(identity.worker)) == :alive
       assert signal_zero(tree.child) == :alive and signal_zero(tree.grandchild) == :alive
