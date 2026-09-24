@@ -22,8 +22,9 @@ defmodule AiOrchestrator.Contracts.OpaqueIdentifierTest do
   `case` clause of either shape), any Erlang `:binary` call on the identity, and an identity
   renamed first (`id = run_id`, `%{"run_id" => id}`, `Keyword.fetch!(opts, :run_id)`) and
   decomposed under the new name. Renames are tracked within one function clause.
-  `test/fixtures/contracts/opaque_identifier/run_id_decompositions.ex` holds one function
-  per form; it is parsed, never compiled, and every function in it must be reported.
+  `test/fixtures/contracts/opaque_identifier/run_id_decompositions.ex.txt` holds one function
+  per form; it is parsed, never compiled (and, not being `.ex`, outside Mix's test load
+  filters), and every function in it must be reported.
   """
 
   use ExUnit.Case, async: true
@@ -41,7 +42,7 @@ defmodule AiOrchestrator.Contracts.OpaqueIdentifierTest do
   @map_readers ~w(get fetch fetch!)a
   @def_kinds ~w(def defp defmacro defmacrop)a
 
-  @fixture Path.expand("../fixtures/contracts/opaque_identifier/run_id_decompositions.ex", __DIR__)
+  @fixture Path.expand("../fixtures/contracts/opaque_identifier/run_id_decompositions.ex.txt", __DIR__)
 
   # Every function the fixture must hold, so a form deleted from it is noticed.
   @fixture_functions ~w(
