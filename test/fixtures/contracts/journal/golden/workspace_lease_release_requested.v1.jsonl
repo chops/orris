@@ -1,0 +1,1 @@
+{"schema":"ai-orchestrator/journal-event","schema_version":1,"event_version":1,"seq":31,"event_id":"ev_0031","type":"workspace_lease_release_requested","ts":"2026-01-01T00:00:31Z","run_id":"run_fixture_0002","actor":"run_supervisor","data":{"release_request_id":"wslr_0001","workspace_lease_id":"wsl_0001","reason":"run_completed"}}

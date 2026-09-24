@@ -1,0 +1,1 @@
+{"schema":"ai-orchestrator/journal-event","schema_version":1,"event_version":1,"seq":12,"event_id":"ev_0012","type":"assignment_observation_started","ts":"2026-01-01T00:00:12Z","run_id":"run_fixture_0002","actor":"run_supervisor","data":{"assignment_id":"as_0001","deadline_unix":1767225600}}

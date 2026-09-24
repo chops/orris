@@ -1,0 +1,1 @@
+{"actor":"run_supervisor","data":{"next_attempt":2,"prior_assignment_id":"as_0001","reason":"gate_failed","remaining_attempts":1,"work_item_id":"item_a"},"event_id":"ev_0029","event_version":1,"run_id":"run_fixture_0001","schema":"ai-orchestrator/journal-event","schema_version":1,"seq":29,"ts":"2026-09-01T12:00:28Z","type":"work_item_retry_scheduled"}
