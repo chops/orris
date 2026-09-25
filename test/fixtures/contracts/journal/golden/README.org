@@ -1,0 +1,64 @@
+#+title: Golden journal lines, one per supported (type, event_version) (NS-08.B.001)
+
+One file per =(type, event_version)= that =AiOrchestrator.Journal.Schemas.EventData= declares:
+every type in =typed_types/0= crossed with =known_versions/1= (=1..current_version/1=, with
+the per-type versions in =@versions=). =test/journal/golden_per_version_bytes_test.exs=
+derives that list from the module and requires exactly these files, no more and no fewer.
+
+Each =<type>.v<version>.jsonl= holds one journal line and a trailing newline. The bytes are
+history: =golden.sha256.txt= pins every file, and a reader, upcaster or fold that rewrote one
+would fail the byte comparison. A golden line is never edited; a new version gets a new file.
+
+Provenance (source line copied byte for byte; "authored" marks the three reserved
+notification types that no corpus carried, written against their payload schema):
+
+| type | version | source (relative to =test/fixtures/contracts=) |
+|------+---------+------------------------------------------------|
+| =agent_wedge_detected= | 1 | =parity/04_auth_blocked_pane_run.jsonl:13= |
+| =artifact_observed= | 1 | =journals/fold_happy_writer_reviewer/events.jsonl:13= |
+| =assignment_completed= | 1 | =journals/fold_happy_writer_reviewer/events.jsonl:14= |
+| =assignment_dispatch_sent= | 1 | =journals/fold_happy_writer_reviewer/events.jsonl:11= |
+| =assignment_failed= | 1 | =journals/reject_second_terminal_assignment/events.jsonl:15= |
+| =assignment_observation_started= | 1 | =journals/fold_happy_writer_reviewer/events.jsonl:12= |
+| =assignment_prompt_projected= | 1 | =journal/versions/assignment_prompt_projected.v1.json:1= |
+| =assignment_prompt_projected= | 2 | =journal/versions/assignment_prompt_projected.v2.recorded.json:1= |
+| =assignment_requested= | 1 | =journals/fold_happy_writer_reviewer/events.jsonl:5= |
+| =context_patch_accepted= | 1 | =journals/reject_context_revision_skip/events.jsonl:6= |
+| =context_patch_proposed= | 1 | =journals/reject_context_revision_skip/events.jsonl:5= |
+| =contract_change_proposed= | 1 | =journals/reject_agent_ratified_contract_change/events.jsonl:5= |
+| =contract_change_ratified= | 1 | =journals/reject_agent_ratified_contract_change/events.jsonl:6= |
+| =gate_failed= | 1 | =journal/versions/gate_failed.v1.json:1= |
+| =gate_failed= | 2 | =journal/versions/gate_failed.v2.exit.json:1= |
+| =gate_passed= | 1 | =journals/fold_happy_writer_reviewer/events.jsonl:28= |
+| =gate_requested= | 1 | =journals/fold_happy_writer_reviewer/events.jsonl:26= |
+| =gate_started= | 1 | =journal/versions/gate_started.v1.json:1= |
+| =gate_started= | 2 | =journal/versions/gate_started.v2.json:1= |
+| =human_attention_required= | 1 | =journals/fold_attention_block/events.jsonl:5= |
+| =notification_failed= | 1 | =authored= |
+| =notification_requested= | 1 | =authored= |
+| =notification_sent= | 1 | =authored= |
+| =pane_lease_acquired= | 1 | =journals/fold_happy_writer_reviewer/events.jsonl:7= |
+| =pane_lease_release_requested= | 1 | =journals/fold_happy_writer_reviewer/events.jsonl:33= |
+| =pane_lease_released= | 1 | =journals/fold_happy_writer_reviewer/events.jsonl:34= |
+| =pane_lease_requested= | 1 | =journals/fold_happy_writer_reviewer/events.jsonl:6= |
+| =plan_recorded= | 1 | =journals/fold_attention_block/events.jsonl:3= |
+| =review_disposition_recorded= | 1 | =journals/fold_happy_writer_reviewer/events.jsonl:25= |
+| =review_received= | 1 | =journals/fold_happy_writer_reviewer/events.jsonl:24= |
+| =review_requested= | 1 | =journals/fold_happy_writer_reviewer/events.jsonl:15= |
+| =run_budget_exhausted= | 1 | =journals/fold_budget_exhausted/events.jsonl:6= |
+| =run_cancel_requested= | 1 | =journals/fold_cancel_converged/events.jsonl:5= |
+| =run_cancelled= | 1 | =journals/fold_cancel_converged/events.jsonl:6= |
+| =run_completed= | 1 | =journals/fold_happy_writer_reviewer/events.jsonl:30= |
+| =run_created= | 1 | =journals/fold_attention_block/events.jsonl:1= |
+| =run_failed= | 1 | =journals/reject_second_terminal_run/events.jsonl:3= |
+| =run_recovery_reserved= | 1 | =journals/fold_recovery_reserved/events.jsonl:6= |
+| =run_resumed= | 1 | =journals/fold_attention_resolved/events.jsonl:6= |
+| =run_spec_loaded= | 1 | =journals/fold_attention_block/events.jsonl:2= |
+| =run_started= | 1 | =journals/fold_attention_block/events.jsonl:4= |
+| =stop_policy_evaluated= | 1 | =journals/fold_budget_exhausted/events.jsonl:5= |
+| =work_item_completed= | 1 | =journals/fold_happy_writer_reviewer/events.jsonl:29= |
+| =work_item_retry_scheduled= | 1 | =parity/05_gate_failure_summary_feedback_run.jsonl:29= |
+| =workspace_lease_acquired= | 1 | =journals/fold_happy_writer_reviewer/events.jsonl:9= |
+| =workspace_lease_release_requested= | 1 | =journals/fold_happy_writer_reviewer/events.jsonl:31= |
+| =workspace_lease_released= | 1 | =journals/fold_happy_writer_reviewer/events.jsonl:32= |
+| =workspace_lease_requested= | 1 | =journals/fold_happy_writer_reviewer/events.jsonl:8= |

@@ -1,0 +1,1 @@
+{"schema":"ai-orchestrator/journal-event","schema_version":1,"event_version":1,"seq":6,"event_id":"ev_0006","type":"run_resumed","ts":"2026-01-01T00:00:06Z","run_id":"run_fixture_0003","actor":"run_supervisor","data":{"supervisor_instance":"sup_0002","run_lock_path":"run.lock","last_seen_seq":5,"recovery_reason":"operator_resume","resolves_attention_ids":["att_0001"]}}

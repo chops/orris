@@ -1,0 +1,1 @@
+{"schema":"ai-orchestrator/journal-event","schema_version":1,"event_version":1,"seq":34,"event_id":"ev_0034","type":"pane_lease_released","ts":"2026-01-01T00:00:34Z","run_id":"run_fixture_0002","actor":"run_supervisor","data":{"release_request_id":"plrr_0001","pane_ref":"pane_writer"}}
