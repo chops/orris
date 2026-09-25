@@ -375,6 +375,32 @@ defmodule AiOrchestrator.Run.CommandExecutorRedTest do
     run_dir
   end
 
+  # NS-43.C.004 corpus: {label, run_dir, clause, file carrying the marker, marker}. The line cases carry a canary in
+  # the offending line; the receipt cases carry one in the offending receipt, written with the Writer's own encoder
+  defp rejection_leak_cases(v2) do
+    legacy = kill9("events_pre_dispatch.jsonl")
+    not_an_event = Jason.encode!(%{"schema_version" => 1, "canary" => "ZZ-CANARY-2"})
+    last = List.last(v2)
+
+    [
+      {"undecodable middle line", seed_v2!(tmp_run_dir(), List.replace_at(v2, 4, ~s({"ZZ-CANARY-1" not json))),
+       "undecodable_line", "events.jsonl", "ZZ-CANARY-1"},
+      {"valid JSON, not an event", seed_v2!(tmp_run_dir(), rechain_v2(List.replace_at(legacy, 4, not_an_event))),
+       "missing_required_field", "events.jsonl", "ZZ-CANARY-2"},
+      {"receipt beyond the tail", tmp_run_dir() |> seed_v2!(v2) |> receipt!(length(v2) + 3, last, "ZZ-CANARY-3"),
+       "receipt_beyond_tail", "events.head", "ZZ-CANARY-3"},
+      {"stale receipt", tmp_run_dir() |> seed_v2!(v2) |> receipt!(1, hd(v2), "ZZ-CANARY-4"), "receipt_stale",
+       "events.head", "ZZ-CANARY-4"}
+    ]
+  end
+
+  # a well-formed receipt naming `line` at `seq`, its free-text timestamp field carrying the case marker
+  defp receipt!(run_dir, seq, line, marker) do
+    receipt = Chain.encode_receipt(%{seq: seq, line_sha256: Chain.line_sha256(line <> "\n"), updated_at: marker})
+    File.write!(Path.join(run_dir, "events.head"), receipt)
+    run_dir
+  end
+
   # the Writer's own rejection for a directory; a successful open is closed instead of leaked
   defp writer_rejection!(run_dir) do
     case Writer.open(run_dir, lock: [supervisor_instance: @instance]) do
@@ -4273,6 +4299,24 @@ defmodule AiOrchestrator.Run.CommandExecutorRedTest do
 
         assert journal_bytes(run_dir) == before, label
         refute_received {:effect_ran, _}
+      end
+
+      # NS-43.C.004: corrupt input the Reader refuses before any receipt is reconciled, and receipts the chain
+      # outruns or has outrun. Each case seeds its OWN marker into the offending bytes (C1); the rejection is pinned
+      # to its clause (C2) and must not carry that marker, through the Writer or through invoke.
+      for {label, run_dir, clause, carrier, marker} <- rejection_leak_cases(v2) do
+        assert File.read!(Path.join(run_dir, carrier)) =~ marker, "#{label}: the marker is not in the seeded #{carrier}"
+        expected = writer_rejection!(run_dir)
+        assert expected.clause == clause, "#{label}: #{inspect(expected.clause)}"
+        before = journal_bytes(run_dir)
+        ctx = context(run_dir, "kill9_resume", pre_dispatch_index(), effect_observer: observer_to(self()))
+        rejection = invoke("resume", %{"recovery_reason" => "x"}, run_id, CommandId.generate(), ctx)
+
+        assert rejection == {:error, expected}, label
+        assert journal_bytes(run_dir) == before, label
+        refute_received {:effect_ran, _}
+        refute inspect(expected) =~ marker, "#{label}: the Writer's rejection carries the offending bytes"
+        refute inspect(rejection) =~ marker, "#{label}: the resume rejection carries the offending bytes"
       end
 
       # torn tail: the run id is known from the accepted prefix BEFORE the tail is appended
