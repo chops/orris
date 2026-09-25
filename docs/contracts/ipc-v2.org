@@ -193,6 +193,10 @@ bytes of producer material would leave the pin's scope. The pin stays whole.
 | ~send.duplicate.<status>.json~   | Admission refused as a duplicate. ~duplicate: true~ beside the receipt view -- ~status~ (~pending~, ~queued~, ~delivered~, ~ambiguous~), ~delivery_attempt~, and the identities ~msg_id~, ~pane_id~, ~payload_hash~. Never a status string. A client MUST treat it exactly as a reconcile answer of the same status: ~delivered~ reconstructs the send, ~queued~ and ~pending~ are journaled as a queued send and converged by the client's bounded, budgeted reconciliation (the client neither waits inside the send nor admits a second attempt on its own), ~ambiguous~ is refused and never resent. A ~not_delivered~ receipt is never answered as a duplicate because admission opens a new attempt instead. |
 | ~send.error.conflict.json~       | Same ~msg_id~, different payload hash or pane: refused.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | ~send.error.missing_msg_id.json~ | A v2 send without its send id is refused before admission; the pane it named is echoed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ~send.error.pane_quarantined.json~ | A registered pane still quarantined after boot restoration refuses the send before receipt admission, echoing ~msg_id~ and ~pane_id~. A later reconcile answers ~absent~ because no receipt exists. This is a typed pane refusal, not a request or store error; boot reconciliation or controlled re-attachment is required, not blind retry. |
+
+The ~pane_quarantined~ row specifies the next paired reply. Its fixture is not in
+the current sixteen-file set, and this text alone does not make any daemon emit it.
 
 ** Reconcile replies
 :PROPERTIES:
@@ -211,25 +215,23 @@ that distinction, so a stored receipt without a positive attempt is refused.
 :PROPERTIES:
 :CUSTOM_ID: the-sessions-read-surface
 :END:
-*** Status: specified, not adopted
+*** Status: producer adopted at the paired snapshot
 :PROPERTIES:
-:CUSTOM_ID: status-specified-not-adopted
+:CUSTOM_ID: status-producer-adopted-at-the-paired-snapshot
 :END:
-Everything from here to the end of this section specifies a surface that no
-daemon implements yet and that no paired example set contains. Read it as the
-contract an implementation must be built against, never as a description of
-something answering today.
+The producer snapshot at ~7e5f5321~ implements the sessions read and its
+production-path tests exercise the separate examples below. This is a source
+and test statement, not a claim that an installed daemon answers ~sessions~;
+a caller still discovers ~sessions_read~ through the ordinary v2 capability
+preflight.
 
 The fixtures under ~test/fixtures/contracts/ipc/v2/~ and their ~CONTRACT_HASH~
 are the PAIRED set: byte-identical with the producer snapshot the pairing block
-above names, advertising exactly ~delivery_reconcile~. This document does not
-move them, and nothing below should be read as a claim that they already carry
-~sessions_read~. The sessions examples live in a separate directory with their
-own hash and their own controls, so that specifying the surface cannot be
-mistaken for adopting it, and so that a reader comparing the two repositories
-still finds the paired set equal on both sides. The ping example and the pairing
-block move when a producer actually advertises the capability; that step is a
-later, paired change and is not this document.
+above names, with ~ping.ok.json~ advertising ~delivery_reconcile~ and
+~sessions_read~. The sessions reply examples remain in a separate directory
+with their own hash and controls. They are adopted at the named producer
+snapshot, but are not part of the sixteen-file paired v2 delivery set; this
+document moves neither inventory nor the pairing block.
 
 *** What ~sessions~ answers
 :PROPERTIES:
