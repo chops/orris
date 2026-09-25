@@ -375,22 +375,25 @@ defmodule AiOrchestrator.Run.CommandExecutorRedTest do
     run_dir
   end
 
-  # NS-43.C.004 corpus: {label, run_dir, clause, file carrying the marker, marker}. The line cases carry a canary in
-  # the offending line; the receipt cases carry one in the offending receipt, written with the Writer's own encoder
+  # NS-43.C.004 corpus: {label, run_dir, exact rejection, file carrying the marker, marker}. The line cases carry a
+  # canary in the offending line (5th of 9); the receipt cases carry one in the offending receipt, written with the
+  # Writer's own encoder. Bytes that are not JSON at all never reach the Reader's line check: Chain.verify refuses
+  # them first as undecodable_line, so that case stands for the malformed-JSON kind.
   defp rejection_leak_cases(v2) do
     legacy = kill9("events_pre_dispatch.jsonl")
+    # a chained JSON map with no event fields; the first required field the Reader finds absent is "schema"
     not_an_event = Jason.encode!(%{"schema_version" => 1, "canary" => "ZZ-CANARY-2"})
-    last = List.last(v2)
+    count = length(v2)
 
     [
       {"undecodable middle line", seed_v2!(tmp_run_dir(), List.replace_at(v2, 4, ~s({"ZZ-CANARY-1" not json))),
-       "undecodable_line", "events.jsonl", "ZZ-CANARY-1"},
+       %{clause: "undecodable_line", at_seq: 5}, "events.jsonl", "ZZ-CANARY-1"},
       {"valid JSON, not an event", seed_v2!(tmp_run_dir(), rechain_v2(List.replace_at(legacy, 4, not_an_event))),
-       "missing_required_field", "events.jsonl", "ZZ-CANARY-2"},
-      {"receipt beyond the tail", tmp_run_dir() |> seed_v2!(v2) |> receipt!(length(v2) + 3, last, "ZZ-CANARY-3"),
-       "receipt_beyond_tail", "events.head", "ZZ-CANARY-3"},
-      {"stale receipt", tmp_run_dir() |> seed_v2!(v2) |> receipt!(1, hd(v2), "ZZ-CANARY-4"), "receipt_stale",
-       "events.head", "ZZ-CANARY-4"}
+       %{clause: "missing_required_field", field: "schema", at_seq: 5}, "events.jsonl", "ZZ-CANARY-2"},
+      {"receipt beyond the tail", tmp_run_dir() |> seed_v2!(v2) |> receipt!(count + 3, List.last(v2), "ZZ-CANARY-3"),
+       %{clause: "receipt_beyond_tail", receipt_seq: count + 3, count: count}, "events.head", "ZZ-CANARY-3"},
+      {"stale receipt", tmp_run_dir() |> seed_v2!(v2) |> receipt!(1, hd(v2), "ZZ-CANARY-4"),
+       %{clause: "receipt_stale", receipt_seq: 1, count: count}, "events.head", "ZZ-CANARY-4"}
     ]
   end
 
@@ -4303,11 +4306,11 @@ defmodule AiOrchestrator.Run.CommandExecutorRedTest do
 
       # NS-43.C.004: corrupt input the Reader refuses before any receipt is reconciled, and receipts the chain
       # outruns or has outrun. Each case seeds its OWN marker into the offending bytes (C1); the rejection is pinned
-      # to its clause (C2) and must not carry that marker, through the Writer or through invoke.
-      for {label, run_dir, clause, carrier, marker} <- rejection_leak_cases(v2) do
+      # to its exact clause and fields (C2) and must not carry that marker, through the Writer or through invoke.
+      for {label, run_dir, exact, carrier, marker} <- rejection_leak_cases(v2) do
         assert File.read!(Path.join(run_dir, carrier)) =~ marker, "#{label}: the marker is not in the seeded #{carrier}"
         expected = writer_rejection!(run_dir)
-        assert expected.clause == clause, "#{label}: #{inspect(expected.clause)}"
+        assert expected == exact, "#{label}: #{inspect(expected)}"
         before = journal_bytes(run_dir)
         ctx = context(run_dir, "kill9_resume", pre_dispatch_index(), effect_observer: observer_to(self()))
         rejection = invoke("resume", %{"recovery_reason" => "x"}, run_id, CommandId.generate(), ctx)
