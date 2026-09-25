@@ -1,0 +1,1 @@
+{"schema":"ai-orchestrator/journal-event","schema_version":1,"event_version":1,"seq":11,"event_id":"ev_0011","type":"assignment_dispatch_sent","ts":"2026-01-01T00:00:11Z","run_id":"run_fixture_0002","actor":"run_supervisor","data":{"assignment_id":"as_0001","backend":"local_pane","pane_ref":"pane_writer","send_status":"ok","send_message_id":"send_0001","replayed":false}}

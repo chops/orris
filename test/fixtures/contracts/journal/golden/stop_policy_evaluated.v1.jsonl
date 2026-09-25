@@ -1,0 +1,1 @@
+{"schema":"ai-orchestrator/journal-event","schema_version":1,"event_version":1,"seq":5,"event_id":"ev_0005","type":"stop_policy_evaluated","ts":"2026-01-01T00:00:05Z","run_id":"run_fixture_0003","actor":"run_supervisor","data":{"policy_id":"sp_0001","scope":"run","reason":"wall_clock","counters":{"elapsed_s":3600},"decision":"budget_exhausted"}}

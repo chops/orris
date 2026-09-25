@@ -1,0 +1,1 @@
+{"schema":"ai-orchestrator/journal-event","schema_version":1,"event_version":1,"seq":6,"event_id":"ev_0006","type":"run_budget_exhausted","ts":"2026-01-01T00:00:06Z","run_id":"run_fixture_0003","actor":"run_supervisor","data":{"budget_kind":"wall_clock","consumed":3600,"limit":3600,"blocking_entity":"item_a"}}

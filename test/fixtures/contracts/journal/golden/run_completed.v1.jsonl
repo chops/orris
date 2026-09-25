@@ -1,0 +1,1 @@
+{"schema":"ai-orchestrator/journal-event","schema_version":1,"event_version":1,"seq":30,"event_id":"ev_0030","type":"run_completed","ts":"2026-01-01T00:00:30Z","run_id":"run_fixture_0002","actor":"run_supervisor","data":{"completed_work_item_ids":["item_a"]}}
