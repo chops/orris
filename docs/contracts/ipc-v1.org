@@ -62,6 +62,10 @@ repository pins; it does not add fields to the wire.
 | ~send.error.pane_dead.json~              | The registered pane state machine is terminal.                                             |
 | ~send.error.send_timeout.json~           | The pane state machine missed the configured call deadline; ~<detail>~ is diagnostic text. |
 | ~send.error.paste_failed.json~           | Synchronous tmux paste failed; ~<detail>~ is diagnostic text and is not machine-readable.  |
+| ~send.error.pane_quarantined.json~       | A registered, live pane quarantined after boot restoration refused the send before it was pasted or queued; not terminal, not a request error. |
+
+The ~pane_quarantined~ row specifies the next paired v1 reply. Its fixture is not in
+the current fifteen-file set, and this text alone does not make any daemon emit it.
 
 ~queued~ and ~queue_full~ are typed outcomes, not transport failures. Consumers
 must preserve the distinction. A later revision defines consumer behavior for each

@@ -479,8 +479,8 @@ own directory and their own hash:
 The hash rule is the v1 rule, unchanged: byte-sorted ~*.json~ filenames, each
 followed by a NUL byte, its exact bytes and another NUL byte, hashed as SHA-256,
 stored as 64 lowercase hex characters and a final newline. The directory and
-~CONTRACT_HASH~ itself are not inputs. The v1 contract keeps its own fifteen
-fixtures and its own hash, and nothing in this section touches either.
+~CONTRACT_HASH~ itself are not inputs. The v1 contract keeps its own fixture
+set and its own hash, and nothing in this section touches either.
 
 The eight successful examples, and what each one is for:
 
