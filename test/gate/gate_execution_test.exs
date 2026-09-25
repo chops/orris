@@ -32,6 +32,14 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
     def monotonic_ms, do: System.monotonic_time(:millisecond)
   end
 
+  # the operating system's own clock: nothing in the test advances it, so a deadline measured
+  # against it arrives only by the passage of real time
+  defmodule WallClock do
+    @moduledoc false
+    def unix_now, do: System.os_time(:second)
+    def monotonic_ms, do: System.monotonic_time(:millisecond)
+  end
+
   defmodule BrokenClock do
     @moduledoc false
     def unix_now, do: raise("clock unavailable")
@@ -196,6 +204,100 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
     assert String.to_integer(child) in group, "the child bash is not in the owned group #{pgid}: #{inspect(group)}"
     assert String.to_integer(grandchild) in group, "the grandchild is not in the owned group #{pgid}: #{inspect(group)}"
     %{child: child, grandchild: grandchild}
+  end
+
+  # Behavioural proof, portable across Linux and Darwin `ps`, that an owned descendant ignores
+  # TERM: re-proven to be the expected child in the owned group, sent a real TERM, and still
+  # alive with the same parent and group 100 ms later.
+  defp assert_survives_term!(pid, expected_parent, expected_pgid) do
+    assert parent_of(pid) == expected_parent, "#{pid} is not a child of #{expected_parent}"
+    assert pgid_of(pid) == expected_pgid, "#{pid} is not in the owned group #{expected_pgid}"
+    {_, 0} = System.cmd("kill", ["-TERM", pid], stderr_to_stdout: true)
+    Process.sleep(100)
+    assert signal_zero(pid) == :alive, "#{pid} did not survive TERM: the fixture must ignore it"
+    assert parent_of(pid) == expected_parent and pgid_of(pid) == expected_pgid
+  end
+
+  defp pgid_of(pid) do
+    case System.cmd("ps", ["-o", "pgid=", "-p", pid], stderr_to_stdout: true) do
+      {out, 0} -> String.trim(out)
+      {"", _} -> nil
+      {out, status} -> flunk("ps proved no group for #{pid} (#{status}): #{inspect(out)}")
+    end
+  end
+
+  # every live descendant of `root`, from one `ps` snapshot of the whole table
+  defp descendants(root) do
+    {out, 0} = System.cmd("ps", ["-A", "-o", "pid=,ppid="], stderr_to_stdout: true)
+
+    edges =
+      for line <- String.split(out, "\n", trim: true),
+          [pid, ppid] = String.split(line),
+          do: {ppid, pid}
+
+    [root]
+    |> Stream.unfold(fn
+      [] -> nil
+      frontier -> {frontier, for({ppid, pid} <- edges, ppid in frontier, do: pid)}
+    end)
+    |> Enum.flat_map(& &1)
+    |> List.delete(root)
+  end
+
+  # the whole tree is gone: the worker (the gate's direct child), the child bash, the
+  # TERM-ignoring grandchild, the owned group, and anything still hanging off the guardian
+  defp assert_tree_gone!(%{worker: worker, pgid: pgid, guardian: guardian} = identity, tree) do
+    assert signal_zero(Integer.to_string(worker)) == :gone, "the worker (direct child) survived the deadline"
+    assert signal_zero(tree.child) == :gone, "the child bash survived the deadline"
+    assert signal_zero(tree.grandchild) == :gone, "the TERM-ignoring grandchild survived the deadline"
+    assert members(pgid) == [], "the owned group #{pgid} still has members"
+    assert descendants(Integer.to_string(guardian)) == [], "the guardian still has descendants"
+    assert dead?(identity)
+  end
+
+  # Bounded last-resort cleanup for a live tree, registered BEFORE any assertion so it runs
+  # even when the test fails. On_exit runs after the test process (the Port owner) is gone, so
+  # the guardian normally settles its group on control EOF and exits; this only proves that
+  # within a bound. If it does not hold, it KILLs exactly the pids this test recorded (each
+  # re-proven to be in the owned group) and the guardian (re-proven to be this VM's child),
+  # then fails loudly.
+  defp cleanup_tree_on_exit(run_dir, %{guardian: guardian, pgid: pgid} = identity) do
+    vm = System.pid()
+
+    on_exit(fn ->
+      settled? = fn -> signal_zero(Integer.to_string(guardian)) == :gone and dead?(identity) end
+
+      if !wait_until(settled?, 15_000) do
+        recorded = recorded_tree_pids(run_dir)
+        kill_recorded_group(recorded, pgid)
+        kill_owned_guardian(guardian, vm)
+        raise("owned tree #{pgid} (guardian #{guardian}) outlived its test; killed #{inspect(recorded)}")
+      end
+    end)
+  end
+
+  defp recorded_tree_pids(run_dir) do
+    for name <- ~w(worker.pid child.pid grandchild.pid),
+        {:ok, <<_, _::binary>> = pid} <- [File.read(Path.join(run_dir, name))],
+        do: String.trim(pid)
+  end
+
+  # only pids re-proven to be in the owned group now
+  defp kill_recorded_group(recorded, pgid) do
+    for pid <- recorded, pgid_of(pid) == Integer.to_string(pgid), do: System.cmd("kill", ["-KILL", pid])
+  end
+
+  # only a guardian re-proven to be this VM's child now
+  defp kill_owned_guardian(guardian, vm) do
+    guardian_s = Integer.to_string(guardian)
+    if parent_of_or_nil(guardian_s) == vm, do: System.cmd("kill", ["-KILL", guardian_s])
+  end
+
+  defp parent_of_or_nil(pid) do
+    case System.cmd("ps", ["-o", "ppid=", "-p", pid], stderr_to_stdout: true) do
+      {out, 0} -> String.trim(out)
+      _ -> nil
+    end
   end
 
   # a monitored owner: runs `fun`, reports its result, then parks until killed
@@ -772,6 +874,47 @@ defmodule AiOrchestrator.Gate.GateExecutionTest do
       assert %{"exit_status" => 0, "settled" => false, "leftovers" => "unknown"} = outcome2
       refute Execution.pass?(outcome2), "exit 0 over an unproven group is attention, never a pass"
       assert wait_until(fn -> signal_zero(tree2.grandchild) == :gone end, 5_000)
+    end
+
+    # The rows above move a fake clock onto the deadline or shorten it; this one lets the REAL
+    # deadline arrive. The clock is the OS wall clock, nobody calls expire/1 and nothing is
+    # advanced: await/2 blocks until the deadline second passes and settles the group itself.
+    # The tree is proven alive in its own group one second before the deadline (and, as the
+    # inert control, the gone-assertion is shown to fail on it then); after the deadline the
+    # worker, the child and the TERM-ignoring grandchild are all gone. The wider settle round
+    # tolerates an init that reaps orphaned zombies slowly; it does not change who is signaled.
+    @tag timeout: 30_000
+    test "the real deadline arriving kills the whole tree: worker, child and TERM-ignoring grandchild all gone",
+         %{run_dir: run_dir, opts: opts} do
+      opts = Keyword.merge(opts, clock: WallClock, settle_ms: 3_000)
+      deadline = WallClock.unix_now() + 5
+      {prepared, ack} = acked(run_dir, tree_argv(run_dir, "wait"), opts, %{deadline_unix: deadline})
+      identity = Execution.identity(prepared)
+      :ok = cleanup_tree_on_exit(run_dir, identity)
+
+      # the tree runs in a disposable group of its own, never the test VM's or the guardian's
+      refute Integer.to_string(identity.pgid) in [pgid_of(System.pid()), pgid_of(Integer.to_string(identity.guardian))]
+
+      assert {:ok, running} = Execution.release(prepared, ack)
+      tree = descendant_tree!(run_dir, identity)
+      # the child and grandchild really ignore TERM: each survives a real one
+      pgid = Integer.to_string(identity.pgid)
+      assert_survives_term!(tree.child, Integer.to_string(identity.worker), pgid)
+      assert_survives_term!(tree.grandchild, tree.child, pgid)
+
+      # survival AT the deadline: one second before it, the whole tree is still alive
+      assert wait_until(fn -> WallClock.unix_now() >= deadline - 1 end, 8_000)
+      assert WallClock.unix_now() < deadline, "the tree must be observed before the deadline, not after"
+      assert signal_zero(Integer.to_string(identity.worker)) == :alive
+      assert signal_zero(tree.child) == :alive and signal_zero(tree.grandchild) == :alive
+
+      # INERT CONTROL: the gone-assertion below fails on this live tree
+      assert_raise ExUnit.AssertionError, ~r/survived the deadline/, fn -> assert_tree_gone!(identity, tree) end
+
+      assert {:timeout, termination} = Execution.await(running, opts)
+      assert WallClock.unix_now() >= deadline, "await answered before the real deadline arrived"
+      assert %{kind: "timeout", settled: true, leftovers: "0", proof: "gone"} = termination
+      assert_tree_gone!(identity, tree)
     end
 
     test "unreadable output is a closed output_unreadable, never an invented hash", %{run_dir: run_dir, opts: opts} do

@@ -226,6 +226,7 @@ defmodule C1.MutationPreservationTest do
     # test delivery (nine test-only lines launch gate control executables without a shell).
     # Also the NS-02.B.002 delivery: immutable event schemas replace the persistent_term schema
     # caches, and the replay-purity test witnesses persistent_term mutations on the replay tree.
+    # Also the NS-18.D.001 test delivery: the real gate deadline kills the worker, its child and a TERM-ignoring grandchild.
     # Pin root entries so another core commit cannot silently pass. A later authorized core delivery must update
     # this snapshot explicitly in its review. Console files are outside the
     # snapshot, avoiding a self-referential commit id.
@@ -239,7 +240,7 @@ defmodule C1.MutationPreservationTest do
     100644 blob 6f8544e74c5907bebfdba64381e9320b07fcd7e3\tmix.exs
     100644 blob 8efca92c081a2c902a8b5952b0aeb96c7c1d2887\tmix.lock
     040000 tree 950aae97c234450184c6cf696d2dadd28520f48f\tnative
-    040000 tree 3508a1a238de92b124533364c5bea29aebe5b186\ttest
+    040000 tree 1f20d45b3afdbe3d107f62d86b83a13959710bed\ttest
     """
 
     {committed, 0} = System.cmd("git", ["ls-tree", "HEAD", "--"] ++ core_paths, cd: Harness.core_path())
