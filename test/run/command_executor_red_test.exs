@@ -1600,6 +1600,67 @@ defmodule AiOrchestrator.Run.CommandExecutorRedTest do
       assert journal_bytes(run_dir) == before
     end
 
+    test "a rejected resume with no durable consequence is re-evaluated on retry: accepted once, then replays" do
+      require_executor!()
+      run_dir = seed_legacy!(tmp_run_dir(), live(kill9("events_pre_dispatch.jsonl")))
+      run_id = run_id_of(run_dir)
+      # the context is built BEFORE the holder opens: building one resets the shared harness seams
+      ctx =
+        context(run_dir, "kill9_resume", pre_dispatch_index(),
+          observe_fence_observer: self(),
+          effect_observer: observer_to(self())
+        )
+
+      {verb, args} = args_for(:resume, ctx)
+      command_id = CommandId.generate()
+
+      stamped = fn ->
+        Enum.filter(journal(run_dir), &(get_in(&1, ["data", "requested_by", "command_id"]) == command_id))
+      end
+
+      # precondition FAILS: a live holder owns the run directory
+      {:ok, holder, _} = Writer.open(run_dir, lock: [supervisor_instance: "sup_holder"])
+      track!(holder)
+
+      before =
+        try do
+          before = journal_bytes(run_dir)
+          {:error, expected} = Writer.open(run_dir, lock: [supervisor_instance: @instance])
+
+          # first attempt is rejected with the Writer's own rejection
+          assert invoke(verb, args, run_id, command_id, ctx) == {:error, expected}
+
+          # control: the rejection appended nothing durable and ran no effect
+          assert journal_bytes(run_dir) == before
+          assert stamped.() == []
+          refute_received {:effect_ran, _}
+          before
+        after
+          if Process.alive?(holder), do: Writer.close(holder)
+        end
+
+      # precondition CHANGES: the holder released; the journal is still byte-identical
+      assert journal_bytes(run_dir) == before
+      assert_released!(run_dir)
+
+      # the retry with the SAME command_id, actor, verb and args is re-evaluated, not replayed
+      assert {:ok, %{summary: summary, appended_events: appended}} =
+               invoke(verb, args, run_id, command_id, ctx)
+
+      assert appended != []
+      assert_live_arm!()
+      assert [%{"type" => "run_resumed"}] = stamped.()
+      after_accept = journal_bytes(run_dir)
+      assert byte_size(after_accept) > byte_size(before)
+      assert_released!(run_dir)
+
+      # exactly once: a further retry of the now-accepted command replays and appends nothing
+      assert {:ok, %{summary: ^summary, appended_events: []}} = invoke(verb, args, run_id, command_id, ctx)
+      assert journal_bytes(run_dir) == after_accept
+      assert [%{"type" => "run_resumed"}] = stamped.()
+      assert_released!(run_dir)
+    end
+
     for {label, seed} <- [{"an EMPTY existing journal", :empty}, {"a legacy journal without a stamp", :legacy}] do
       test "start on #{label} takes the second attempt and stays journal_exists: zero matching rows never execute" do
         require_executor!()
