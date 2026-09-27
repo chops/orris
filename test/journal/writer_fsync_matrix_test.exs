@@ -17,6 +17,9 @@ defmodule AiOrchestrator.Journal.WriterFsyncMatrixTest do
 
   use ExUnit.Case, async: true
 
+  alias AiOrchestrator.Journal.Chain
+  alias AiOrchestrator.Journal.Fs.SystemFs
+  alias AiOrchestrator.Journal.RunLock
   alias AiOrchestrator.Journal.Writer
   alias AiOrchestrator.Test.FaultFs
   alias AiOrchestrator.Test.FixedClock
@@ -47,6 +50,24 @@ defmodule AiOrchestrator.Journal.WriterFsyncMatrixTest do
     {"the receipt rename", :rename, 1, "receipt"},
     {"the directory fsync that publishes the receipt", :dir_sync, 1, "receipt"}
   ]
+
+  # NS-08.B.003 B3-4: {label, seed, temp the repair publishes, its final name, faulted op, repair_failed stage}.
+  # The seed decides which repair publish runs (Chain.plan/3): a torn tail -> :truncate_tail (writer.ex:378),
+  # a receipt one line behind -> :advance_receipt (writer.ex:388). Both go through publish/5.
+  #
+  # UNTESTED LIMIT: there is no :advance_and_truncate row. The combined ordering (the truncate publish runs
+  # first and a truncate failure must prevent the receipt publish, writer.ex:370-371) is not exercised here.
+  @repair_boundaries [
+    {"the truncate publish file fsync", :torn_tail, "events.jsonl.repair", "events.jsonl", :sync, "truncate"},
+    {"the truncate publish directory fsync", :torn_tail, "events.jsonl.repair", "events.jsonl", :dir_sync,
+     "truncate"},
+    {"the receipt advance file fsync", :stale_receipt, "events.head.tmp", "events.head", :sync, "receipt"},
+    {"the receipt advance directory fsync", :stale_receipt, "events.head.tmp", "events.head", :dir_sync,
+     "receipt"}
+  ]
+
+  # 9 bytes with no newline: an incomplete tail (chain.ex:109-113)
+  @torn_tail ~s({"partial)
 
   setup do
     FixedClock.reset()
@@ -130,6 +151,70 @@ defmodule AiOrchestrator.Journal.WriterFsyncMatrixTest do
            "a journal whose directory entry was never fsynced was reported as created"
   end
 
+  describe "reopen repair publishes (NS-08.B.003 B3-4)" do
+    for {label, seed, tmp, final, op, stage} <- @repair_boundaries do
+      test "an open whose repair cannot complete #{label} is refused at repair_failed/#{stage} and acknowledges nothing" do
+        {dir, seeded} = seed(unquote(seed))
+        fs = FaultFs.new()
+        fail_next_after_open(fs, unquote(tmp), unquote(op))
+
+        result = open(dir, fs)
+
+        assert result == {:error, %{clause: "repair_failed", stage: unquote(stage), detail: ":eio"}},
+               "#{unquote(label)}: expected repair_failed at stage #{unquote(stage)}, got #{inspect(result)}"
+
+        refute match?({:ok, _writer, _opened}, result),
+               "#{unquote(label)}: the open acknowledged a repair whose publish failed"
+
+        assert :none = RunLock.owner(SystemFs.new(), dir)
+
+        # the fault landed on THIS publish at THIS op, not elsewhere in the open
+        assert_publish_stopped_at(fs, unquote(tmp), unquote(final), unquote(op))
+
+        assert_disk_after_refusal(unquote(seed), unquote(op), dir, seeded)
+      end
+    end
+
+    for {seed, tmp, final, action} <- [
+          {:torn_tail, "events.jsonl.repair", "events.jsonl", :truncate_tail},
+          {:stale_receipt, "events.head.tmp", "events.head", :advance_receipt}
+        ] do
+      test "control: the #{seed} seed repairs through #{tmp} -> #{final} when nothing fails" do
+        {dir, seeded} = seed(unquote(seed))
+        fs = FaultFs.new()
+
+        assert {:ok, writer, %{repair: %{action: unquote(action)} = repair, last_seq: 2, receipt_seq: 2}} =
+                 open(dir, fs)
+
+        assert [
+                 {:open, unquote(tmp), [:write]},
+                 {:write, _bytes},
+                 {:sync},
+                 {:close},
+                 {:rename, unquote(tmp), unquote(final)},
+                 {:dir_sync, _dir}
+               ] = publish_slice(fs, unquote(tmp))
+
+        assert_repaired(unquote(seed), dir, seeded, repair)
+        assert {:ok, _third} = Writer.append(writer, event(3))
+        :ok = Writer.close(writer)
+      end
+    end
+
+    test "the repair matrix covers the file and directory fsync of both repair publishes" do
+      covered = MapSet.new(@repair_boundaries, fn {_label, _seed, _tmp, _final, op, stage} -> {stage, op} end)
+
+      assert covered ==
+               MapSet.new([
+                 {"truncate", :sync},
+                 {"truncate", :dir_sync},
+                 {"receipt", :sync},
+                 {"receipt", :dir_sync}
+               ]),
+             "a repair publish fsync has no fault row: #{inspect(covered)}"
+    end
+  end
+
   defp events_journal_exclusive?(["events.jsonl", modes]), do: :exclusive in modes
   defp events_journal_exclusive?(_args), do: false
 
@@ -170,4 +255,109 @@ defmodule AiOrchestrator.Journal.WriterFsyncMatrixTest do
       "data" => data
     }
   end
+
+  # Two chained events closed cleanly, then a torn tail appended.
+  # Chain.plan/3: receipt seq 2 == count 2, tail 9 bytes -> :truncate_tail (2 -> 2).
+  defp seed(:torn_tail) do
+    dir = run_dir_with_journal()
+    {:ok, writer, _opened} = open(dir, FaultFs.new())
+    {:ok, _first} = Writer.append(writer, event(1, "run_created", @created_data))
+    {:ok, _second} = Writer.append(writer, event(2))
+    :ok = Writer.close(writer)
+    clean = read(dir, "events.jsonl")
+    File.write!(Path.join(dir, "events.jsonl"), @torn_tail, [:append])
+    {dir, %{journal: clean <> @torn_tail, repaired: clean, head: read(dir, "events.head")}}
+  end
+
+  # Two chained events closed cleanly, then the seq-1 receipt the writer itself published put back.
+  # Chain.plan/3: receipt seq 1 == count - 1, no tail -> :advance_receipt (1 -> 2).
+  defp seed(:stale_receipt) do
+    dir = run_dir_with_journal()
+    {:ok, writer, _opened} = open(dir, FaultFs.new())
+    {:ok, _first} = Writer.append(writer, event(1, "run_created", @created_data))
+    stale = read(dir, "events.head")
+    {:ok, second} = Writer.append(writer, event(2))
+    :ok = Writer.close(writer)
+    File.write!(Path.join(dir, "events.head"), stale)
+
+    {dir,
+     %{
+       journal: read(dir, "events.jsonl"),
+       head: stale,
+       advanced_hash: Chain.line_sha256(Jason.encode!(second) <> "\n")
+     }}
+  end
+
+  # Arms `op` to fail on its NEXT call at the moment `tmp` is opened for write. The hook runs in the writer
+  # after the open is counted and before it is performed (fault_fs.ex:140,152-155); publish/5 performs no
+  # other sync or dir_sync between that open and its own (writer.ex:553-556, 561-563), so no offset is
+  # hard-coded against the lock's own seam traffic.
+  defp fail_next_after_open(fs, tmp, op) do
+    FaultFs.inject(
+      fs,
+      :open,
+      fn args -> args == [tmp, [:write]] end,
+      {:hook, fn -> FaultFs.inject(fs, op, count(fs, op) + 1, {:error, :eio}) end}
+    )
+  end
+
+  defp publish_slice(fs, tmp) do
+    fs |> FaultFs.trace() |> Enum.drop_while(&(&1 != {:open, tmp, [:write]})) |> Enum.take(6)
+  end
+
+  # file fsync failed: write_all closes the temp (writer.ex:566) and the rename never runs
+  defp assert_publish_stopped_at(fs, tmp, final, :sync) do
+    assert [{:open, ^tmp, [:write]}, {:write, _bytes}, {:sync}, {:close} | _rest] = publish_slice(fs, tmp)
+    refute {:rename, tmp, final} in FaultFs.trace(fs), "#{tmp} was renamed although its file fsync failed"
+  end
+
+  # directory fsync failed: it is the publish's LAST op, after the rename (writer.ex:555-556)
+  defp assert_publish_stopped_at(fs, tmp, final, :dir_sync) do
+    assert [
+             {:open, ^tmp, [:write]},
+             {:write, _bytes},
+             {:sync},
+             {:close},
+             {:rename, ^tmp, ^final},
+             {:dir_sync, _dir}
+           ] = publish_slice(fs, tmp)
+  end
+
+  # truncate, file fsync: nothing published; journal still torn, receipt untouched
+  defp assert_disk_after_refusal(:torn_tail, :sync, dir, seeded) do
+    assert read(dir, "events.jsonl") == seeded.journal
+    assert read(dir, "events.head") == seeded.head
+  end
+
+  # truncate, dir fsync: a visible rename is not a durability witness, so the journal bytes are not asserted;
+  # the untouched receipt proves the second publication did not run
+  defp assert_disk_after_refusal(:torn_tail, :dir_sync, dir, seeded) do
+    assert read(dir, "events.head") == seeded.head
+  end
+
+  # receipt, file fsync: the acknowledged head receipt keeps its stale seq-1 bytes
+  defp assert_disk_after_refusal(:stale_receipt, :sync, dir, seeded) do
+    assert read(dir, "events.jsonl") == seeded.journal
+    assert read(dir, "events.head") == seeded.head
+  end
+
+  # receipt, dir fsync: the rename precedes the directory fsync (writer.ex:555-556), so the advanced receipt
+  # is expected to be visible here, but it is neither durable nor acknowledged. No disk bytes are asserted
+  # and no rollback is claimed: the exact repair_failed/receipt open refusal is this row's control.
+  defp assert_disk_after_refusal(:stale_receipt, :dir_sync, _dir, _seeded), do: :ok
+
+  defp assert_repaired(:torn_tail, dir, seeded, repair) do
+    assert %{truncate_bytes: 9, receipt_seq_before: 2, receipt_seq_after: 2} = repair
+    assert read(dir, "events.jsonl") == seeded.repaired
+    assert read(dir, "events.head") == seeded.head
+  end
+
+  defp assert_repaired(:stale_receipt, dir, seeded, repair) do
+    assert %{truncate_bytes: 0, receipt_seq_before: 1, receipt_seq_after: 2} = repair
+    assert read(dir, "events.jsonl") == seeded.journal
+    assert {:ok, %{seq: 2, line_sha256: hash}} = Chain.decode_receipt(read(dir, "events.head"))
+    assert hash == seeded.advanced_hash
+  end
+
+  defp read(dir, name), do: File.read!(Path.join(dir, name))
 end
