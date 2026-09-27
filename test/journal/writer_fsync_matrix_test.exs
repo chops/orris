@@ -59,11 +59,9 @@ defmodule AiOrchestrator.Journal.WriterFsyncMatrixTest do
   # first and a truncate failure must prevent the receipt publish, writer.ex:370-371) is not exercised here.
   @repair_boundaries [
     {"the truncate publish file fsync", :torn_tail, "events.jsonl.repair", "events.jsonl", :sync, "truncate"},
-    {"the truncate publish directory fsync", :torn_tail, "events.jsonl.repair", "events.jsonl", :dir_sync,
-     "truncate"},
+    {"the truncate publish directory fsync", :torn_tail, "events.jsonl.repair", "events.jsonl", :dir_sync, "truncate"},
     {"the receipt advance file fsync", :stale_receipt, "events.head.tmp", "events.head", :sync, "receipt"},
-    {"the receipt advance directory fsync", :stale_receipt, "events.head.tmp", "events.head", :dir_sync,
-     "receipt"}
+    {"the receipt advance directory fsync", :stale_receipt, "events.head.tmp", "events.head", :dir_sync, "receipt"}
   ]
 
   # 9 bytes with no newline: an incomplete tail (chain.ex:109-113)
