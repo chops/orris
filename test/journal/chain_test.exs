@@ -12,6 +12,15 @@ defmodule AiOrchestrator.Journal.ChainTest do
 
   defp receipt(seq, hash), do: %{seq: seq, line_sha256: hash, updated_at: "2026-09-03T00:00:02Z"}
 
+  defp chain_line(previous, seq, event_id) do
+    previous
+    |> Jason.decode!()
+    |> Map.merge(%{"seq" => seq, "event_id" => event_id, "prev_line_sha256" => Chain.line_sha256(previous <> "\n")})
+    |> Jason.encode!()
+  end
+
+  defp journal(lines), do: Enum.map_join(lines, &(&1 <> "\n"))
+
   defp upgrade_line(%{count: count, last_line_sha256: last, lines: lines}) do
     lines
     |> List.last()
@@ -56,6 +65,19 @@ defmodule AiOrchestrator.Journal.ChainTest do
       corrupted = String.replace(first, ~s("project":"example"), ~s("project":"exampls"), global: false)
       refute corrupted == first
       assert {:error, %{clause: "chain_mismatch", at_seq: 2}} = Chain.verify(corrupted <> "\n" <> second <> "\n")
+    end
+
+    test "a content byte flipped in an interior line of a longer chain fails closed at the next sequence" do
+      [first, second] = version_2_lines()
+      third = chain_line(second, 3, "ev_version_2_0003")
+      intact = journal([first, second, third])
+      assert {:ok, %{count: 3, envelope_version: 2, incomplete_tail: nil}} = Chain.verify(intact)
+
+      corrupted = String.replace(second, ~s("spec_path":"spec.json"), ~s("spec_path":"spec.jsom"), global: false)
+      refute corrupted == second
+      assert byte_size(corrupted) == byte_size(second)
+
+      assert {:error, %{clause: "chain_mismatch", at_seq: 3}} = Chain.verify(journal([first, corrupted, third]))
     end
 
     test "an undecodable complete line fails closed at its own sequence" do

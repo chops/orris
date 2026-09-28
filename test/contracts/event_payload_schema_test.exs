@@ -116,6 +116,28 @@ defmodule AiOrchestrator.Contracts.EventPayloadSchemaTest do
     end
   end
 
+  # NS-07.B.001: the type is the discriminant. Representative contrasting pairs only, not
+  # every pair: each payload is valid under its own type, the two payload key sets are
+  # checked to differ, and the payload is then refused under the other type, on append and
+  # on line validation.
+  @contrasting_pairs [{"run_created", "run_spec_loaded"}, {"run_spec_loaded", "run_created"}]
+
+  test "a payload valid under one type is refused when presented under a contrasting type" do
+    events = fixture_events()
+
+    for {from, to} <- @contrasting_pairs do
+      source = events |> current_fixture(from) |> append_ready()
+      target_keys = events |> current_fixture(to) |> Map.fetch!("data") |> Map.keys() |> MapSet.new()
+
+      assert {:ok, _parsed} = Event.validate_append(source), "#{from}: the payload is not valid under its own type"
+      refute MapSet.new(Map.keys(source["data"])) == target_keys, "#{from} -> #{to}: the payloads do not contrast"
+
+      presented = Map.put(source, "type", to)
+      assert {:error, %{clause: "invalid_event_data", event_type: ^to}} = Event.validate_append(presented)
+      assert {:error, %{clause: "invalid_event_data", event_type: ^to}} = Event.validate_line(Jason.encode!(presented))
+    end
+  end
+
   test "legacy string authorship is readable but never appendable" do
     event =
       Enum.find(fixture_events(), fn event ->
@@ -283,6 +305,11 @@ defmodule AiOrchestrator.Contracts.EventPayloadSchemaTest do
   end
 
   defp failure_label(event), do: "#{event["type"]} event #{event["event_id"]}"
+
+  defp current_fixture(events, type) do
+    Enum.find(events, &(&1["type"] == type and &1["event_version"] == EventData.current_version(type))) ||
+      flunk("#{type}: no positive fixture at the current version")
+  end
 
   defp requested_by_event(reason) do
     fixture_events()

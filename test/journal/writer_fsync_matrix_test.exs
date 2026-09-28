@@ -130,6 +130,34 @@ defmodule AiOrchestrator.Journal.WriterFsyncMatrixTest do
            "a journal whose directory entry was never fsynced was reported as created"
   end
 
+  test "creation refuses when closing the freshly created journal fails" do
+    # Measured, not assumed, as for the directory fsync row: the close that follows the
+    # exclusive create is located in a clean create's trace, and it must come right after it.
+    probe_dir = empty_run_dir()
+    probe_fs = FaultFs.new()
+    {:ok, probe, _opened} = open(probe_dir, probe_fs, create: true)
+    trace = FaultFs.trace(probe_fs)
+    _closed = Writer.close(probe)
+
+    create_at = Enum.find_index(trace, &exclusive_journal_create?/1)
+    assert is_integer(create_at), "a clean create performed no exclusive open of the journal"
+    assert Enum.at(trace, create_at + 1) == {:close}, "the exclusive create is not followed by its close"
+    create_close = trace |> Enum.take(create_at + 1) |> Enum.count(&(elem(&1, 0) == :close)) |> Kernel.+(1)
+
+    dir = empty_run_dir()
+    fs = FaultFs.new()
+    FaultFs.inject(fs, :close, create_close, {:error, :eio})
+    result = open(dir, fs, create: true)
+
+    assert match?({:error, %{clause: "journal_create_failed"}}, result),
+           "closing the created journal failed, expected journal_create_failed, got #{inspect(result)}"
+
+    refute match?({:ok, _writer, _opened}, result), "a journal whose close failed was reported as created"
+  end
+
+  defp exclusive_journal_create?({:open, "events.jsonl", modes}), do: :exclusive in modes
+  defp exclusive_journal_create?(_entry), do: false
+
   defp events_journal_exclusive?(["events.jsonl", modes]), do: :exclusive in modes
   defp events_journal_exclusive?(_args), do: false
 
