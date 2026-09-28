@@ -129,7 +129,7 @@ defmodule AiOrchestrator.Contracts.EventPayloadSchemaTest do
       source = events |> current_fixture(from) |> append_ready()
       target_keys = events |> current_fixture(to) |> Map.fetch!("data") |> Map.keys() |> MapSet.new()
 
-      assert {:ok, _parsed} = Event.validate_append(source), "#{from}: the payload is not valid under its own type"
+      assert match?({:ok, _parsed}, Event.validate_append(source)), "#{from}: the payload is not valid under its own type"
       refute MapSet.new(Map.keys(source["data"])) == target_keys, "#{from} -> #{to}: the payloads do not contrast"
 
       presented = Map.put(source, "type", to)
