@@ -37,4 +37,29 @@ defmodule AiOrchestrator.Contracts.RunSpecValidationTest do
 
     assert {:error, %{clause: "pane_ref_blank", field: "pane_hint.pane_ref"}} = RunSpec.validate(spec)
   end
+
+  # NS-07.A.001: each closed RunSpec map refuses one unknown key, independently, with the shape
+  # clause; the unmutated spec at the same version validates first, so each refusal is the key's.
+  for version <- [1, 2] do
+    test "version #{version}: an unknown key is refused at every closed RunSpec map" do
+      spec = full_spec(unquote(version))
+      assert {:ok, _validated} = RunSpec.validate(spec)
+
+      for {site, mutated} <- with_unknown_key(spec) do
+        assert RunSpec.validate(mutated) == {:error, %{clause: "invalid_run_spec_shape"}},
+               "#{site}: an unknown key was not refused"
+      end
+    end
+  end
+
+  defp full_spec(1), do: F.json("run_specs", "valid_full", "spec.json")
+  defp full_spec(2), do: 1 |> full_spec() |> Map.put("schema_version", 2) |> Map.delete("budgets")
+
+  defp with_unknown_key(spec) do
+    [
+      {"top level", Map.put(spec, "unexpected", true)},
+      {"agent", put_in(spec, ["agents", Access.at(0), "unexpected"], true)},
+      {"pane_hint", put_in(spec, ["agents", Access.at(0), "pane_hint", "unexpected"], true)}
+    ]
+  end
 end

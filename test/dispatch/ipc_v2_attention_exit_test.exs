@@ -33,6 +33,7 @@ defmodule AiOrchestrator.Dispatch.IpcV2AttentionExitTest do
 
   alias AiOrchestrator.Contracts.FixtureHelper, as: F
   alias AiOrchestrator.Dispatch.LocalPane
+  alias AiOrchestrator.Dispatch.PaneClient
   alias AiOrchestrator.Lifecycle.RunFSM
   alias AiOrchestrator.Test.GateDouble
   alias AiOrchestrator.Test.ScenarioHarness
@@ -200,6 +201,87 @@ defmodule AiOrchestrator.Dispatch.IpcV2AttentionExitTest do
     end
   end
 
+  # NS-42.C.003 C5: the echo checks above run on a reply the client decoded. A daemon that
+  # rejects a bad echo exits nonzero instead, so the same durable exit has to hold when the
+  # real client sees an ap child exit 1. The real PaneClient runs here with its injectable
+  # runners, so the path is the product's own; nothing is installed and nothing is spawned.
+  describe "rule 3: a real ap child that exits 1 exits through durable attention" do
+    test "a reconcile whose ap child exits 1 blocks the assignment and pastes nothing" do
+      assert {:ok, result} = resume(real_ap(self(), "reconcile"))
+
+      calls = ap_calls()
+      assert "reconcile" in calls, "the reconcile under test has to have been issued"
+      refute "send" in calls, "a reconcile that failed is not a licence to paste"
+      assert_blocked(result, "ap_failed")
+      refute_canary(result)
+    end
+
+    test "a send whose ap child exits 1 blocks the assignment and issues no second send" do
+      assert {:ok, result} = resume(real_ap(self(), "send"))
+
+      assert Enum.count(ap_calls(), &(&1 == "send")) == 1, "exactly the send under test is issued, and only once"
+      assert_blocked(result, "ap_failed")
+      refute_canary(result)
+    end
+
+    test "with no failing child the real client dispatches through the same runners" do
+      assert {:ok, result} = resume(real_ap(self(), nil))
+
+      types = Enum.map(result.appended_events, & &1["type"])
+      assert "send" in ap_calls()
+      assert "assignment_dispatch_sent" in types
+      refute "agent_wedge_detected" in types
+    end
+  end
+
+  # Fixed text in a failing child's output: it must never reach the journal, which records
+  # only the digest of what the daemon printed.
+  @canary "ap-failure-canary-" <> String.duplicate("c", 8)
+
+  defp real_ap(test, failing) do
+    [
+      pane_client: PaneClient,
+      env: %{},
+      file_reader: fn _path -> {:error, :enoent} end,
+      runner: fn _ap, args, _cmd_opts -> ap_reply(test, args, failing) end,
+      input_runner: fn _ap, args, _input, _cmd_opts -> ap_reply(test, args, failing) end
+    ]
+  end
+
+  defp ap_reply(test, [verb | _rest] = args, failing) do
+    Process.send(test, {:ap_call, verb}, [])
+
+    if verb == failing,
+      do: {"daemon trace " <> @canary <> "\n", 1},
+      else: {Jason.encode!(ap_answer(args)) <> "\n", 0}
+  end
+
+  defp ap_answer(["ping" | _rest]), do: %{"ok" => true, "protocol_version" => 2, "capabilities" => ["delivery_reconcile"]}
+
+  defp ap_answer(["reconcile", pane, "--msg-id", id | _rest]),
+    do: %{"ok" => true, "protocol_version" => 2, "msg_id" => id, "pane_id" => pane, "outcome" => "absent"}
+
+  defp ap_answer(["send", pane | rest]),
+    do: %{"ok" => true, "protocol_version" => 2, "status" => "sent", "msg_id" => msg_id(rest), "pane_id" => pane}
+
+  defp ap_answer(["pane_status", pane]), do: %{"state" => "idle", "pane_ref" => pane, "pending_count" => 0}
+
+  defp msg_id(["--msg-id", id | _rest]), do: id
+  defp msg_id([_arg | rest]), do: msg_id(rest)
+
+  defp ap_calls do
+    receive do
+      {:ap_call, verb} -> [verb | ap_calls()]
+    after
+      0 -> []
+    end
+  end
+
+  defp refute_canary(result) do
+    recorded = Enum.map_join(result.appended_events, "\n", &Jason.encode!/1)
+    refute recorded =~ @canary, "the failing child's output reached the journal"
+  end
+
   defp command do
     %{
       "assignment_id" => "as_0001",
@@ -257,11 +339,14 @@ defmodule AiOrchestrator.Dispatch.IpcV2AttentionExitTest do
       dispatch: LocalPane,
       prompt_root: ScenarioHarness.prompt_root(),
       dispatch_opts:
-        [
-          artifact_reader: fn command -> {:ok, Map.fetch!(artifact_by_assignment, command["assignment_id"])} end,
-          pane_client: EchoPaneClient,
-          test_pid: self()
-        ] ++ dispatch_extra,
+        Keyword.merge(
+          [
+            artifact_reader: fn command -> {:ok, Map.fetch!(artifact_by_assignment, command["assignment_id"])} end,
+            pane_client: EchoPaneClient,
+            test_pid: self()
+          ],
+          dispatch_extra
+        ),
       gate_executor: GateDouble,
       gate_helper: GateDouble.helper(),
       gate_opts: [runner: fn _gate, _gate_opts -> {:ok, gate_pass} end],

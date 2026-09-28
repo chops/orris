@@ -18,10 +18,16 @@ defmodule AiOrchestrator.Telemetry.ExporterIsolationTest do
 
   import ExUnit.CaptureLog
 
+  alias AiOrchestrator.CLI
   alias AiOrchestrator.Commands
   alias AiOrchestrator.Contract.Moment
+  alias AiOrchestrator.Contracts.FixtureHelper, as: F
+  alias AiOrchestrator.Dispatch.LocalPane
   alias AiOrchestrator.Telemetry.Events
   alias AiOrchestrator.Telemetry.Handler
+  alias AiOrchestrator.Test.FixedClock
+  alias AiOrchestrator.Test.FixedId
+  alias AiOrchestrator.Test.GateDouble
   alias AiOrchestrator.Test.ScenarioHarness, as: H
 
   @start [:ai_orchestrator, :commands, :invoke, :start]
@@ -721,6 +727,126 @@ defmodule AiOrchestrator.Telemetry.ExporterIsolationTest do
              "the self-detaching handler is still attached to the terminal event"
 
       refute_received {:self_detached, _ref, :stop}
+    end
+  end
+
+  # NS-26.F.001 C3: the same failure classes through the operator's CLI, so the claim covers
+  # what an operator sees (exit status, stdout, stderr) and not only the command result term.
+  #
+  # The CLI path mints its own command id and moment inside Commands.invoke, so journal BYTES
+  # are not comparable between two CLI runs; what is compared is the CLI's whole answer and
+  # the journal's event-type sequence. The R8 control proves that comparison is deterministic
+  # without a perturbation before any row relies on it.
+  defmodule CliPaneClient do
+    @moduledoc false
+    def capabilities(_opts), do: {:ok, ["delivery_reconcile"]}
+
+    def reconcile(pane_ref, message_id, _opts),
+      do:
+        {:ok,
+         %{"ok" => true, "protocol_version" => 2, "outcome" => "absent", "msg_id" => message_id, "pane_id" => pane_ref}}
+
+    def send(pane_ref, _prompt, opts),
+      do:
+        {:ok,
+         %{
+           "ok" => true,
+           "protocol_version" => 2,
+           "status" => "sent",
+           "msg_id" => opts[:message_id],
+           "pane_id" => pane_ref
+         }}
+
+    def status(pane_ref, _opts), do: {:ok, %{"state" => "idle", "pane_ref" => pane_ref, "pending_count" => 0}}
+  end
+
+  defp cli_opts do
+    fixture_events = Enum.map(F.lines("scenarios", "gated_run_seed"), &Jason.decode!/1)
+
+    artifacts =
+      fixture_events
+      |> Enum.filter(&(&1["type"] == "artifact_observed"))
+      |> Map.new(fn event -> {Map.fetch!(event["data"], "assignment_id"), event["data"]} end)
+
+    gate_pass =
+      fixture_events |> Enum.find(&(&1["type"] == "gate_passed")) |> Map.fetch!("data") |> Map.delete("gate_run_id")
+
+    [
+      clock: FixedClock,
+      id: FixedId,
+      pane_registry_root: Path.join(System.tmp_dir!(), "ns26-f001-cli-registry-#{System.unique_integer([:positive])}"),
+      dispatch: LocalPane,
+      dispatch_opts: [
+        artifact_reader: fn command -> {:ok, Map.fetch!(artifacts, command["assignment_id"])} end,
+        pane_client: CliPaneClient
+      ],
+      gate_executor: GateDouble,
+      gate_helper: GateDouble.helper(),
+      gate_opts: [runner: fn _gate, _gate_opts -> {:ok, gate_pass} end],
+      review_reader: fn _path -> {:ok, "- Verdict :: clean\n"} end
+    ]
+  end
+
+  # One CLI run from the same absent state: the run directory is recreated with the scenario's
+  # inputs and the fixed seams are reset. Answers the CLI's whole answer, the journal's event
+  # types in order, and the monotonic instant the run finished.
+  defp run_cli!(run_dir) do
+    File.rm_rf!(run_dir)
+    File.mkdir_p!(run_dir)
+    File.write!(Path.join(run_dir, "spec.json"), Jason.encode!(F.json("scenarios", "gated_run_seed", "spec.json")))
+    File.write!(Path.join(run_dir, "plan.json"), Jason.encode!(F.json("scenarios", "gated_run_seed", "plan.json")))
+    H.reset_seams()
+
+    answer = CLI.run(["run", run_dir], cli_opts())
+
+    types =
+      run_dir
+      |> Path.join("events.jsonl")
+      |> File.read!()
+      |> String.split("\n", trim: true)
+      |> Enum.map(&(&1 |> Jason.decode!() |> Map.fetch!("type")))
+
+    {answer, types, System.monotonic_time()}
+  end
+
+  defp assert_cli_completed!({answer, types, _finished_at}) do
+    assert answer.status == 0, "the unperturbed CLI run did not exit 0: #{inspect(answer)}"
+    assert "run_started" in types and "run_completed" in types
+  end
+
+  defp assert_same_cli_outcome!({baseline_answer, baseline_types, _}, {answer, types, _}) do
+    assert answer == baseline_answer, "the CLI status, stdout or stderr changed under the perturbation"
+    assert types == baseline_types, "the journal's event sequence changed under the perturbation"
+  end
+
+  describe "exporter failure through the CLI (NS-26.F.001 C3)" do
+    test "R8 control: two unperturbed CLI runs give the same answer and event sequence", %{run_dir: run_dir} do
+      first = run_cli!(run_dir)
+      second = run_cli!(run_dir)
+      assert_cli_completed!(first)
+      assert_same_cli_outcome!(first, second)
+    end
+
+    for mode <- [:not_retryable, :raise, :exit, :kill] do
+      test "R8 #{mode}: a failing exporter leaves the CLI answer and the event sequence identical",
+           %{run_dir: run_dir} do
+        baseline = run_cli!(run_dir)
+        assert_cli_completed!(baseline)
+
+        {exporter, switch} = failing_exporter!(unquote(mode))
+        {name, provider, tracer} = start_provider!(exporter)
+        attach_span_handler!(name, tracer)
+
+        {_answer, _types, finished_at} = perturbed = captured!(fn -> run_cli!(run_dir) end)
+
+        assert_receive {:export_attempted, unquote(mode), _runner, size, attempted_at}, 5_000
+        assert is_integer(size) and size >= 1, "the export table carried no span"
+        assert attempted_at < finished_at, "the first export attempt did not overlap the CLI run"
+
+        assert_same_cli_outcome!(baseline, perturbed)
+        assert Process.alive?(provider), "the failing exporter took its provider down"
+        disarm!(switch)
+      end
     end
   end
 end

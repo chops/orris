@@ -1634,6 +1634,28 @@ defmodule AiOrchestrator.Run.CommandExecutorRedTest do
       assert journal_bytes(run_dir) == before
     end
 
+    # NS-43.C.003: the other half of the create discriminator, through invoke. A create that
+    # fails for any reason but existence is journal_create_failed, and it is not taken into
+    # the owner's journal_exists retry, so exactly one exclusive create is attempted.
+    test "a start whose exclusive create fails is journal_create_failed through invoke, never the journal_exists retry" do
+      require_executor!()
+      run_dir = tmp_run_dir()
+      fs = FaultFs.new()
+      FaultFs.inject(fs, :open, &match?(["events.jsonl", [:exclusive]], &1), {:error, :eio})
+      ctx = context(run_dir, "gated_run_seed", gated_index(), fs: fs, effect_observer: observer_to(self()))
+
+      assert {:error, %{clause: "journal_create_failed"}} =
+               invoke("start", start_args(ctx), "run_e5_create", CommandId.generate(), ctx)
+
+      creates = Enum.count(fs_trace(fs), &match?({:open, "events.jsonl", [:exclusive]}, &1))
+      assert creates == 1, "the create was attempted #{creates} times; a failed create is not an existing journal"
+
+      journal = Path.join(run_dir, "events.jsonl")
+      assert not File.exists?(journal) or File.read!(journal) == "", "a journal whose create failed has bytes"
+      refute_received {:effect_ran, _}
+      assert_released!(run_dir)
+    end
+
     for kind <- [:run, :resume, :cancel] do
       test "#{kind}: acceptance durable before the reply -> run_server_down; the retry continues with ONE acceptance" do
         require_executor!()
