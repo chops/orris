@@ -230,6 +230,7 @@ defmodule C1.MutationPreservationTest do
     # Also the NS-08.B.001 test delivery: golden per-version journal event bytes with their pinned fixture digests.
     # Also the NS-37.A.001 test delivery: opaque run identifiers checked against pinned run_id decompositions.
     # Also the NS-13.B.001 test delivery: a run resumes from the journal alone with its projections absent.
+    # Also the test-only batch for NS-08.B.002, NS-43.C.003 and NS-07.B.001: interior chain flip, create close, wrong type.
     # Pin root entries so another core commit cannot silently pass. A later authorized core delivery must update
     # this snapshot explicitly in its review. Console files are outside the
     # snapshot, avoiding a self-referential commit id.
@@ -243,7 +244,7 @@ defmodule C1.MutationPreservationTest do
     100644 blob 6f8544e74c5907bebfdba64381e9320b07fcd7e3\tmix.exs
     100644 blob 8efca92c081a2c902a8b5952b0aeb96c7c1d2887\tmix.lock
     040000 tree 950aae97c234450184c6cf696d2dadd28520f48f\tnative
-    040000 tree 809ba7ae38b51ce523ac62d07cb028eb74d891e6\ttest
+    040000 tree b0754188fc22157acea1190ffef562149ffb63f2\ttest
     """
 
     {committed, 0} = System.cmd("git", ["ls-tree", "HEAD", "--"] ++ core_paths, cd: Harness.core_path())
