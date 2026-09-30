@@ -8,7 +8,7 @@ defmodule AiOrchestrator.Dispatch.Refusal do
   # is not one undifferentiated failure either. The daemon's word is reflected only when it
   # is in the closed vocabulary the contract names, split the way the contract splits it:
   #
-  #   * a typed refusal (ipc-v1.org "Reply fixtures": pane_not_found, pane_dead, queue_full,
+  #   * a typed refusal (ipc-v1.org "Reply fixtures": pane_not_found, pane_dead, pane_quarantined, queue_full,
   #     send_timeout, paste_failed; ipc-v2.org "Send replies": conflict) is a fact about the
   #     pane or about admission, and becomes `dispatch_refused_<word>` with the word beside
   #     it as `refusal`. It is about THIS send only if both echoes match (rule 3), so a
@@ -28,7 +28,7 @@ defmodule AiOrchestrator.Dispatch.Refusal do
   #
   # The detector names the operation whose reply this was; the reducer routes on `reason`.
 
-  @send_refusals ~w(conflict pane_not_found pane_dead queue_full send_timeout paste_failed)
+  @send_refusals ~w(conflict pane_not_found pane_dead pane_quarantined queue_full send_timeout paste_failed)
   @send_request_errors ~w(missing_msg_id missing_pane_id missing_text oversize invalid_msg_id invalid_pane_id)
   @reconcile_refusals []
   @reconcile_request_errors ~w(missing_payload_hash missing_msg_id missing_pane_id invalid_msg_id invalid_pane_id)
