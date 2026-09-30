@@ -26,6 +26,7 @@ defmodule C1.NS38K002CoreWebExclusionTest do
     assert entries != [], "root lock was empty"
 
     names = lock_names!(entries)
+
     assert Enum.all?(@legitimate_packages, &(&1 in names)),
            "legitimate HTTP/OTel lock witness was absent"
 
@@ -119,6 +120,7 @@ defmodule C1.NS38K002CoreWebExclusionTest do
       {:{}, _, [name, requirement, options]}
       when is_atom(name) and is_binary(requirement) and is_list(options) ->
         assert Keyword.keyword?(options), "unsupported root dependency options: #{inspect(options)}"
+
         assert valid_environment?(Keyword.get(options, :only, :all)),
                "unsupported root dependency environment: #{inspect(options)}"
 
