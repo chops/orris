@@ -230,6 +230,7 @@ defmodule C1.MutationPreservationTest do
     # Also the NS-08.B.001 test delivery: golden per-version journal event bytes with their pinned fixture digests.
     # Also the NS-37.A.001 test delivery: opaque run identifiers checked against pinned run_id decompositions.
     # Also the NS-13.B.001 test delivery: a run resumes from the journal alone with its projections absent.
+    # Also the S3 pane_quarantined consumer delivery: the v1/v2 fixtures, the typed refusal and its lifecycle tests.
     # Pin root entries so another core commit cannot silently pass. A later authorized core delivery must update
     # this snapshot explicitly in its review. Console files are outside the
     # snapshot, avoiding a self-referential commit id.
@@ -239,11 +240,11 @@ defmodule C1.MutationPreservationTest do
     040000 tree 588f175d8b6fd718e4ce9f00bec4e501b26e34bf\tbin
     100644 blob cfbb9f900c6f1442d2552baa0063cff01b270413\tflake.lock
     100644 blob 9b31a69229898038e39a7ba19c6a6e3ff1da3b27\tflake.nix
-    040000 tree c8d39f52bf4132e61d12f9e4e82fe9c2b3869236\tlib
+    040000 tree 905d6f074dae7f3be83d859c2af6874f4fe2ccd7\tlib
     100644 blob 6f8544e74c5907bebfdba64381e9320b07fcd7e3\tmix.exs
     100644 blob 0575c59cd4c68075227b8e9f11476fd3fd9bc85e\tmix.lock
     040000 tree 950aae97c234450184c6cf696d2dadd28520f48f\tnative
-    040000 tree 809ba7ae38b51ce523ac62d07cb028eb74d891e6\ttest
+    040000 tree 26e4f594bf8a03cd43a21ec41e3de809a59cf0d7\ttest
     """
 
     {committed, 0} = System.cmd("git", ["ls-tree", "HEAD", "--"] ++ core_paths, cd: Harness.core_path())
