@@ -4,7 +4,7 @@ defmodule C1.HarnessControlsTest do
   alias AiOrchestrator.Query
   alias C1.{Doubles, Harness, Oracles}
 
-  @core_lock_sha "d04f9211a05a567d1d1e9c340de53fc0d5d6b1d6a2cfac27844d892979149f41"
+  @core_lock_sha "e000e3be2f23f0847dabb0424fb730a123e57a49751db2537c4900d3029b3e69"
 
   test "H-1 the scaffold reaches the public core: a real fixture root lists through Query with its run identity" do
     {root, ids} = Harness.fixture_root(["alpha_run"])
@@ -103,7 +103,7 @@ defmodule C1.HarnessControlsTest do
     assert calls == []
   end
 
-  test "H-6 the core lock is the frozen B3 lock (the console adds no core dependency)" do
+  test "H-6 the core lock is the reviewed lock (the console adds no core dependency)" do
     sha =
       Harness.core_path()
       |> Path.join("mix.lock")
