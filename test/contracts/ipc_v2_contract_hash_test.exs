@@ -36,14 +36,14 @@ defmodule AiOrchestrator.Contracts.IpcV2ContractHashTest do
 
   @fixture_dir Path.expand("../fixtures/contracts/ipc/v2", __DIR__)
   @hash_path Path.join(@fixture_dir, "CONTRACT_HASH")
-  @pinned_hash "a6f92d537897d30a883a04d29217ff36a4f33db759b87d4e6ccc79ad4c2232fc"
-  @expected_fixture_count 16
+  @pinned_hash "56682bc16bd07dadbd8aa43dfda9ef7ecc84674c1a091279f337b1b16c5ad77f"
+  @expected_fixture_count 17
 
   @document Path.expand("../../docs/contracts/ipc-v2.org", __DIR__)
-  @paired_revision "7e5f5321821cbea7193bd966b39b357d9acf09bd"
-  @paired_document_sha256 "5313e99803a55a4ae9e5995ac8b4a9a57d98cd09995d7f456d427974c66b5bd4"
-  @vendored_source_revision "ffe6fb87bb049d604e269ba60891fda1b14dba57"
-  @vendored_source_sha256 "dd121abbd0f4596889d6960b4c1a6273f5c44e3fb6a463b9a56c8b7cc9973315"
+  @paired_revision "b79863cdbffec41038e20996722c8cd6e9e3573f"
+  @paired_document_sha256 "9acfcf447a53527fdbfbe8446e11e8f43657769777b88202257a650ffebf3aed"
+  @vendored_source_revision "2aae285f3e8e1f16885b409114492b4574e6603f"
+  @vendored_source_sha256 "c6e35db890a44ab8633194f52d947c4c7efa84edb0d3bcacb96fbac188554577"
   @toolchain_source Path.expand("../../bin/verify", __DIR__)
 
   test "the IPC v2 fixture set matches the pinned cross-repository hash" do

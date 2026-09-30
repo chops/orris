@@ -13,8 +13,8 @@ defmodule AiOrchestrator.Contracts.IPCContractHashTest do
 
   # Imported from the coordination runtime's IPC v1 fixture set.
   # Hash changes require coordinated protocol review in both repositories.
-  @pinned_hash "f1cacf8b53fdd1db37ec968e5476081250804e9c6a4d615215d47d9b77894213"
-  @expected_fixture_count 15
+  @pinned_hash "e809de8ea47339c1d6cffca65cc6dee1dc09d99d8f7b242e00296cc1f7f51a88"
+  @expected_fixture_count 16
 
   test "the IPC v1 fixture set matches the pinned cross-repository hash" do
     paths = @fixture_dir |> Path.join("*.json") |> Path.wildcard() |> Enum.sort()

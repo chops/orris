@@ -162,6 +162,26 @@ defmodule AiOrchestrator.Dispatch.IpcV2AttentionExitTest do
     end
   end
 
+  # pane_quarantined is a refusal the daemon gives before the send is pasted or queued
+  # (ipc-v1.org "Reply fixtures"), not one of rule 8's ambiguity words; the claim here is only
+  # that the run blocks durably, names the refusal, and never sends again.
+  describe "a quarantined pane refuses the send before it is pasted or queued" do
+    test "a send refused with pane_quarantined blocks the assignment, is never sent again, and is recorded as neither a delivery nor an absence" do
+      assert {:ok, result} = resume(send_mutation: {:refuse, "pane_quarantined"})
+
+      assert_received {:sent, _}
+      refute_received {:sent, _}, "a quarantined pane is not a reason to send the prompt again"
+      assert_blocked(result, "dispatch_refused_pane_quarantined")
+      drain()
+
+      recorded = Enum.map_join(result.appended_events, "\n", &Jason.encode!/1)
+
+      refute recorded =~ "\"absent\""
+      refute recorded =~ "not_delivered"
+      refute recorded =~ "\"send_status\"", "a refused send has no send status to journal"
+    end
+  end
+
   describe "the harness proves a conforming daemon through the same path" do
     test "with neither leg mutated the assignment is dispatched and nothing is blocked" do
       assert {:ok, result} = resume([])

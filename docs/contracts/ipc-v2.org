@@ -40,13 +40,13 @@ direction being recorded.
 
 - paired_repository: ~orrisd~ (the ai-pair daemon; the producer of v2 frames)
 - paired_path: ~docs/contracts/ipc-v2.org~
-- paired_revision: ~7e5f5321821cbea7193bd966b39b357d9acf09bd~
-- paired_document_sha256: ~5313e99803a55a4ae9e5995ac8b4a9a57d98cd09995d7f456d427974c66b5bd4~
-- vendored_source_revision: ~ffe6fb87bb049d604e269ba60891fda1b14dba57~
-- vendored_source_sha256: ~dd121abbd0f4596889d6960b4c1a6273f5c44e3fb6a463b9a56c8b7cc9973315~
+- paired_revision: ~b79863cdbffec41038e20996722c8cd6e9e3573f~
+- paired_document_sha256: ~9acfcf447a53527fdbfbe8446e11e8f43657769777b88202257a650ffebf3aed~
+- vendored_source_revision: ~2aae285f3e8e1f16885b409114492b4574e6603f~
+- vendored_source_sha256: ~c6e35db890a44ab8633194f52d947c4c7efa84edb0d3bcacb96fbac188554577~
 - paired_fixture_dir: ~test/fixtures/contracts/ipc/v2/~
-- paired_fixture_contract_hash: ~a6f92d537897d30a883a04d29217ff36a4f33db759b87d4e6ccc79ad4c2232fc~
-- paired_fixture_count: ~16~
+- paired_fixture_contract_hash: ~56682bc16bd07dadbd8aa43dfda9ef7ecc84674c1a091279f337b1b16c5ad77f~
+- paired_fixture_count: ~17~
 - paired_elixir: ~1.20.4~
 - paired_otp: ~29.0.5~
 
@@ -67,7 +67,13 @@ THIS file whose bytes that copy vendors, and ~vendored_source_sha256~ its
 digest: the pairing is a pair of snapshots, and either side moves it by a
 deliberate re-pairing rather than by drifting.
 
-The producer performed the current re-vendoring at ~7e5f5321~: it took these bytes
+The producer performed the current re-vendoring at
+~b79863cdbffec41038e20996722c8cd6e9e3573f~ (2026-09-30): it took these bytes at
+~2aae285f3e8e1f16885b409114492b4574e6603f~ and moved its source revision, source
+digest and its own test pin together, and this block moved in answer. The
+paragraph below records the previous re-vendoring in the words it was written in.
+
+The producer performed the previous re-vendoring at ~7e5f5321~: it took these bytes
 at ~ffe6fb87~ and moved its ~source_revision~, ~source_sha256~ and its own test pin
 together. This block is the reciprocal half moving in answer. Editing it changes
 this file again, so ~vendored_source_revision~ names the revision BEFORE this
@@ -79,7 +85,7 @@ head, and this block never claimed to track a head. A later producer revision th
 re-vendors this file again and changes the producer document does not invalidate
 this pairing and does not make it stale: it creates the next re-pairing to be
 measured, and until that is measured these values remain exactly true about the
-bytes at ~7e5f5321~. A snapshot claim is never restated as a claim about the
+bytes at the named ~paired_revision~. A snapshot claim is never restated as a claim about the
 producer's latest revision, its main branch, or any installed release.
 
 This re-pairing is the first that moved the fixtures. The producer snapshot
@@ -92,6 +98,14 @@ pairing asserts, and the inventory is still sixteen files: one file changed, non
 was added or removed. The earlier statement that the fixtures were untouched by a
 re-pairing described the pairings before this one and is left standing as the
 history it recorded.
+
+On 2026-09-30 the pairing moved to ~b79863cdbffec41038e20996722c8cd6e9e3573f~, the
+Orrisd landing that ships ~send.error.pane_quarantined.json~: the inventory grew
+from sixteen to seventeen files, byte-identical in both repositories, and
+~paired_fixture_contract_hash~ moved from
+~a6f92d537897d30a883a04d29217ff36a4f33db759b87d4e6ccc79ad4c2232fc~ to the value
+above. Statements of a sixteen-file inventory earlier in this section describe
+the pairings before this one and are left standing as the history they recorded.
 
 What the control here can see: that this document still names the paired
 revision, the paired digests, and the fixture hash the fixtures in this
@@ -132,7 +146,7 @@ addenda edits alone. That is a real cost, and it is the price of the pin saying
 something about the producer at all. It stays whole.
 
 The measurement above is the one taken at ~d6b2e369~ and is left as the dated
-record of that decision. Re-measured at the current pairing ~7e5f5321~ the
+record of that decision. Re-measured at the then-current pairing ~7e5f5321~ the
 arithmetic is the same shape and the conclusion is unchanged: the producer's
 vendored region is 36410 bytes digesting to
 ~dd121abbd0f4596889d6960b4c1a6273f5c44e3fb6a463b9a56c8b7cc9973315~, which is the
@@ -195,8 +209,8 @@ bytes of producer material would leave the pin's scope. The pin stays whole.
 | ~send.error.missing_msg_id.json~ | A v2 send without its send id is refused before admission; the pane it named is echoed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | ~send.error.pane_quarantined.json~ | A registered pane still quarantined after boot restoration refuses the send before receipt admission, echoing ~msg_id~ and ~pane_id~. A later reconcile answers ~absent~ because no receipt exists. This is a typed pane refusal, not a request or store error; boot reconciliation or controlled re-attachment is required, not blind retry. |
 
-The ~pane_quarantined~ row specifies the next paired reply. Its fixture is not in
-the current sixteen-file set, and this text alone does not make any daemon emit it.
+Since 2026-09-30 its fixture is in the seventeen-file paired set, shipped by
+Orrisd ~b79863cdbffec41038e20996722c8cd6e9e3573f~.
 
 ** Reconcile replies
 :PROPERTIES:
@@ -230,7 +244,7 @@ are the PAIRED set: byte-identical with the producer snapshot the pairing block
 above names, with ~ping.ok.json~ advertising ~delivery_reconcile~ and
 ~sessions_read~. The sessions reply examples remain in a separate directory
 with their own hash and controls. They are adopted at the named producer
-snapshot, but are not part of the sixteen-file paired v2 delivery set; this
+snapshot, but are not part of the paired v2 delivery set (seventeen files since 2026-09-30); this
 document moves neither inventory nor the pairing block.
 
 *** What ~sessions~ answers
@@ -531,8 +545,8 @@ a producer did, together with the ping example and the pairing block, in a chang
 that measures the producer rather than predicting it. That is the change this
 revision makes, and the measurement is the reason.
 
-At the producer snapshot named as ~sessions_example_adopted_at~ and as
-~paired_revision~, orrisd ~7e5f5321~, the producer's own production-path suite
+At the producer snapshot named as ~sessions_example_adopted_at~ (and, until the
+2026-09-30 re-pairing, as ~paired_revision~), orrisd ~7e5f5321~, the producer's own production-path suite
 ~test/ai_pair/ipc/sessions_contract_fixture_test.exs~ drives its production
 dispatch, projection and encoding with injected census and registry observations,
 and asserts decoded semantic equivalence with each of the eight successful
@@ -552,9 +566,10 @@ answers ~sessions~ stays a runtime discovery through the capability preflight,
 never an inference from this block.
 
 The separation of the two directories is unchanged by adoption and is not a
-consequence of it: the sixteen delivery fixtures and these twelve examples remain
-two distinct inventories for the cross-repository reason given above, and neither
-count moved.
+consequence of it: the delivery fixtures and these twelve examples remain two
+distinct inventories for the cross-repository reason given above. Adoption moved
+neither count. The sessions count is still twelve; the delivery count moved later,
+from sixteen to seventeen, with the 2026-09-30 re-pairing.
 
 *** The CLI binding
 :PROPERTIES:

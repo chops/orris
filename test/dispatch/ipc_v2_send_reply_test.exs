@@ -24,6 +24,7 @@ defmodule AiOrchestrator.Dispatch.IpcV2SendReplyTest do
     "send.duplicate.pending.json" => {:ok, "queued", true},
     "send.duplicate.ambiguous.json" => {:error, "dispatch_reconcile_ambiguous"},
     "send.error.conflict.json" => {:error, "dispatch_refused_conflict"},
+    "send.error.pane_quarantined.json" => {:error, "dispatch_refused_pane_quarantined"},
     "send.error.missing_msg_id.json" => {:error, "dispatch_request_rejected"}
   }
 

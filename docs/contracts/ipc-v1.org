@@ -64,8 +64,9 @@ repository pins; it does not add fields to the wire.
 | ~send.error.paste_failed.json~           | Synchronous tmux paste failed; ~<detail>~ is diagnostic text and is not machine-readable.  |
 | ~send.error.pane_quarantined.json~       | A registered, live pane quarantined after boot restoration refused the send before it was pasted or queued; not terminal, not a request error. |
 
-The ~pane_quarantined~ row specifies the next paired v1 reply. Its fixture is not in
-the current fifteen-file set, and this text alone does not make any daemon emit it.
+Since 2026-09-30 its fixture is in the sixteen-file set, paired with Orrisd
+~b79863cdbffec41038e20996722c8cd6e9e3573f~, whose v1 send path returns it for a
+quarantined pane.
 
 ~queued~ and ~queue_full~ are typed outcomes, not transport failures. Consumers
 must preserve the distinction. A later revision defines consumer behavior for each

@@ -11,11 +11,11 @@ defmodule AiOrchestrator.Contracts.IpcV2SessionsContractHashTest do
   through `Delivery.dispatch`, so a sessions example placed there would be driven down the
   delivery route on vendoring, which is the wrong producer path. The consumer tests here
   select `send.*` and `reconcile.*` by glob and would not do that; the rationale is
-  cross-repository. The sixteen delivery fixtures and the twelve sessions examples are two
-  distinct inventories and are never merged.
+  cross-repository. The delivery fixtures (seventeen since the 2026-09-30 re-pairing) and
+  the twelve sessions examples are two distinct inventories and are never merged.
 
   The adoption this module records is a NAMED HISTORICAL SNAPSHOT. At the producer
-  snapshot the pairing block names, orrisd 7e5f5321, the ordinary v2 ping advertises
+  snapshot named at adoption, orrisd 7e5f5321, the ordinary v2 ping advertises
   `sessions_read` beside `delivery_reconcile`, and that snapshot's own production-path
   suite (test/ai_pair/ipc/sessions_contract_fixture_test.exs) drives its production
   dispatch, projection and encoding with injected census and registry observations, and
@@ -59,9 +59,11 @@ defmodule AiOrchestrator.Contracts.IpcV2SessionsContractHashTest do
   # the paired set, held here to the bytes of the NAMED producer snapshot the pairing block
   # names: this lane adopted a measured producer, it did not predict one
   @paired_dir Path.expand("../fixtures/contracts/ipc/v2", __DIR__)
-  @paired_hash "a6f92d537897d30a883a04d29217ff36a4f33db759b87d4e6ccc79ad4c2232fc"
+  @paired_hash "56682bc16bd07dadbd8aa43dfda9ef7ecc84674c1a091279f337b1b16c5ad77f"
   @paired_capabilities ["delivery_reconcile", "sessions_read"]
-  @paired_snapshot "7e5f5321821cbea7193bd966b39b357d9acf09bd"
+  @paired_snapshot "b79863cdbffec41038e20996722c8cd6e9e3573f"
+  # the snapshot the sessions examples were adopted at; it stays when the pairing moves
+  @adopted_snapshot "7e5f5321821cbea7193bd966b39b357d9acf09bd"
 
   @document Path.expand("../../docs/contracts/ipc-v2.org", __DIR__)
 
@@ -248,11 +250,11 @@ defmodule AiOrchestrator.Contracts.IpcV2SessionsContractHashTest do
     assert declared(document, "sessions_example_contract_hash") == @pinned_hash
     assert declared(document, "sessions_example_count") == count
     assert declared(document, "sessions_example_status") == "adopted"
-    assert declared(document, "sessions_example_adopted_at") == @paired_snapshot
+    assert declared(document, "sessions_example_adopted_at") == @adopted_snapshot
 
     # the twelve stay twelve: adoption did not move an example into the delivery inventory
     assert length(@expected_files) == 12
-    assert @paired_dir |> json_paths() |> length() == 16
+    assert @paired_dir |> json_paths() |> length() == 17
   end
 
   defp json_paths(dir), do: dir |> Path.join("*.json") |> Path.wildcard() |> Enum.sort()

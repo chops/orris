@@ -32,7 +32,8 @@ defmodule AiOrchestrator.Dispatch.PaneClientContractTest do
     "send.error.queue_full.json" => {:send, :typed_refusal},
     "send.error.oversize.json" => {:send, :request_error},
     "send.error.send_timeout.json" => {:send, :typed_refusal},
-    "send.error.paste_failed.json" => {:send, :typed_refusal}
+    "send.error.paste_failed.json" => {:send, :typed_refusal},
+    "send.error.pane_quarantined.json" => {:send, :typed_refusal}
   }
 
   @states ~w(idle busy dialog dead unknown)

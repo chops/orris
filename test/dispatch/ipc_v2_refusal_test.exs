@@ -34,7 +34,7 @@ defmodule AiOrchestrator.Dispatch.IpcV2RefusalTest do
   # for the identity it could not read, so they carry at most the other one. Their own rows
   # are in ipc_v2_identity_grammar_test.exs; they are listed here because this file is where
   # the vocabulary is pinned against the vendored contracts.
-  @send_refusals ~w(conflict pane_not_found pane_dead queue_full send_timeout paste_failed)
+  @send_refusals ~w(conflict pane_not_found pane_dead pane_quarantined queue_full send_timeout paste_failed)
   @send_request_errors ~w(missing_msg_id missing_pane_id missing_text oversize invalid_msg_id invalid_pane_id)
   @reconcile_request_errors ~w(missing_payload_hash missing_msg_id missing_pane_id invalid_msg_id invalid_pane_id)
 
@@ -121,6 +121,48 @@ defmodule AiOrchestrator.Dispatch.IpcV2RefusalTest do
     end
   end
 
+  describe "a pane_quarantined refusal about another message or pane is an identity error, not a refusal of this send" do
+    test "pane_quarantined echoing another msg_id is reply_identity_mismatch" do
+      echoes = %{"msg_id" => @other_id, "pane_id" => @pane}
+
+      assert {:error, %{"reason" => "reply_identity_mismatch"} = reason} =
+               LocalPane.deliver(command(), send_opts(refusal("pane_quarantined", echoes)))
+
+      refute Map.has_key?(reason, "refusal")
+      refute Map.has_key?(reason, "detector")
+    end
+
+    test "pane_quarantined echoing no msg_id is reply_identity_missing" do
+      echoes = %{"pane_id" => @pane}
+
+      assert {:error, %{"reason" => "reply_identity_missing"} = reason} =
+               LocalPane.deliver(command(), send_opts(refusal("pane_quarantined", echoes)))
+
+      refute Map.has_key?(reason, "refusal")
+      refute Map.has_key?(reason, "detector")
+    end
+
+    test "pane_quarantined echoing another pane_id is reply_pane_mismatch" do
+      echoes = %{"msg_id" => @id, "pane_id" => @other_pane}
+
+      assert {:error, %{"reason" => "reply_pane_mismatch"} = reason} =
+               LocalPane.deliver(command(), send_opts(refusal("pane_quarantined", echoes)))
+
+      refute Map.has_key?(reason, "refusal")
+      refute Map.has_key?(reason, "detector")
+    end
+
+    test "pane_quarantined echoing no pane_id is reply_pane_missing" do
+      echoes = %{"msg_id" => @id}
+
+      assert {:error, %{"reason" => "reply_pane_missing"} = reason} =
+               LocalPane.deliver(command(), send_opts(refusal("pane_quarantined", echoes)))
+
+      refute Map.has_key?(reason, "refusal")
+      refute Map.has_key?(reason, "detector")
+    end
+  end
+
   describe "request errors" do
     for word <- @send_request_errors do
       test "a send refused with #{word} is a request error carrying the word" do
@@ -190,6 +232,22 @@ defmodule AiOrchestrator.Dispatch.IpcV2RefusalTest do
         end)
 
       assert {:error, %{"reason" => "dispatch_refused_pane_dead"}} = LocalPane.deliver(command(), opts)
+      assert_received :sent
+      refute_received :sent
+    end
+
+    test "a quarantined pane is a typed refusal, refusal is never interpreted as absent, and it is never sent again" do
+      owner = self()
+
+      opts =
+        Keyword.put(send_opts(refusal("pane_quarantined")), :input_runner, fn _, _, _, _ ->
+          send(owner, :sent)
+          {Jason.encode!(refusal("pane_quarantined")), 0}
+        end)
+
+      assert {:error, %{"reason" => "dispatch_refused_pane_quarantined", "refusal" => "pane_quarantined"}} =
+               LocalPane.deliver(command(), opts)
+
       assert_received :sent
       refute_received :sent
     end
