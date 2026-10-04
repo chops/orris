@@ -1,0 +1,255 @@
+#+options: ^:nil
+
+* ai-pair IPC contract, protocol version 3
+:PROPERTIES:
+:CUSTOM_ID: ai-pair-ipc-contract-protocol-version-3
+:END:
+** Implementation status
+:PROPERTIES:
+:CUSTOM_ID: implementation-status
+:END:
+Specified, not implemented. Neither the consumer in this repository nor the
+producer (the ai-pair daemon, Orrisd) speaks version 3 yet, and no client may send
+a version 3 request until the daemon advertises the capability tokens below in a
+version 3 ~ping~. Version 2 (~ipc-v2.org~) is unchanged and stays the wire for
+every existing client; a daemon serves both versions side by side.
+
+The fixture bytes in ~test/fixtures/contracts/ipc/v3/~ are the version 3 shapes
+this repository pins, with their ~CONTRACT_HASH~ computed under the v1 hash rule
+(see ~ipc-v1.org~), checked by ~test/contracts/ipc_v3_contract_hash_test.exs~.
+They are examples written from this text, not frames captured from a daemon. The
+producer owns the frames: when it implements version 3 it vendors this document
+verbatim and replaces each example with the byte-identical frame its real
+implementation produces, or this text changes first. Until then the set proves
+shape agreement only.
+
+What version 3 adds, and why each piece exists:
+- pane identity in every pane-bound reply, so a pre-dispatch claim check can tell
+  a registration apart from a later one on the same tmux pane;
+- a per-pane ~status~ read for observation without the version 1 ~pane_status~;
+- ~cancel~, which withdraws a queued send and never un-pastes one;
+- ~subscribe~, a pushed stream of pane, receipt and registration changes, so a
+  client polls only when the stream is lost.
+
+** Pairing
+:PROPERTIES:
+:CUSTOM_ID: pairing
+:END:
+Not yet paired. The producer vendors this document between ~BEGIN VENDORED~ /
+~END VENDORED~ markers when it adopts version 3, as it does for version 2, and the
+reciprocal ~paired_*~ block is added here in that re-pairing. Until then no
+statement in this file is a claim about any producer revision.
+
+** Framing and version
+:PROPERTIES:
+:CUSTOM_ID: framing-and-version
+:END:
+- A request that carries ~"protocol_version": 3~ is a version 3 request. Every
+  version 3 reply and frame carries ~"protocol_version": 3~ and ~ok~. Every reply to
+  a message-bound command echoes ~msg_id~ and ~pane_id~, as in version 2. A reply
+  without the version, or a version 2 reply to a version 3 request, is not a
+  version 3 answer and a client MUST refuse it.
+- ~ping~ at version 3 answers ~capabilities~. The tokens this version defines are
+  ~pane_identity~, ~cancel~ and ~subscribe~; ~delivery_reconcile~ keeps its version
+  2 meaning. A client MUST NOT send a command whose token is absent and fails closed
+  instead (~ping.missing_tokens.json~). Unknown well-formed extra tokens are
+  admissible.
+- A version 2 request naming a command that exists only in version 3 (~subscribe~,
+  ~cancel~, or ~status~ with version 3 keys) is refused by the daemon with
+  ~unsupported_command~ in a version 2 frame, with no side effect and never a hang
+  (~v2_refusal.unsupported_command.json~). It is the one version 2 frame in this
+  set.
+- ~send~ and ~reconcile~ keep their version 2 requests, grammars and refusals.
+  Their version 3 replies add ~pane_identity~; ~reconcile~ adds the outcome
+  ~cancelled~ (below).
+
+** Pane identity
+:PROPERTIES:
+:CUSTOM_ID: pane-identity
+:END:
+- ~pane_identity~ is ~{pane_id, registration_id, generation}~. ~registration_id~ is
+  minted by the daemon when a pane is attached and is never reused; a pane that is
+  detached and attached again, even on the same tmux pane id, is a NEW registration
+  with a new ~registration_id~. ~generation~ is the pane-intent record generation the
+  daemon's boot reconciliation already compares.
+- Every version 3 reply to a pane-bound command carries ~pane_identity~. A client
+  holding a claim for a pane MUST compare the reply's ~registration_id~ and
+  ~generation~ with the identity recorded in its claim before dispatch; a missing
+  identity (~send.sent.no_pane_identity.json~) or a mismatch refuses dispatch and
+  opens a diagnosis that names the pane, the claim and the observed daemon state.
+- The process id of the pane is NOT identity: tmux ~respawn-pane~ keeps the pane id
+  and changes the pid. It appears only in ~status~ as ~pane_pid~.
+
+** Status
+:PROPERTIES:
+:CUSTOM_ID: status
+:END:
+- ~status~ ~{pane_id}~ answers ~state~, ~quarantined~, ~queue_depth~, ~pane_pid~ and
+  ~pane_identity~ (~status.ok.json~, ~status.quarantined.json~), or a typed refusal
+  such as ~pane_not_found~ (~status.error.pane_not_found.json~).
+- It is a per-pane read. The registry-wide read and its JSON shape are not defined
+  here.
+
+** Cancel
+:PROPERTIES:
+:CUSTOM_ID: cancel
+:END:
+- ~cancel~ carries ~msg_id~ and ~pane_id~ and answers exactly one ~outcome~:
+  | outcome     | meaning                                                                                         |
+  |-------------+-------------------------------------------------------------------------------------------------|
+  | ~cancelled~ | the send was queued and is withdrawn; its receipt is now ~cancelled~                            |
+  | ~too_late~  | the send was already delivered; nothing changes                                                 |
+  | ~ambiguous~ | the paste is in flight or pending; the daemon does not wait for it and nothing is withdrawn     |
+  | ~absent~    | no receipt exists for these identities                                                          |
+  | ~conflict~  | the ~msg_id~ exists with a different pane; echoes the identities presented, never the stored ones |
+- ~cancel~ never pastes and never un-pastes.
+- ~cancelled~ is a NEW TERMINAL receipt status, distinct from ~not_delivered~. It is
+  never stored as ~not_delivered~, because version 2 admission opens a new attempt
+  for a ~not_delivered~ receipt and a cancelled send MUST NOT be re-admitted.
+- At version 3, ~reconcile~ of a cancelled send answers the sixth outcome
+  ~cancelled~ with the receipt view (~reconcile.cancelled.json~), and a ~send~ that
+  repeats its ~msg_id~ is refused as a duplicate with ~status~ ~cancelled~
+  (~send.duplicate.cancelled.json~).
+- At version 2 a cancelled receipt is read as ~ambiguous~: a version 2 ~reconcile~
+  answers the existing ~reconcile.ambiguous~ shape and a version 2 duplicate answers
+  ~send.duplicate.ambiguous~. Version 2 already requires a client to refuse
+  ~ambiguous~ and never resend it, so a version 2 client can neither re-admit nor
+  report delivery for a cancelled send. No version 2 shape changes.
+
+** Subscribe
+:PROPERTIES:
+:CUSTOM_ID: subscribe
+:END:
+*** Frames
+- ~subscribe~ ~{panes: [pane_id, ...]}~ or ~{panes: "all"}~ opens a dedicated
+  connection. The first frame is a ~snapshot~ (~seq~ 0); later frames are ~event~
+  frames with a per-subscription ~seq~ that increases by exactly 1, or one
+  ~subscription_lost~ frame before close.
+- Event ~kind~ values: ~pane_state~, ~receipt~, ~pane_gone~ and ~registration~
+  (~change~ ~attach~ or ~detach~).
+- Each pane has a ~version~ that increases by exactly 1 on every observable change.
+  Every snapshot entry and every pane event carries it. Registering the subscriber
+  and reading a pane's snapshot entry happen in one serialized step of that pane's
+  owner, so the first event for a pane carries the snapshot entry's version plus 1.
+
+*** Subscribe to all panes: the registry handoff
+- Membership has one serializing owner, the registry, with a ~registry_epoch~ that
+  increases by exactly 1 on every attach and every detach. Everything below is keyed
+  by ~registration_id~, never by ~pane_id~ alone.
+- Each subscriber has one outbound queue. Enqueue appends to a bounded buffer and
+  returns; it never waits on the client socket.
+- Capture: in one registry step the daemon adds the subscriber and records the
+  member set M (registration ids) and the epoch E. From then on every attach and
+  detach is enqueued to this subscriber as a ~registration~ event with its epoch;
+  the first carries E + 1.
+- Tombstones: until this subscriber's snapshot is emitted, a member of M that
+  detaches leaves a tombstone with its final entry. A pane owner that terminates
+  abnormally leaves a tombstone with ~final_state~ ~unknown~ and no version, and the
+  registry treats that termination as a detach. Tombstones are released when every
+  pending subscriber that pinned them has emitted its snapshot or closed; a pending
+  subscriber whose snapshot is not emitted within a fixed deadline is closed (reason
+  ~snapshot_timeout~, or a bare close).
+- Snapshot read: each entry is read from the owner of THAT registration id. If the
+  owner has stopped, or the pane id now belongs to another registration, the
+  tombstone is used and the entry is marked ~detached~. A new registration on the
+  same pane id never enters this snapshot; it arrives only as its own attach event.
+- The snapshot frame carries ~epoch~ (E) and ~max_epoch_at_snapshot~, the registry
+  epoch when the last entry was read. With an empty M, ~max_epoch_at_snapshot~ is E
+  (~subscribe.all.empty.json~).
+- Attach is one registry step in this order: mint the registration id and advance
+  the epoch; enqueue the attach event, carrying the initial entry at version 0, to
+  every all-panes subscriber including pending ones; only then start the pane owner.
+  The owner does not exist before every enqueue has returned, so no pane event can
+  precede its registration on any subscriber's queue.
+- Detach is one registry step: stop admitting sends for that registration, write any
+  pinned tombstones, stop the owner, advance the epoch, enqueue the detach event.
+- Events produced between capture and the snapshot frame wait in the subscriber's
+  queue, count against its bound, and are sent after the snapshot frame in enqueue
+  order.
+- A snapshot captures STATE at the version each entry was read, not the transitions
+  between capture and that read; the version number is the only trace of them.
+
+*** Client view and protocol errors
+- The view is keyed by ~registration_id~. An entry marked ~detached~ is in view as
+  detached-pending and pairs with exactly one later detach event, which removes it;
+  it causes neither a second detach nor a resubscribe.
+- Each of these is a protocol error that makes the client discard its view and
+  resubscribe: a ~seq~ gap or repeat; a pane ~version~ gap, or an event at or below
+  the version in view; an epoch gap or repeat; an attach for a registration already
+  in view; a detach for a registration not in view; a pane event for a registration
+  not in view or detached-pending; a detached-pending entry still unmatched after
+  every registration event up to ~max_epoch_at_snapshot~ has been applied.
+
+*** Loss, overflow and restart
+- Overflow: when a subscriber's buffer is full the daemon stops enqueueing for it,
+  writes ~subscription_lost~ ~{reason: overflow}~ only if that write would not block,
+  and closes either way. Delivery and other subscribers are never slowed by a slow
+  subscriber.
+- Restart: subscriptions are not durable. A daemon restart closes them with no final
+  frame.
+- A final frame is NOT guaranteed. A bare close (~seq.close_no_frame.*.json~) is a
+  complete loss signal, classified the same as the matching ~subscription_lost~
+  frame; it does not require one.
+- What ~seq~, ~version~ and ~epoch~ prove: only that this stream has no gap. They
+  never prove a delivery outcome. Delivery truth comes only from ~reconcile~.
+
+*** After loss
+- The client discards its view and treats every pane state it held as UNKNOWN. It
+  reconciles every send that is not terminal in its journal before any other action;
+  ~ambiguous~ raises attention and is never resent; a resend happens only after
+  ~reconcile~ answers ~absent~.
+- It resubscribes with bounded backoff and meanwhile observes with version 3
+  ~status~. A status reply clears UNKNOWN for that pane only when it arrived after
+  the loss, succeeded, carries a ~pane_identity~ equal to the identity in that pane's
+  claim, and reports the pane live and not quarantined. A stale, missing, failed or
+  contradictory reply never clears it; it refuses dispatch to that pane and opens the
+  claim-refusal diagnosis. No dispatch goes to an UNKNOWN pane.
+- Degraded polling is bounded. Dispatch to cleared panes continues only with a fresh
+  identity-matching ~status~ before each dispatch. A snapshot before a fixed
+  deadline ends degraded mode. At the deadline without one, the run reaches attention
+  ~daemon_subscription_degraded~ and dispatches nothing more. If resubscription and
+  ~status~ both fail past a fixed deadline, the run reaches attention
+  ~daemon_observation_lost~. A later snapshot never resolves either attention or
+  resumes dispatch; only an authorized ~resolve_attention~ does, after a snapshot
+  received since the attention opened, identity checks of the panes to be
+  dispatched, and reconciliation of the non-terminal sends.
+
+*** Bounds
+The per-subscriber buffer size, the snapshot deadline, the resubscription backoff,
+the status poll interval and the two attention deadlines are fixed and finite. Their
+values are chosen with the first producer and consumer tests and recorded here then;
+until they are, no implementation may claim conformance.
+
+** Example set
+:PROPERTIES:
+:CUSTOM_ID: example-set
+:END:
+| Fixture                                          | Shows                                                                     |
+|--------------------------------------------------+---------------------------------------------------------------------------|
+| ~ping.ok.json~                                   | version 3 ping with all tokens                                            |
+| ~ping.missing_tokens.json~                       | a daemon without the version 3 tokens; the client fails closed            |
+| ~send.sent.json~, ~send.queued.json~             | version 2 send replies plus ~pane_identity~                               |
+| ~send.sent.no_pane_identity.json~                | a reply the client MUST refuse for missing identity                       |
+| ~send.duplicate.cancelled.json~                  | duplicate of a cancelled send                                             |
+| ~status.*.json~                                  | per-pane status and its refusal                                           |
+| ~cancel.*.json~                                  | the five cancel outcomes                                                  |
+| ~reconcile.cancelled.json~                       | the sixth reconcile outcome                                               |
+| ~v2_refusal.unsupported_command.json~            | a version 2 request for a version 3 command                               |
+| ~subscribe.pane.snapshot.json~                   | per-pane snapshot                                                         |
+| ~subscribe.all.*.json~                           | all-panes snapshots: ordinary, empty, with a detached entry, unknown state |
+| ~event.*.json~                                   | one of each event kind                                                    |
+| ~subscription_lost.*.json~                       | the two loss frames                                                       |
+| ~seq.close_no_frame.*.json~                      | frames then close with no final frame: overflow, restart, snapshot timeout |
+| ~seq.race.*.json~                                | attach, detach, detach-then-reattach, owner exit before the read          |
+
+A ~seq.*~ file is a sequence: ~frames~ in order, then ~then~ ~close~.
+
+** Placeholders
+:PROPERTIES:
+:CUSTOM_ID: placeholders
+:END:
+~<msg_id>~, ~<pane_id>~, ~<payload_hash>~, ~<version>~ and ~<registration_id>~ are
+dynamic and substituted by tests; ~<pane_id_1>~, ~<pane_id_2>~ and
+~<registration_id_1>~ to ~<registration_id_3>~ name distinct panes and registrations
+within one file. Pane ids are placeholders because ~bin/redaction-check~ refuses a
+literal tmux pane id in the tree. Everything else is exact bytes.
