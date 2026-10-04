@@ -1,1 +1,1 @@
-{"entries":[{"detached":true,"final_state":"unknown","pane_identity":{"generation":1,"pane_id":"<pane_id_1>","registration_id":"<registration_id_1>"}}],"epoch":12,"frame":"snapshot","max_epoch_at_snapshot":13,"ok":true,"protocol_version":3,"scope":"all","seq":0}
+{"entries":[{"detached":true,"final_state":"unknown","pane_identity":{"generation":"<generation>","pane_id":"<pane_id_1>","registration_id":"<registration_id_1>"}}],"epoch":12,"frame":"snapshot","max_epoch_at_snapshot":13,"ok":true,"protocol_version":3,"scope":"all","seq":0}

@@ -1,1 +1,1 @@
-{"entries":[{"pane_identity":{"generation":1,"pane_id":"<pane_id>","registration_id":"<registration_id>"},"quarantined":false,"state":"idle","version":7}],"frame":"snapshot","ok":true,"protocol_version":3,"scope":"pane","seq":0}
+{"entries":[{"pane_identity":{"generation":"<generation>","pane_id":"<pane_id>","registration_id":"<registration_id>"},"quarantined":false,"state":"idle","version":7}],"frame":"snapshot","ok":true,"protocol_version":3,"scope":"pane","seq":0}

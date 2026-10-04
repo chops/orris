@@ -1,1 +1,1 @@
-{"change":"detach","epoch":13,"frame":"event","kind":"registration","ok":true,"pane_identity":{"generation":1,"pane_id":"<pane_id_1>","registration_id":"<registration_id_1>"},"protocol_version":3,"seq":1}
+{"change":"detach","epoch":13,"frame":"event","kind":"registration","ok":true,"pane_identity":{"generation":"<generation>","pane_id":"<pane_id_1>","registration_id":"<registration_id_1>"},"protocol_version":3,"seq":1}

@@ -1,1 +1,1 @@
-{"msg_id":"<msg_id>","ok":true,"pane_id":"<pane_id>","pane_identity":{"generation":1,"pane_id":"<pane_id>","registration_id":"<registration_id>"},"protocol_version":3,"status":"sent"}
+{"msg_id":"<msg_id>","ok":true,"pane_id":"<pane_id>","pane_identity":{"generation":"<generation>","pane_id":"<pane_id>","registration_id":"<registration_id>"},"protocol_version":3,"status":"sent"}

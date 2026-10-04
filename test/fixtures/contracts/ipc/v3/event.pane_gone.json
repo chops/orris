@@ -1,1 +1,1 @@
-{"frame":"event","kind":"pane_gone","ok":true,"pane_identity":{"generation":1,"pane_id":"<pane_id>","registration_id":"<registration_id>"},"protocol_version":3,"seq":3,"version":10}
+{"frame":"event","kind":"pane_gone","ok":true,"pane_identity":{"generation":"<generation>","pane_id":"<pane_id>","registration_id":"<registration_id>"},"protocol_version":3,"seq":3,"version":10}

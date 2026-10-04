@@ -55,10 +55,14 @@ statement in this file is a claim about any producer revision.
   instead (~ping.missing_tokens.json~). Unknown well-formed extra tokens are
   admissible.
 - A version 2 request naming a command that exists only in version 3 (~subscribe~,
-  ~cancel~, or ~status~ with version 3 keys) is refused by the daemon with
-  ~unsupported_command~ in a version 2 frame, with no side effect and never a hang
-  (~v2_refusal.unsupported_command.json~). It is the one version 2 frame in this
-  set.
+  ~cancel~, or ~status~) is refused by the daemon with ~unsupported_command~ in a
+  version 2 reply that echoes ~cmd~ and any ~msg_id~ / ~pane_id~ the request carried.
+  The refusal has no side effect: no subscription opens, no receipt changes, nothing
+  is pasted, and it never hangs. The pairs ~v2_request.subscribe.json~ /
+  ~v2_reply.subscribe.unsupported_command.json~ and ~v2_request.cancel.json~ /
+  ~v2_reply.cancel.unsupported_command.json~ show it. These four files, and the
+  ~request~ / ~reply~ inside the ~scenario.*~ files, are the only version 2 bytes in
+  this set.
 - ~send~ and ~reconcile~ keep their version 2 requests, grammars and refusals.
   Their version 3 replies add ~pane_identity~; ~reconcile~ adds the outcome
   ~cancelled~ (below).
@@ -71,12 +75,33 @@ statement in this file is a claim about any producer revision.
   minted by the daemon when a pane is attached and is never reused; a pane that is
   detached and attached again, even on the same tmux pane id, is a NEW registration
   with a new ~registration_id~. ~generation~ is the pane-intent record generation the
-  daemon's boot reconciliation already compares.
-- Every version 3 reply to a pane-bound command carries ~pane_identity~. A client
-  holding a claim for a pane MUST compare the reply's ~registration_id~ and
-  ~generation~ with the identity recorded in its claim before dispatch; a missing
-  identity (~send.sent.no_pane_identity.json~) or a mismatch refuses dispatch and
-  opens a diagnosis that names the pane, the claim and the observed daemon state.
+  daemon's boot reconciliation already compares. On the wire it is a JSON STRING of
+  one or more decimal digits (~[0-9]+~), exactly the pane-intent record's
+  ~session_gen~ and the session marker's generation in the daemon, which mint it from
+  16 random bytes rendered in decimal (1 to 39 digits) and compare it as text. It is
+  never converted to a number: it can exceed any fixed-width integer, and a client
+  compares it byte for byte.
+- ~registration_id~ is ~reg_~ followed by exactly 32 lowercase hex characters. It
+  appears only in replies and frames; no version 3 request carries one. A client
+  that reads a ~registration_id~ outside this grammar, or a ~generation~ that is not
+  a string of decimal digits (a JSON number included), refuses the reply as a reply-identity error, exactly as it
+  refuses a mismatched ~msg_id~ or ~pane_id~ echo in version 2, and never uses it for
+  a claim comparison.
+- Which replies carry ~pane_identity~: every version 3 reply or frame that reports a
+  receipt or the state of a registered pane -- ~send~ results and duplicates,
+  ~reconcile~ outcomes that carry a receipt view (~delivered~, ~queued~,
+  ~ambiguous~, ~cancelled~), ~cancel~ outcomes that carry a receipt view
+  (~cancelled~, ~too_late~, ~ambiguous~), successful ~status~, every snapshot entry
+  and every pane or registration event. Replies that name no registration omit it:
+  ~reconcile~ and ~cancel~ ~absent~ and ~conflict~ (no stored record, or the caller's
+  identities only), every refusal (~ok: false~, for example ~pane_not_found~), and
+  ~ping~ and ~subscription_lost~. A client MUST NOT require ~pane_identity~ on those
+  and MUST NOT treat its absence there as proof of anything about the pane.
+- A client holding a claim for a pane MUST compare the reply's ~registration_id~ and
+  ~generation~ with the identity recorded in its claim before dispatch; a reply that
+  should carry ~pane_identity~ but does not (~send.sent.no_pane_identity.json~), or a
+  mismatch, refuses dispatch and opens a diagnosis that names the pane, the claim and
+  the observed daemon state.
 - The process id of the pane is NOT identity: tmux ~respawn-pane~ keeps the pane id
   and changes the pid. It appears only in ~status~ as ~pane_pid~.
 
@@ -114,7 +139,13 @@ statement in this file is a claim about any producer revision.
   answers the existing ~reconcile.ambiguous~ shape and a version 2 duplicate answers
   ~send.duplicate.ambiguous~. Version 2 already requires a client to refuse
   ~ambiguous~ and never resend it, so a version 2 client can neither re-admit nor
-  report delivery for a cancelled send. No version 2 shape changes.
+  report delivery for a cancelled send. No version 2 shape changes. The two
+  projections are shown as scenarios: ~scenario.cancelled.v2_reconcile.json~ and
+  ~scenario.cancelled.v2_send.json~ each name the state they start from
+  (~cancel.cancelled.json~), the version 2 request, and the reply, which is
+  structurally equal (same keys and values once decoded) to the existing version 2
+  fixture it names in ~projection_of~; that fixture's own bytes stay pinned by the
+  version 2 hash, so the projection uses the unchanged version 2 shape.
 
 ** Subscribe
 :PROPERTIES:
@@ -234,7 +265,8 @@ until they are, no implementation may claim conformance.
 | ~status.*.json~                                  | per-pane status and its refusal                                           |
 | ~cancel.*.json~                                  | the five cancel outcomes                                                  |
 | ~reconcile.cancelled.json~                       | the sixth reconcile outcome                                               |
-| ~v2_refusal.unsupported_command.json~            | a version 2 request for a version 3 command                               |
+| ~v2_request.*.json~, ~v2_reply.*.json~           | version 2 requests for version 3 commands and their typed refusals        |
+| ~scenario.cancelled.*.json~                      | a cancelled receipt read through version 2 reconcile and send             |
 | ~subscribe.pane.snapshot.json~                   | per-pane snapshot                                                         |
 | ~subscribe.all.*.json~                           | all-panes snapshots: ordinary, empty, with a detached entry, unknown state |
 | ~event.*.json~                                   | one of each event kind                                                    |
@@ -248,8 +280,9 @@ A ~seq.*~ file is a sequence: ~frames~ in order, then ~then~ ~close~.
 :PROPERTIES:
 :CUSTOM_ID: placeholders
 :END:
-~<msg_id>~, ~<pane_id>~, ~<payload_hash>~, ~<version>~ and ~<registration_id>~ are
-dynamic and substituted by tests; ~<pane_id_1>~, ~<pane_id_2>~ and
+~<msg_id>~, ~<pane_id>~, ~<payload_hash>~, ~<version>~, ~<text>~,
+~<registration_id>~ and ~<generation>~ are dynamic and substituted by tests (a
+substituted ~registration_id~ or ~generation~ follows its grammar above); ~<pane_id_1>~, ~<pane_id_2>~ and
 ~<registration_id_1>~ to ~<registration_id_3>~ name distinct panes and registrations
 within one file. Pane ids are placeholders because ~bin/redaction-check~ refuses a
 literal tmux pane id in the tree. Everything else is exact bytes.
