@@ -89,7 +89,10 @@ defmodule AiOrchestrator.Contracts.IpcV3ContractHashTest do
   test "pane identity is present and well formed exactly where the text requires it" do
     for name <- @with_identity do
       reply = decode(name)
-      identity = if name == "event.registration.attach.json", do: reply["entry"]["pane_identity"], else: reply["pane_identity"]
+
+      identity =
+        if name == "event.registration.attach.json", do: reply["entry"]["pane_identity"], else: reply["pane_identity"]
+
       assert identity_ok?(identity), name
     end
 
