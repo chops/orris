@@ -10,8 +10,13 @@ defmodule AiOrchestrator.CLIPaneIdentityRedTest do
   can match.
 
   The registry double records the claim call and then rejects it as held, so the run ends at the claim (exit 70, a
-  live_holder refusal) and nothing is delivered. The failure path of a claim-time version 3 read (transport error,
-  reply-identity error) is NOT covered here; it is fixed by its own reviewed row before GREEN.
+  live_holder refusal) and nothing is delivered.
+
+  R4.10 (scope r4 addendum D5): when the claim-time version 3 read yields no valid identity, the run refuses BEFORE
+  any claim, and the diagnosis holder comes from the configured registry's read-only `holder/2` snapshot of the
+  pane's existing claim file (null when no file; the file's owner fields when valid; {"claim_file": "malformed"}
+  when malformed). The double's `holder/2` records each call and delegates to `FileRegistry.holder/2`, so every
+  holder case is witnessed through the registry the run is configured with.
   """
 
   use ExUnit.Case, async: false
@@ -35,6 +40,13 @@ defmodule AiOrchestrator.CLIPaneIdentityRedTest do
     end
 
     def release(_claim), do: :ok
+
+    # the read-only holder snapshot (D5): recorded, then delegated to FileRegistry.holder/2 (reached through a runtime
+    # module name so this file compiles before GREEN adds it; GREEN replaces it with a defdelegate)
+    def holder(root, pane_ref) do
+      send(:persistent_term.get({__MODULE__, :test_pid}), {:holder, pane_ref})
+      Module.concat(["AiOrchestrator", "PaneRegistry", "FileRegistry"]).holder(root, pane_ref)
+    end
   end
 
   # version 3 capable: status_v3/2 answers status.ok.json for the asked pane; delivery callbacks report themselves
@@ -49,7 +61,11 @@ defmodule AiOrchestrator.CLIPaneIdentityRedTest do
 
     def status_v3(pane_ref, opts) do
       send(Keyword.fetch!(opts, :test_pid), {:status_v3, pane_ref})
-      {:ok, Keyword.fetch!(opts, :reply).(pane_ref)}
+
+      case Keyword.fetch!(opts, :reply).(pane_ref) do
+        :raise -> raise "no ap"
+        result -> result
+      end
     end
   end
 
@@ -72,21 +88,29 @@ defmodule AiOrchestrator.CLIPaneIdentityRedTest do
 
   defp digits(hex), do: hex |> binary_part(32, 16) |> String.to_integer(16) |> Integer.to_string()
 
-  defp reply(salt) do
-    fn pane_ref ->
-      ident = identity(salt, pane_ref)
+  defp reply(salt), do: fn pane_ref -> {:ok, status_bytes("status.ok.json", identity(salt, pane_ref))} end
 
-      Enum.reduce(
-        %{
-          "<pane_id>" => pane_ref,
-          "<registration_id>" => ident["registration_id"],
-          "<generation>" => ident["generation"]
-        },
-        File.read!(Path.join(@fixtures, "status.ok.json")),
-        fn {placeholder, value}, bytes -> String.replace(bytes, placeholder, value) end
-      )
-    end
+  defp status_bytes(name, ident) do
+    Enum.reduce(
+      %{
+        "<pane_id>" => ident["pane_id"],
+        "<registration_id>" => ident["registration_id"],
+        "<generation>" => ident["generation"]
+      },
+      File.read!(Path.join(@fixtures, name)),
+      fn {placeholder, value}, bytes -> String.replace(bytes, placeholder, value) end
+    )
   end
+
+  defp edit(bytes, fun), do: bytes |> Jason.decode!() |> fun.() |> Jason.encode!()
+
+  defp new_root do
+    root = Path.join(System.tmp_dir!(), "cli-pane-identity-registry-#{System.unique_integer([:positive])}")
+    on_exit(fn -> File.rm_rf!(root) end)
+    root
+  end
+
+  defp spec_pane_refs, do: FileRegistry.pane_refs(F.json("scenarios", "gated_run_seed", "spec.json"))
 
   # every message in the mailbox, in arrival order (the run sends from its own process, in call order)
   defp drain(acc \\ []) do
@@ -97,14 +121,12 @@ defmodule AiOrchestrator.CLIPaneIdentityRedTest do
     end
   end
 
-  defp run(dispatch, salt \\ "s1") do
+  defp run(dispatch, reply, root \\ new_root()) do
     :persistent_term.put({CapturingRegistry, :test_pid}, self())
     on_exit(fn -> :persistent_term.erase({CapturingRegistry, :test_pid}) end)
     run_dir = Path.join(System.tmp_dir!(), "cli-pane-identity-#{System.unique_integer([:positive])}")
-    root = Path.join(System.tmp_dir!(), "cli-pane-identity-registry-#{System.unique_integer([:positive])}")
     File.mkdir_p!(run_dir)
     on_exit(fn -> File.rm_rf!(run_dir) end)
-    on_exit(fn -> File.rm_rf!(root) end)
     File.write!(Path.join(run_dir, "spec.json"), Jason.encode!(F.json("scenarios", "gated_run_seed", "spec.json")))
     File.write!(Path.join(run_dir, "plan.json"), Jason.encode!(F.json("scenarios", "gated_run_seed", "plan.json")))
     fs = FaultFs.new()
@@ -114,7 +136,7 @@ defmodule AiOrchestrator.CLIPaneIdentityRedTest do
       pane_registry: CapturingRegistry,
       pane_registry_root: root,
       dispatch: dispatch,
-      dispatch_opts: [test_pid: self(), reply: reply(salt)],
+      dispatch_opts: [test_pid: self(), reply: reply],
       gate_executor: GateDouble,
       gate_helper: GateDouble.helper(),
       review_reader: fn _path -> {:ok, "- Verdict :: clean\n"} end
@@ -125,7 +147,7 @@ defmodule AiOrchestrator.CLIPaneIdentityRedTest do
 
   test "R4.9 RED a claim made through the run path receives exactly the decoded claim-time version 3 identities" do
     for salt <- ["s1", "s2"] do
-      {result, fs} = run(V3Dispatch, salt)
+      {result, fs} = run(V3Dispatch, reply(salt))
       assert match?(%{status: 70, stdout: ""}, result), inspect(Map.take(result, [:status, :stdout]))
 
       events = Enum.filter(drain(), &(match?({:status_v3, _ref}, &1) or match?({:claim, _refs, _opts}, &1)))
@@ -152,12 +174,103 @@ defmodule AiOrchestrator.CLIPaneIdentityRedTest do
   end
 
   test "R4.9 control: a dispatch module without status_v3/2 passes no identities to the claim" do
-    {result, fs} = run(V1Dispatch)
+    {result, fs} = run(V1Dispatch, reply("s1"))
 
     assert match?(%{status: 70, stdout: ""}, result), inspect(Map.take(result, [:status, :stdout]))
     assert_received {:claim, _pane_refs, claim_opts}
     refute Keyword.has_key?(claim_opts, :daemon_identities)
     assert FaultFs.trace(fs) == [], "no Writer activity"
     refute_received :delivered
+  end
+
+  # R4.10 (scope r4 addendum D5, GO m_20261005T202029Z): a claim-time version 3 read that yields no valid identity
+  # refuses BEFORE any claim; the holder comes from one read-only snapshot of the pane's existing claim file.
+
+  defp failing_reply(:transport), do: fn _pane_ref -> {:error, %{"reason" => "ap_timeout"}} end
+  defp failing_reply(:raise), do: fn _pane_ref -> :raise end
+
+  defp failing_reply(:missing_identity),
+    do: fn ref -> {:ok, edit(status_bytes("status.ok.json", identity("s1", ref)), &Map.delete(&1, "pane_identity"))} end
+
+  defp failing_reply(:malformed_registration),
+    do: fn ref ->
+      {:ok, status_bytes("status.ok.json", Map.put(identity("s1", ref), "registration_id", "reg_short"))}
+    end
+
+  defp failing_reply(:pane_not_found),
+    do: fn ref -> {:ok, status_bytes("status.error.pane_not_found.json", identity("s1", ref))} end
+
+  defp expected(:transport), do: {"daemon_unavailable", &(&1 == %{"source" => "unavailable", "error" => "ap_timeout"})}
+  defp expected(:raise), do: {"daemon_unavailable", &(&1 == %{"source" => "unavailable", "error" => "ap_unavailable"})}
+
+  defp expected(kind) when kind in [:missing_identity, :malformed_registration],
+    do: {"daemon_unavailable", &match?(%{"source" => "unavailable", "error" => "reply_identity:" <> _detail}, &1)}
+
+  defp expected(:pane_not_found), do: {"unregistered", &match?(%{"source" => "status_v3"}, &1)}
+
+  # exit 70 before any claim call, nothing written by the Writer, nothing delivered; answers the diagnosis
+  defp preclaim_refusal!(result, fs) do
+    assert match?(%{status: 70, stdout: ""}, result), inspect(Map.take(result, [:status, :stdout]))
+    events = drain()
+    claims = Enum.filter(events, &match?({:claim, _refs, _opts}, &1))
+    assert claims == [], "the run called claim/3 although the claim-time version 3 read failed"
+    assert FaultFs.trace(fs) == [], "no Writer activity"
+    refute_received :delivered
+    object = Jason.decode!(result.stderr)
+    assert object["reason"] == "pane_claim_refused"
+    diagnosis = object["diagnosis"]
+
+    # exactly ONE bounded holder read, of the diagnosed pane, through the configured registry (scope r4 D5)
+    assert Enum.filter(events, &match?({:holder, _pane_ref}, &1)) == [{:holder, diagnosis["pane_ref"]}],
+           "expected one holder/2 read of the diagnosed pane through the configured registry: #{inspect(events)}"
+
+    diagnosis
+  end
+
+  for kind <- [:transport, :raise, :missing_identity, :malformed_registration, :pane_not_found] do
+    test "R4.10 RED a claim-time #{kind} refuses before any claim, holder null when no claim file exists" do
+      {result, fs} = run(V3Dispatch, failing_reply(unquote(kind)))
+      diagnosis = preclaim_refusal!(result, fs)
+      {trigger, observed?} = expected(unquote(kind))
+
+      assert diagnosis["trigger"] == trigger
+      assert observed?.(diagnosis["observed_daemon_state"]), inspect(diagnosis["observed_daemon_state"])
+      assert diagnosis["pane_ref"] in spec_pane_refs()
+      assert Map.has_key?(diagnosis, "holder") and diagnosis["holder"] == nil
+      assert diagnosis["daemon_pane_id"] == nil
+    end
+  end
+
+  test "R4.10 RED a pre-claim refusal names an existing live claimant as holder and leaves its file unchanged" do
+    root = new_root()
+    refs = spec_pane_refs()
+    other = %{"run_id" => "run_other", "run_dir" => "/tmp/run_other", "supervisor_instance" => "sup_other"}
+    assert {:ok, held} = FileRegistry.claim(refs, other, root: root)
+    on_exit(fn -> FileRegistry.release(held) end)
+    before = Map.new(refs, &{&1, File.read!(FileRegistry.claim_path(root, &1))})
+
+    {result, fs} = run(V3Dispatch, failing_reply(:transport), root)
+    diagnosis = preclaim_refusal!(result, fs)
+
+    file = before |> Map.fetch!(diagnosis["pane_ref"]) |> Jason.decode!()
+    assert diagnosis["holder"] == Map.take(file, ~w(run_id run_dir pid pid_start acquired_at_unix))
+    assert Map.new(refs, &{&1, File.read!(FileRegistry.claim_path(root, &1))}) == before
+  end
+
+  test "R4.10 RED a pre-claim refusal reports a malformed claim file as such and leaves it unchanged" do
+    root = new_root()
+    refs = spec_pane_refs()
+
+    for ref <- refs do
+      path = FileRegistry.claim_path(root, ref)
+      File.mkdir_p!(Path.dirname(path))
+      File.write!(path, "not a claim")
+    end
+
+    {result, fs} = run(V3Dispatch, failing_reply(:transport), root)
+    diagnosis = preclaim_refusal!(result, fs)
+
+    assert diagnosis["holder"] == %{"claim_file" => "malformed"}
+    assert Enum.all?(refs, &(File.read!(FileRegistry.claim_path(root, &1)) == "not a claim"))
   end
 end

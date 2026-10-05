@@ -90,7 +90,7 @@ defmodule AiOrchestrator.Dispatch.V3StatusRedTest do
           "reg_" <> String.duplicate("A", 32)
         ] do
       bytes = fixture("status.ok.json", %{"<registration_id>" => bad})
-      assert {:error, :reply_identity, _detail} = decode(bytes, @pane), bad
+      assert match?({:error, :reply_identity, _detail}, decode(bytes, @pane)), bad
     end
   end
 
@@ -100,7 +100,7 @@ defmodule AiOrchestrator.Dispatch.V3StatusRedTest do
 
     for bad <- ["", "12a", "-1", "1.5"] do
       bytes = fixture("status.ok.json", %{"<generation>" => bad})
-      assert {:error, :reply_identity, _detail} = decode(bytes, @pane), inspect(bad)
+      assert match?({:error, :reply_identity, _detail}, decode(bytes, @pane)), inspect(bad)
     end
   end
 
