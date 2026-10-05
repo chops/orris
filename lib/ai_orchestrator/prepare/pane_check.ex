@@ -1,8 +1,8 @@
 defmodule AiOrchestrator.Prepare.PaneCheck do
   @moduledoc """
   The claim-time daemon check (NS-15.G.005, B3a G4, design r2). With the pane claim held, one status read per claimed
-  pane through the run's dispatch module (`pane_status/2`; the product adapter is `Dispatch.LocalPane`, reached
-  through the module named in the options, so Prepare takes no compile-time dependency on Dispatch):
+  pane through the run's dispatch module (`pane_status/2`; the product adapter `Dispatch.LocalPane` is the default,
+  as in Effects, which is why Prepare's Boundary declares the Dispatch dependency):
 
   - a dispatch module without `pane_status/2` is refused (daemon_unavailable, "pane_status_unsupported"): the check
     is never skipped;

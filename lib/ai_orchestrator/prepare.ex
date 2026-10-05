@@ -16,6 +16,7 @@ defmodule AiOrchestrator.Prepare do
     deps: [
       AiOrchestrator.Commands,
       AiOrchestrator.Config,
+      AiOrchestrator.Dispatch,
       AiOrchestrator.Id,
       AiOrchestrator.Journal,
       AiOrchestrator.PaneRegistry,
