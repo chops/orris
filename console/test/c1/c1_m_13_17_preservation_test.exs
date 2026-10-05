@@ -234,20 +234,22 @@ defmodule C1.MutationPreservationTest do
     # Also the IPC v3 contract specification: the v3 example fixtures and their hash and shape test (test only).
     # Also the NS-15.G.005 B3a RED rows: typed status, diagnosis, root lock and CLI pane-check tests (test only).
     # Also the NS-15.G.005 B3a G1 delivery: typed v1 pane_status with pane_id echo binding (PaneClient.status).
+    # Also the NS-15.G.005 B3a G2 delivery: the claims-root lock (native/root_lock helper, its Nix package and build
+    # script, RootLock over a Port, reclaim under the lock in place of the removed mkdir mutex, waiter lifecycle tests).
     # Pin root entries so another core commit cannot silently pass. A later authorized core delivery must update
     # this snapshot explicitly in its review. Console files are outside the
     # snapshot, avoiding a self-referential commit id.
     core_paths = ~w(mix.exs mix.lock flake.nix flake.lock lib test bin native)
 
     expected = """
-    040000 tree 588f175d8b6fd718e4ce9f00bec4e501b26e34bf\tbin
+    040000 tree 184e6738fe4406a4c5ff36196d69979f7388fff6\tbin
     100644 blob cfbb9f900c6f1442d2552baa0063cff01b270413\tflake.lock
-    100644 blob 9b31a69229898038e39a7ba19c6a6e3ff1da3b27\tflake.nix
-    040000 tree 06605f75b15adfdd6d95a1142449c9d9a305e33c\tlib
+    100644 blob e3519e9f14713db05ba5a58213726b67b8ecc0f0\tflake.nix
+    040000 tree 02705e01420598faeaae1154f3fafff91c33cafa\tlib
     100644 blob 6f8544e74c5907bebfdba64381e9320b07fcd7e3\tmix.exs
     100644 blob 0575c59cd4c68075227b8e9f11476fd3fd9bc85e\tmix.lock
-    040000 tree 950aae97c234450184c6cf696d2dadd28520f48f\tnative
-    040000 tree 12e4561eecfb25dd9b2ce9371e3dd9d2b2b318e9\ttest
+    040000 tree de1293b8faa71d7fd58a3418d1574c9b589af1d5\tnative
+    040000 tree ae3e5ba96ac9fa9936e0afd4f24eb4664d108593\ttest
     """
 
     {committed, 0} = System.cmd("git", ["ls-tree", "HEAD", "--"] ++ core_paths, cd: Harness.core_path())

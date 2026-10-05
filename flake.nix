@@ -19,6 +19,7 @@
         in
         {
           gate-guardian = pkgs.callPackage ./native/gate_guardian/package.nix { };
+          root-lock = pkgs.callPackage ./native/root_lock/package.nix { };
         });
 
       devShells = forEachSystem (system:

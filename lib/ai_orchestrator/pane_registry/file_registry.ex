@@ -8,12 +8,12 @@ defmodule AiOrchestrator.PaneRegistry.FileRegistry do
   from both acquiring delivery authority for the same pane.
   """
 
+  alias AiOrchestrator.PaneRegistry.RootLock
   alias AiOrchestrator.ProcessIdentity
 
   @schema "ai-orchestrator/pane-claim"
   @schema_version 1
-  @default_mutex_ttl_s 5
-  @default_mutex_wait_ms 1_000
+  @lock_opts [:wait_ms, :grace_ms, :root_lock_helper, :on_contend, :helper_observer]
   @required_owner_fields ["run_id", "run_dir", "supervisor_instance"]
 
   @type claim :: %{
@@ -64,6 +64,19 @@ defmodule AiOrchestrator.PaneRegistry.FileRegistry do
       reasons -> {:error, %{"reason" => "pane_claim_release_failed", "failures" => Enum.reverse(reasons)}}
     end
   end
+
+  @doc """
+  Runs `fun.(lock)` while holding the one claims-root lock on `root` (a kernel flock on `<root>/.root-lock`).
+  Answers `{:ok, fun_result}`, or `{:error, reason}` with reason `"lock_busy"`, `"lock_unavailable"` or
+  `"lock_unidentified"`, or `{:error, %{"lock" => "release_unconfirmed", "result" => fun_result}}` when `fun` ran
+  but the helper's exit was not confirmed, or `{:error, %{"lock" => "lost", "result" => fun_result}}` when the
+  helper ended while `fun` ran (the lock was not exclusive for all of it). opts: `:wait_ms`, `:root_lock_helper`, `:on_contend` (called once,
+  after the helper reports an actual contended attempt), `:grace_ms`.
+  """
+  @spec with_root_lock(String.t(), String.t(), keyword(), (map() -> result)) ::
+          {:ok, result} | {:error, String.t() | map()}
+        when result: term()
+  def with_root_lock(root, owner_token, opts, fun), do: RootLock.run(root, owner_token, opts, fun)
 
   @spec claim_path(String.t(), String.t()) :: String.t()
   def claim_path(root, pane_ref) when is_binary(root) and is_binary(pane_ref) do
@@ -216,7 +229,7 @@ defmodule AiOrchestrator.PaneRegistry.FileRegistry do
   end
 
   defp reclaim(path, pane_ref, metadata, opts) do
-    with_reclaim_mutex(Path.dirname(path), metadata["token"], opts, fn ->
+    with_reclaim_lock(path, metadata["token"], opts, fn ->
       reclaim_current(path, pane_ref, metadata, opts)
     end)
   end
@@ -229,8 +242,8 @@ defmodule AiOrchestrator.PaneRegistry.FileRegistry do
 
   defp reclaim_by_status(:live, _path, pane_ref, current, _metadata, _opts), do: {:error, rejected(pane_ref, current)}
 
-  defp reclaim_by_status(:dead, path, pane_ref, _current, metadata, opts) do
-    with :ok <- remove_stale_claim(path) do
+  defp reclaim_by_status(:dead, path, pane_ref, current, metadata, opts) do
+    with :ok <- remove_stale_claim(path, current["token"]) do
       publish_replacement(path, pane_ref, metadata, opts)
     end
   end
@@ -296,11 +309,21 @@ defmodule AiOrchestrator.PaneRegistry.FileRegistry do
     }
   end
 
-  defp remove_stale_claim(path) do
-    case File.rm(path) do
-      :ok -> :ok
+  # The claim is re-read immediately before the unlink and removed only while it still carries the stale owner's
+  # token. This narrows but does not eliminate the race with a successor's claim: one published between this read
+  # and the unlink would still be removed. Under the root lock no successor can publish there; the gap is reachable
+  # only after the lock was lost to an external kill of its helper (scope r5).
+  defp remove_stale_claim(path, stale_token) do
+    with {:ok, bytes} <- File.read(path),
+         {:ok, %{"token" => ^stale_token}} <- Jason.decode(bytes) do
+      case File.rm(path) do
+        :ok -> :ok
+        {:error, :enoent} -> :ok
+        {:error, reason} -> registry_error("stale claim removal failed: #{inspect(reason)}")
+      end
+    else
       {:error, :enoent} -> :ok
-      {:error, reason} -> registry_error("stale claim removal failed: #{inspect(reason)}")
+      _changed -> {:error, %{"reason" => "pane_claim_changed", "path" => path}}
     end
   end
 
@@ -329,95 +352,34 @@ defmodule AiOrchestrator.PaneRegistry.FileRegistry do
 
   defp release_decoded_path(path, _token, _decoded), do: {:error, %{"reason" => "pane_claim_malformed", "path" => path}}
 
-  defp with_reclaim_mutex(root, claim_token, opts, fun) do
-    # The mutex limits stale-claim reclaim thrash. Safety still comes from
-    # hard-link publication plus re-reading the current claim under contention.
-    mutex_path = Path.join(root, ".reclaim-lock")
-    mutex_token = claim_token <> "-" <> Integer.to_string(System.unique_integer([:positive]))
+  # B3a G2: reclaim runs under the one claims-root lock (RootLock, a kernel flock held by a helper). Removing a dead
+  # owner's claim and publishing the replacement is the registry's only read-modify-write; a fresh claim needs no
+  # lock because hard-link publication is already exclusive. Lock failures are registry failures naming the lock
+  # reason. A release the runtime did not confirm does not undo the reclaim that ran: its real result is answered
+  # (the lock module has logged the unconfirmed helper), never a claim that did not happen. A lock lost while the
+  # reclaim ran (its helper killed from outside) makes the reclaim indeterminate: it answers lock_lost with the
+  # claim path, never success, and removes nothing. Without the lock no unlink here can be told apart from removing a
+  # successor's claim, so recovery is explicit; a claim this caller left behind names a process that will be dead
+  # when it ends, and is then reclaimed by the ordinary dead-owner path.
+  defp with_reclaim_lock(path, claim_token, opts, fun) do
+    case RootLock.run(Path.dirname(path), claim_token, Keyword.take(opts, @lock_opts), fn _lock -> fun.() end) do
+      {:ok, result} ->
+        result
 
-    case acquire_mutex(mutex_path, mutex_token, opts) do
-      :ok ->
-        try do
-          fun.()
-        after
-          release_mutex(mutex_path, mutex_token)
-        end
+      {:error, %{"lock" => "release_unconfirmed", "result" => result}} ->
+        result
 
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
+      {:error, %{"lock" => "lost"}} ->
+        {:error,
+         %{
+           "reason" => "pane_registry_unavailable",
+           "detail" => "lock_lost",
+           "reclaim" => "indeterminate",
+           "path" => path
+         }}
 
-  defp acquire_mutex(path, token, opts) do
-    deadline = monotonic_ms(opts) + Keyword.get(opts, :mutex_wait_ms, @default_mutex_wait_ms)
-    acquire_mutex_until(path, token, opts, deadline)
-  end
-
-  defp acquire_mutex_until(path, token, opts, deadline) do
-    case File.mkdir(path) do
-      :ok ->
-        case File.chmod(path, 0o700) do
-          :ok ->
-            initialize_mutex_token(path, token)
-
-          {:error, reason} ->
-            File.rm_rf(path)
-            registry_error("reclaim mutex permissions failed: #{inspect(reason)}")
-        end
-
-      {:error, :eexist} ->
-        maybe_break_stale_mutex(path, opts)
-
-        if monotonic_ms(opts) < deadline do
-          sleep(opts, 10)
-          acquire_mutex_until(path, token, opts, deadline)
-        else
-          registry_error("reclaim mutex is busy")
-        end
-
-      {:error, reason} ->
-        registry_error("reclaim mutex failed: #{inspect(reason)}")
-    end
-  end
-
-  defp initialize_mutex_token(path, token) do
-    token_path = Path.join(path, "token")
-
-    case File.write(token_path, token, [:exclusive]) do
-      :ok ->
-        case File.chmod(token_path, 0o600) do
-          :ok ->
-            :ok
-
-          {:error, reason} ->
-            File.rm_rf(path)
-            registry_error("reclaim mutex permissions failed: #{inspect(reason)}")
-        end
-
-      {:error, reason} ->
-        File.rm_rf(path)
-        registry_error("reclaim mutex initialization failed: #{inspect(reason)}")
-    end
-  end
-
-  defp maybe_break_stale_mutex(path, opts) do
-    ttl_s = Keyword.get(opts, :mutex_ttl_s, @default_mutex_ttl_s)
-
-    case File.stat(path, time: :posix) do
-      {:ok, %{mtime: mtime}} ->
-        if now_unix(opts) - mtime > ttl_s, do: File.rm_rf(path), else: :ok
-
-      _fresh_or_unreadable ->
-        :ok
-    end
-  end
-
-  defp release_mutex(path, token) do
-    # Token matching keeps an old holder from intentionally releasing a
-    # successor's mutex; claim publication remains the final ownership arbiter.
-    case File.read(Path.join(path, "token")) do
-      {:ok, ^token} -> File.rm_rf(path)
-      _not_owned -> :ok
+      {:error, reason} when is_binary(reason) ->
+        registry_error(reason)
     end
   end
 
@@ -429,8 +391,6 @@ defmodule AiOrchestrator.PaneRegistry.FileRegistry do
   end
 
   defp now_unix(opts), do: Keyword.get(opts, :now_unix, fn -> System.os_time(:second) end).()
-  defp monotonic_ms(opts), do: Keyword.get(opts, :monotonic_ms, fn -> System.monotonic_time(:millisecond) end).()
-  defp sleep(opts, milliseconds), do: Keyword.get(opts, :sleep, &Process.sleep/1).(milliseconds)
 
   defp registry_error(detail), do: {:error, %{"reason" => "pane_registry_unavailable", "detail" => detail}}
 end

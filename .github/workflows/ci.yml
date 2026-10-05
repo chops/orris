@@ -57,6 +57,8 @@ jobs:
 
       - name: Build native gate guardian
         run: nix build --no-link .#gate-guardian
+      - name: Build native claims-root lock helper
+        run: nix build --no-link .#root-lock
 
   console-verify:
     name: Console qualification (Linux)

@@ -114,49 +114,6 @@ defmodule AiOrchestrator.PaneRegistry.FileRegistryTest do
     assert File.exists?(pane_b_path)
   end
 
-  test "stale reclaim mutex is broken and a fresh mutex fails within the wait bound", %{root: root} do
-    assert {:ok, _existing} = FileRegistry.claim(["pane_shared"], owner("run_a"), claim_opts(root, "token_a"))
-    mutex = Path.join(root, ".reclaim-lock")
-    File.mkdir!(mutex)
-    File.write!(Path.join(mutex, "token"), "dead_mutex")
-    future = System.os_time(:second) + 10
-
-    assert {:ok, replacement} =
-             FileRegistry.claim(
-               ["pane_shared"],
-               owner("run_b"),
-               claim_opts(root, "token_b",
-                 owner_status: fn _metadata -> :dead end,
-                 now_unix: fn -> future end,
-                 mutex_ttl_s: 0
-               )
-             )
-
-    assert :ok = FileRegistry.release(replacement)
-
-    assert {:ok, existing} = FileRegistry.claim(["pane_shared"], owner("run_c"), claim_opts(root, "token_c"))
-    File.mkdir!(mutex)
-    File.write!(Path.join(mutex, "token"), "live_mutex")
-    {:ok, clock} = Agent.start_link(fn -> 0 end)
-    monotonic = fn -> Agent.get_and_update(clock, &{&1, &1 + 10}) end
-
-    assert {:error, %{"reason" => "pane_registry_unavailable", "detail" => "reclaim mutex is busy"}} =
-             FileRegistry.claim(
-               ["pane_shared"],
-               owner("run_d"),
-               claim_opts(root, "token_d",
-                 owner_status: fn _metadata -> :dead end,
-                 now_unix: fn -> System.os_time(:second) end,
-                 monotonic_ms: monotonic,
-                 mutex_wait_ms: 15,
-                 mutex_ttl_s: 60
-               )
-             )
-
-    File.rm_rf!(mutex)
-    assert :ok = FileRegistry.release(existing)
-  end
-
   test "malformed claims fail closed and remain untouched", %{root: root} do
     path = FileRegistry.claim_path(root, "pane_shared")
     File.mkdir_p!(Path.dirname(path))

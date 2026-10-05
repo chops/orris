@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Build the locked Rust claims-root lock helper into a caller-owned destination; never installs globally.
+set -euo pipefail
+root=$(cd "$(dirname "$0")/.." && pwd)
+if [[ $# != 1 ]]; then echo 'usage: bin/build-root-lock DESTINATION' >&2; exit 2; fi
+RUSTFLAGS="${RUSTFLAGS:-} -D warnings" cargo build --quiet --locked --release --manifest-path "$root/native/root_lock/Cargo.toml" \
+  --target-dir "$root/_build/root-lock"
+cp "$root/_build/root-lock/release/root_lock" "$1"
