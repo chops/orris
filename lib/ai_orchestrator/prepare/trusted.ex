@@ -433,6 +433,18 @@ defmodule AiOrchestrator.Prepare.Trusted do
       |> Keyword.get(:pane_registry_opts, [])
       |> Keyword.put(:root, Keyword.fetch!(opts, :pane_registry_root))
 
+    # B3b D5: with a version 3 capable dispatch module every pane's identity is read BEFORE any claim, and a pane
+    # without a valid identity refuses the run before claiming
+    case PaneCheck.claim_time(pane_refs, registry, opts) do
+      {:ok, identities} -> claim_panes(registry, pane_refs, owner, with_identities(claim_opts, identities), opts, fun)
+      {:refuse, refusal} -> {:error, %{stage: :pane_check, reason: refusal.()}}
+    end
+  end
+
+  defp with_identities(claim_opts, nil), do: claim_opts
+  defp with_identities(claim_opts, identities), do: Keyword.put(claim_opts, :daemon_identities, identities)
+
+  defp claim_panes(registry, pane_refs, owner, claim_opts, opts, fun) do
     case registry.claim(pane_refs, owner, claim_opts) do
       {:ok, claim} ->
         claimed_opts = Keyword.put(opts, :pane_claim_tokens, Map.new(pane_refs, &{&1, claim.token}))

@@ -15,7 +15,9 @@ defmodule AiOrchestrator.Prepare.PaneCheck do
   verifies (dead, unregistered, daemon_unavailable by the status read; live_holder by the claim itself).
   """
 
+  alias AiOrchestrator.Dispatch.V3Status
   alias AiOrchestrator.PaneRegistry.Diagnosis
+  alias AiOrchestrator.PaneRegistry.FileRegistry
 
   # the dispatch default Effects uses (effects.ex dispatch_module/1)
   @default_dispatch AiOrchestrator.Dispatch.LocalPane
@@ -42,6 +44,77 @@ defmodule AiOrchestrator.Prepare.PaneCheck do
 
       nil ->
         resolve(root, observations, claim_token, diagnosis_opts(opts))
+    end
+  end
+
+  @doc """
+  The claim-time version 3 read (B3b scope r4 D5), run BEFORE any claim. A dispatch module without `status_v3/2`
+  answers `{:ok, nil}`: no identities, a legacy claim, B3a's version 1 path. Otherwise each pane's version 3 status
+  is read and decoded in turn; when all decode to a valid identity the answer is `{:ok, %{pane_ref => identity}}`
+  for the claim. The first pane that does not refuses the run before any claim: a transport error, raise or exit
+  is daemon_unavailable with its typed reason ("ap_unavailable" for a raise or exit), a reply-identity error is
+  daemon_unavailable "reply_identity:<detail>", a typed pane_not_found is unregistered (observed source status_v3)
+  and any other typed refusal is daemon_unavailable with its reason. The refusal reads the pane's holder ONCE through
+  the configured registry's `holder/2` (FileRegistry's when the registry has none) and opens the diagnosis with it.
+  """
+  @spec claim_time([String.t()], module(), keyword()) :: {:ok, map() | nil} | {:refuse, refusal()}
+  def claim_time(pane_refs, registry, opts) do
+    dispatch = Keyword.get(opts, :dispatch, @default_dispatch)
+
+    if Code.ensure_loaded?(dispatch) and function_exported?(dispatch, :status_v3, 2) do
+      read_identities(pane_refs, dispatch, registry, opts)
+    else
+      {:ok, nil}
+    end
+  end
+
+  defp read_identities(pane_refs, dispatch, registry, opts) do
+    dispatch_opts = Keyword.get(opts, :dispatch_opts, [])
+
+    Enum.reduce_while(pane_refs, {:ok, %{}}, fn pane_ref, {:ok, identities} ->
+      case claim_time_status(dispatch, pane_ref, dispatch_opts) do
+        {:identity, identity} -> {:cont, {:ok, Map.put(identities, pane_ref, identity)}}
+        {trigger, observed} -> {:halt, {:refuse, fn -> preclaim(pane_ref, trigger, observed, registry, opts) end}}
+      end
+    end)
+  end
+
+  defp claim_time_status(dispatch, pane_ref, dispatch_opts) do
+    case read_status_v3(dispatch, pane_ref, dispatch_opts) do
+      {:ok, bytes} when is_binary(bytes) -> classify_v3(V3Status.decode(bytes, pane_ref))
+      {:error, %{"reason" => reason}} when is_binary(reason) -> {"daemon_unavailable", unavailable(reason)}
+      _invalid -> {"daemon_unavailable", unavailable("status_v3_invalid")}
+    end
+  end
+
+  defp read_status_v3(dispatch, pane_ref, dispatch_opts) do
+    dispatch.status_v3(pane_ref, dispatch_opts)
+  rescue
+    _error -> {:error, %{"reason" => "ap_unavailable"}}
+  catch
+    :exit, _reason -> {:error, %{"reason" => "ap_unavailable"}}
+  end
+
+  defp classify_v3({:ok, %{"pane_identity" => identity}}), do: {:identity, identity}
+  defp classify_v3({:refused, "pane_not_found"}), do: {"unregistered", status_v3("not_found")}
+  defp classify_v3({:refused, reason}), do: {"daemon_unavailable", unavailable(reason)}
+
+  defp classify_v3({:error, :reply_identity, detail}),
+    do: {"daemon_unavailable", unavailable("reply_identity:" <> detail)}
+
+  defp status_v3(state), do: %{"source" => "status_v3", "observed_at" => now(), "state" => state}
+
+  defp preclaim(pane_ref, trigger, observed, registry, opts) do
+    root = Keyword.fetch!(opts, :pane_registry_root)
+    open(root, attrs(pane_ref, trigger, observed, holder(registry, root, pane_ref)), diagnosis_opts(opts))
+  end
+
+  # exactly one read-only snapshot of the pane's existing claim file, through the configured registry
+  defp holder(registry, root, pane_ref) do
+    if Code.ensure_loaded?(registry) and function_exported?(registry, :holder, 2) do
+      registry.holder(root, pane_ref)
+    else
+      FileRegistry.holder(root, pane_ref)
     end
   end
 
