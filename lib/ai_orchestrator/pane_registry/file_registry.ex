@@ -78,6 +78,33 @@ defmodule AiOrchestrator.PaneRegistry.FileRegistry do
         when result: term()
   def with_root_lock(root, owner_token, opts, fun), do: RootLock.run(root, owner_token, opts, fun)
 
+  @doc """
+  Whether `pane_ref` is held, read from its claim file alone (B2, NS-15.G.004): no file is not held; a valid claim is
+  held unless its owner classifies as dead; a malformed or unreadable claim, or an owner whose status is unknown, is
+  held (a pane that cannot be proved free is held). It never writes, reclaims, removes or locks.
+
+  An observational snapshot only: it is never authority to dispatch, to skip the exclusive claim or to bypass it.
+  Being lock-free it can race a concurrent publication or removal, and its answer may be stale when used; only
+  `claim/3` grants ownership.
+  """
+  @spec held?(String.t(), String.t(), keyword()) :: boolean()
+  def held?(root, pane_ref, opts) when is_binary(root) and is_binary(pane_ref) and is_list(opts) do
+    case File.read(claim_path(root, pane_ref)) do
+      {:error, :enoent} -> false
+      {:ok, bytes} -> claim_held?(bytes, pane_ref, opts)
+      {:error, _unreadable} -> true
+    end
+  end
+
+  defp claim_held?(bytes, pane_ref, opts) do
+    with {:ok, metadata} <- Jason.decode(bytes),
+         :ok <- validate_claim(metadata, pane_ref) do
+      owner_status(metadata, opts) != :dead
+    else
+      _malformed -> true
+    end
+  end
+
   @spec claim_path(String.t(), String.t()) :: String.t()
   def claim_path(root, pane_ref) when is_binary(root) and is_binary(pane_ref) do
     digest = :sha256 |> :crypto.hash(pane_ref) |> Base.encode16(case: :lower)
@@ -132,6 +159,7 @@ defmodule AiOrchestrator.PaneRegistry.FileRegistry do
          "token" => token,
          "pid" => pid,
          "pid_start" => pid_start,
+         "erlang_pid" => self() |> :erlang.pid_to_list() |> List.to_string(),
          "acquired_at_unix" => now_unix(opts)
        })}
     else
@@ -295,11 +323,36 @@ defmodule AiOrchestrator.PaneRegistry.FileRegistry do
   defp owner_status(metadata, opts) do
     case Keyword.get(opts, :owner_status) do
       fun when is_function(fun, 1) -> fun.(metadata)
-      nil -> ProcessIdentity.owner_status(metadata, opts)
+      nil -> metadata |> ProcessIdentity.owner_status(opts) |> local_owner(metadata, opts)
     end
   rescue
     error -> registry_error("owner liveness check failed: #{Exception.message(error)}")
   end
+
+  # B2 (NS-15.G.004): a claim lives for the invoking Erlang process, not the whole BEAM. A claim that names THIS OS
+  # process (same pid and start identity) and records the claiming "erlang_pid" is live only while that process is.
+  # A claim without the key keeps the OS-only reading; a key that is not exactly a local pid is unknown, never dead.
+  # ProcessIdentity.owner_status has already matched the claim's pid and start identity to a live process, so a claim
+  # whose pid is this BEAM's names this exact OS process.
+  defp local_owner(:live, %{"erlang_pid" => erlang_pid, "pid" => pid}, _opts) do
+    if pid == System.pid(), do: erlang_status(erlang_pid), else: :live
+  end
+
+  defp local_owner(status, _metadata, _opts), do: status
+
+  defp erlang_status(erlang_pid) when is_binary(erlang_pid) do
+    with true <- Regex.match?(~r/\A<\d+\.\d+\.\d+>\z/, erlang_pid),
+         pid = erlang_pid |> String.to_charlist() |> :erlang.list_to_pid(),
+         true <- node(pid) == node() do
+      if Process.alive?(pid), do: :live, else: :dead
+    else
+      _not_a_local_pid -> registry_error("owner_status_unknown")
+    end
+  rescue
+    _error -> registry_error("owner_status_unknown")
+  end
+
+  defp erlang_status(_not_a_string), do: registry_error("owner_status_unknown")
 
   defp rejected(pane_ref, metadata) do
     %{

@@ -239,6 +239,7 @@ defmodule C1.MutationPreservationTest do
     # Also the NS-15.G.005 B3a G3 delivery: durable claim-refusal diagnoses (Diagnosis over the six LocalFs primitives).
     # Also the NS-15.G.005 B3a G4 delivery: the claim-time daemon check (Prepare.PaneCheck) and its 70/74 refusal surface.
     # Also the NS-15.G.004 B2 RED rows: the claim-leak test and its no-release claimant helper (test only).
+    # Also the NS-15.G.004 B2 GREEN delivery: claimant-scoped owner reading (erlang_pid) and FileRegistry.held?/3.
     # Pin root entries so another core commit cannot silently pass. A later authorized core delivery must update
     # this snapshot explicitly in its review. Console files are outside the
     # snapshot, avoiding a self-referential commit id.
@@ -248,11 +249,11 @@ defmodule C1.MutationPreservationTest do
     040000 tree 184e6738fe4406a4c5ff36196d69979f7388fff6\tbin
     100644 blob cfbb9f900c6f1442d2552baa0063cff01b270413\tflake.lock
     100644 blob e3519e9f14713db05ba5a58213726b67b8ecc0f0\tflake.nix
-    040000 tree fb7fa004bc4d53034dd8ee0664131efeec396d54\tlib
+    040000 tree ee799e0fabe897948f3ffa150bae5e279e91d54f\tlib
     100644 blob 6f8544e74c5907bebfdba64381e9320b07fcd7e3\tmix.exs
     100644 blob 0575c59cd4c68075227b8e9f11476fd3fd9bc85e\tmix.lock
     040000 tree de1293b8faa71d7fd58a3418d1574c9b589af1d5\tnative
-    040000 tree 8ca241cd444ceb2b0e92e8c6ffd40b100b8df28a\ttest
+    040000 tree 0552e4ffa64885a274896f76c93af45a5d1355e6\ttest
     """
 
     {committed, 0} = System.cmd("git", ["ls-tree", "HEAD", "--"] ++ core_paths, cd: Harness.core_path())
