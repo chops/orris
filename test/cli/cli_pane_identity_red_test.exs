@@ -193,9 +193,7 @@ defmodule AiOrchestrator.CLIPaneIdentityRedTest do
     do: fn ref -> {:ok, edit(status_bytes("status.ok.json", identity("s1", ref)), &Map.delete(&1, "pane_identity"))} end
 
   defp failing_reply(:malformed_registration),
-    do: fn ref ->
-      {:ok, status_bytes("status.ok.json", Map.put(identity("s1", ref), "registration_id", "reg_short"))}
-    end
+    do: fn ref -> {:ok, status_bytes("status.ok.json", Map.put(identity("s1", ref), "registration_id", "reg_short"))} end
 
   defp failing_reply(:pane_not_found),
     do: fn ref -> {:ok, status_bytes("status.error.pane_not_found.json", identity("s1", ref))} end
