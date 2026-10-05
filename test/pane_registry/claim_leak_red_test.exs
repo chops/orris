@@ -69,7 +69,7 @@ defmodule AiOrchestrator.PaneRegistry.ClaimLeakRedTest do
     assert File.exists?(FileRegistry.claim_path(root, "pane_shared"))
 
     assert_held_read!()
-    assert apply(FileRegistry, :held?, [root, "pane_shared", []]) == false
+    assert FileRegistry.held?(root, "pane_shared", []) == false
   end
 
   test "R2.4 RED: a new BEAM reads a kill -9 owner's pane as not held before any claim", %{root: root} do
@@ -78,7 +78,7 @@ defmodule AiOrchestrator.PaneRegistry.ClaimLeakRedTest do
     kill_9!(holder)
 
     assert_held_read!()
-    assert apply(FileRegistry, :held?, [root, "pane_shared", []]) == false
+    assert FileRegistry.held?(root, "pane_shared", []) == false
   end
 
   # A BASELINE through the existing contention path, not through held?/3: it witnesses only that a live owner in
