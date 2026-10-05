@@ -47,7 +47,7 @@ defmodule AiOrchestrator.PaneRegistry.FileRegistryIdentityTest do
     assert :ok = FileRegistry.release(claim)
 
     File.mkdir_p!(Path.dirname(path))
-    File.write!(path, "{\"schema\":\"other\"}")
+    File.write!(path, ~s({"schema":"other"}))
     assert FileRegistry.holder(root, @pane) == %{"claim_file" => "malformed"}
   end
 
