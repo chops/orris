@@ -36,7 +36,7 @@ defmodule AiOrchestrator.PaneRegistry.DiagnosisTest do
 
   test "an open file without seen_count is never repeated; the open creates its own file", %{root: root, dir: dir} do
     malformed = "dgn_" <> String.duplicate("a", 32)
-    doc = attrs("pane_writer") |> Map.merge(%{"status" => "open", "opened_at" => "t0", "last_seen_at" => "t0"})
+    doc = "pane_writer" |> attrs() |> Map.merge(%{"status" => "open", "opened_at" => "t0", "last_seen_at" => "t0"})
     bytes = plant(dir, malformed, doc)
 
     assert {:ok, %{"diagnosis_id" => created, "seen_count" => 1}} = Diagnosis.open(root, attrs("pane_writer"), [])
@@ -48,7 +48,8 @@ defmodule AiOrchestrator.PaneRegistry.DiagnosisTest do
     malformed = "dgn_" <> String.duplicate("b", 32)
 
     doc =
-      attrs("pane_old")
+      "pane_old"
+      |> attrs()
       |> Map.merge(%{"status" => "resolved", "opened_at" => "t0", "last_seen_at" => "t0", "seen_count" => 1})
       |> Map.put("resolved_by", %{"check" => "pane_status_v1"})
 
