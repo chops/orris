@@ -88,8 +88,7 @@ defmodule AiOrchestrator.Prepare.PaneCheck do
   defp classify({:error, %{"reason" => "pane_dead"}}), do: {"dead", status_v1("dead")}
   defp classify({:error, %{"reason" => "pane_not_found"}}), do: {"unregistered", status_v1("not_found")}
 
-  defp classify({:error, %{"reason" => reason}}) when is_binary(reason),
-    do: {"daemon_unavailable", unavailable(reason)}
+  defp classify({:error, %{"reason" => reason}}) when is_binary(reason), do: {"daemon_unavailable", unavailable(reason)}
 
   defp classify(_invalid), do: {"daemon_unavailable", unavailable("pane_status_invalid")}
 
@@ -139,8 +138,9 @@ defmodule AiOrchestrator.Prepare.PaneCheck do
   end
 
   defp diagnosis_opts(opts) do
-    [diagnosis_fs: opts[:diagnosis_fs], resolved_bound: opts[:diagnosis_resolved_bound]]
-    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+    Enum.reject([diagnosis_fs: opts[:diagnosis_fs], resolved_bound: opts[:diagnosis_resolved_bound]], fn {_key, value} ->
+      is_nil(value)
+    end)
   end
 
   defp now, do: DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
