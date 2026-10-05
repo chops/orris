@@ -14,36 +14,21 @@ defmodule AiOrchestrator.Dispatch.V3StatusRedTest do
     `{:mismatch, fields}` naming which of pane_id / registration_id / generation differ, compared byte for byte
     (generation is a decimal string, never a number: L78-83).
 
-  The modules are reached through a runtime module name so this file compiles before they exist; GREEN replaces the
-  `v3()` / `identity()` indirection with direct calls.
+  GREEN G1 (scope r1) adds both modules; the rows call them directly.
   """
 
   use ExUnit.Case, async: true
+
+  alias AiOrchestrator.Dispatch.V3Status
+  alias AiOrchestrator.PaneRegistry.PaneIdentity
 
   @fixtures Path.expand("../fixtures/contracts/ipc/v3", __DIR__)
   @pane "pane_writer"
   @reg "reg_" <> String.duplicate("0123456789abcdef", 2)
   @gen "123456789012345678901234567890123456789"
 
-  defp v3, do: Module.concat(["AiOrchestrator", "Dispatch", "V3Status"])
-  defp identity, do: Module.concat(["AiOrchestrator", "PaneRegistry", "PaneIdentity"])
-
-  defp assert_exported!(module, fun, arity) do
-    Code.ensure_loaded(module)
-
-    assert function_exported?(module, fun, arity),
-           "#{inspect(module)}.#{fun}/#{arity} (B3b scope r2) does not exist"
-  end
-
-  defp decode(bytes, pane_ref) do
-    assert_exported!(v3(), :decode, 2)
-    v3().decode(bytes, pane_ref)
-  end
-
-  defp compare(claim_identity, reply_identity) do
-    assert_exported!(identity(), :compare, 2)
-    identity().compare(claim_identity, reply_identity)
-  end
+  defp decode(bytes, pane_ref), do: V3Status.decode(bytes, pane_ref)
+  defp compare(claim_identity, reply_identity), do: PaneIdentity.compare(claim_identity, reply_identity)
 
   defp fixture(name, substitutions \\ %{}) do
     defaults = %{"<pane_id>" => @pane, "<registration_id>" => @reg, "<generation>" => @gen}

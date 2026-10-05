@@ -1,5 +1,5 @@
 defmodule AiOrchestrator.PaneRegistry do
   @moduledoc false
 
-  use Boundary, deps: [AiOrchestrator.ProcessIdentity], exports: [FileRegistry, Diagnosis]
+  use Boundary, deps: [AiOrchestrator.ProcessIdentity], exports: [FileRegistry, Diagnosis, PaneIdentity]
 end
