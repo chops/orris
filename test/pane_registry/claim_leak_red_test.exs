@@ -43,9 +43,12 @@ defmodule AiOrchestrator.PaneRegistry.ClaimLeakRedTest do
     Process.exit(claimant, :kill)
     assert_receive {:DOWN, ^ref, :process, ^claimant, :killed}, 5_000
 
-    assert {:ok, claim} = FileRegistry.claim(["pane_shared"], owner("run_b"), root: root),
-           "the killed claimant's pane is still held by this live BEAM"
+    result = FileRegistry.claim(["pane_shared"], owner("run_b"), root: root)
 
+    assert match?({:ok, _claim}, result),
+           "the killed claimant's pane is still held by this live BEAM: #{inspect(result)}"
+
+    {:ok, claim} = result
     assert :ok = FileRegistry.release(claim)
   end
 
