@@ -236,6 +236,7 @@ defmodule C1.MutationPreservationTest do
     # Also the NS-15.G.005 B3a G1 delivery: typed v1 pane_status with pane_id echo binding (PaneClient.status).
     # Also the NS-15.G.005 B3a G2 delivery: the claims-root lock (native/root_lock helper, its Nix package and build
     # script, RootLock over a Port, reclaim under the lock in place of the removed mkdir mutex, waiter lifecycle tests).
+    # Also the NS-15.G.005 B3a G3 delivery: durable claim-refusal diagnoses (Diagnosis over the six LocalFs primitives).
     # Pin root entries so another core commit cannot silently pass. A later authorized core delivery must update
     # this snapshot explicitly in its review. Console files are outside the
     # snapshot, avoiding a self-referential commit id.
@@ -245,11 +246,11 @@ defmodule C1.MutationPreservationTest do
     040000 tree 184e6738fe4406a4c5ff36196d69979f7388fff6\tbin
     100644 blob cfbb9f900c6f1442d2552baa0063cff01b270413\tflake.lock
     100644 blob e3519e9f14713db05ba5a58213726b67b8ecc0f0\tflake.nix
-    040000 tree 02705e01420598faeaae1154f3fafff91c33cafa\tlib
+    040000 tree 05b8a6c0a94c8ac5571a4d41327b254508d4c94d\tlib
     100644 blob 6f8544e74c5907bebfdba64381e9320b07fcd7e3\tmix.exs
     100644 blob 0575c59cd4c68075227b8e9f11476fd3fd9bc85e\tmix.lock
     040000 tree de1293b8faa71d7fd58a3418d1574c9b589af1d5\tnative
-    040000 tree 15e4e6ea5bcff1c90d65a69a2a9253e6fcb71257\ttest
+    040000 tree dce2205866ddb99a5eb9783792c24532a073d407\ttest
     """
 
     {committed, 0} = System.cmd("git", ["ls-tree", "HEAD", "--"] ++ core_paths, cd: Harness.core_path())
