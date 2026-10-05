@@ -33,17 +33,23 @@ defmodule AiOrchestrator.PaneRegistry.ProcessIntegrationTest do
         :binary,
         :exit_status,
         :stderr_to_stdout,
-        args: code_path_args() ++ [@helper, root, pane_ref, run_id, Integer.to_string(hold_ms)]
+        args: code_path_args() ++ [@helper, root, pane_ref, run_id, Integer.to_string(hold_ms)],
+        env: [{~c"AI_ORCHESTRATOR_ROOT_LOCK_HELPER", String.to_charlist(root_lock_helper())}]
       ]
     )
   end
+
+  # B3a G2: a reclaim runs under the claims-root lock; a separate OS process names the helper the suite built
+  # (test_helper.exs) through the environment, as an installed process would through its configuration.
+  defp root_lock_helper, do: Application.fetch_env!(:ai_orchestrator, :root_lock_helper)
 
   defp run_claimant(root, pane_ref, run_id, hold_ms) do
     {output, 0} =
       System.cmd(
         System.find_executable("elixir"),
         code_path_args() ++ [@helper, root, pane_ref, run_id, Integer.to_string(hold_ms)],
-        stderr_to_stdout: true
+        stderr_to_stdout: true,
+        env: [{"AI_ORCHESTRATOR_ROOT_LOCK_HELPER", root_lock_helper()}]
       )
 
     output
