@@ -8,6 +8,7 @@ defmodule AiOrchestrator.PaneRegistry.FileRegistry do
   from both acquiring delivery authority for the same pane.
   """
 
+  alias AiOrchestrator.PaneRegistry.PaneIdentity
   alias AiOrchestrator.PaneRegistry.RootLock
   alias AiOrchestrator.ProcessIdentity
 
@@ -15,6 +16,8 @@ defmodule AiOrchestrator.PaneRegistry.FileRegistry do
   @schema_version 1
   @lock_opts [:wait_ms, :grace_ms, :root_lock_helper, :on_contend, :helper_observer]
   @required_owner_fields ["run_id", "run_dir", "supervisor_instance"]
+  @identity_keys ["pane_id", "registration_id", "generation"]
+  @holder_fields ["run_id", "run_dir", "pid", "pid_start", "acquired_at_unix"]
 
   @type claim :: %{
           required(:root) => String.t(),
@@ -40,6 +43,7 @@ defmodule AiOrchestrator.PaneRegistry.FileRegistry do
     with {:ok, root} <- registry_root(opts),
          {:ok, refs} <- normalize_pane_refs(pane_refs),
          :ok <- validate_owner(owner),
+         :ok <- validate_daemon_identities(Keyword.get(opts, :daemon_identities, %{}), refs),
          :ok <- ensure_registry_root(root),
          {:ok, metadata} <- claim_metadata(owner, opts) do
       acquire_all(refs, metadata, root, opts)
@@ -105,6 +109,30 @@ defmodule AiOrchestrator.PaneRegistry.FileRegistry do
     end
   end
 
+  @doc """
+  One read-only snapshot of the existing claim file for `pane_ref` (NS-15.G.005 B3b, scope r4 D5): `nil` when there
+  is no file; the claim's run_id, run_dir, pid, pid_start and acquired_at_unix when the file is a valid claim;
+  `%{"claim_file" => "malformed"}` or `%{"claim_file" => "unreadable"}` otherwise. One file read: no lock, write,
+  reclaim or liveness probe, and like `held?/3` it may be stale when used.
+  """
+  @spec holder(String.t(), String.t()) :: map() | nil
+  def holder(root, pane_ref) when is_binary(root) and is_binary(pane_ref) do
+    case File.read(claim_path(root, pane_ref)) do
+      {:error, :enoent} -> nil
+      {:ok, bytes} -> holder_fields(bytes, pane_ref)
+      {:error, _unreadable} -> %{"claim_file" => "unreadable"}
+    end
+  end
+
+  defp holder_fields(bytes, pane_ref) do
+    with {:ok, metadata} <- Jason.decode(bytes),
+         :ok <- validate_claim(metadata, pane_ref) do
+      Map.take(metadata, @holder_fields)
+    else
+      _malformed -> %{"claim_file" => "malformed"}
+    end
+  end
+
   @spec claim_path(String.t(), String.t()) :: String.t()
   def claim_path(root, pane_ref) when is_binary(root) and is_binary(pane_ref) do
     digest = :sha256 |> :crypto.hash(pane_ref) |> Base.encode16(case: :lower)
@@ -133,6 +161,19 @@ defmodule AiOrchestrator.PaneRegistry.FileRegistry do
       {:error, %{"reason" => "pane_registry_unavailable", "detail" => "claim owner metadata is incomplete"}}
     end
   end
+
+  # claim-time version 3 identities (B3b D2): a map of claimed pane_ref => valid identity naming that pane
+  defp validate_daemon_identities(identities, pane_refs) when is_map(identities) do
+    if Enum.all?(identities, fn {pane_ref, identity} -> identity_for?(identity, pane_ref, pane_refs) end),
+      do: :ok,
+      else: registry_error("daemon identities must be valid identities of claimed panes")
+  end
+
+  defp validate_daemon_identities(_identities, _pane_refs),
+    do: registry_error("daemon identities must be valid identities of claimed panes")
+
+  defp identity_for?(identity, pane_ref, pane_refs),
+    do: pane_ref in pane_refs and PaneIdentity.valid?(identity) and identity["pane_id"] == pane_ref
 
   defp ensure_registry_root(root) do
     case File.mkdir_p(root) do
@@ -187,7 +228,7 @@ defmodule AiOrchestrator.PaneRegistry.FileRegistry do
   defp acquire_all(pane_refs, metadata, root, opts) do
     pane_refs
     |> Enum.reduce_while({:ok, []}, fn pane_ref, {:ok, acquired} ->
-      pane_metadata = Map.put(metadata, "pane_ref", pane_ref)
+      pane_metadata = metadata |> Map.put("pane_ref", pane_ref) |> put_daemon_identity(pane_ref, opts)
 
       case acquire_one(root, pane_ref, pane_metadata, opts) do
         :ok -> {:cont, {:ok, [pane_ref | acquired]}}
@@ -201,6 +242,17 @@ defmodule AiOrchestrator.PaneRegistry.FileRegistry do
       {:error, reason, acquired} ->
         rollback(root, acquired, metadata["token"])
         {:error, reason}
+    end
+  end
+
+  defp put_daemon_identity(metadata, pane_ref, opts) do
+    case opts |> Keyword.get(:daemon_identities, %{}) |> Map.fetch(pane_ref) do
+      {:ok, identity} ->
+        recorded = %{"verified_at_unix" => now_unix(opts), "source" => "status_v3"}
+        Map.put(metadata, "daemon_identity", identity |> Map.take(@identity_keys) |> Map.merge(recorded))
+
+      :error ->
+        metadata
     end
   end
 
@@ -313,12 +365,22 @@ defmodule AiOrchestrator.PaneRegistry.FileRegistry do
     valid? =
       metadata["schema"] == @schema and metadata["schema_version"] == @schema_version and
         metadata["pane_ref"] == pane_ref and
-        Enum.all?(required -- ["schema_version"], &(is_binary(metadata[&1]) and metadata[&1] != ""))
+        Enum.all?(required -- ["schema_version"], &(is_binary(metadata[&1]) and metadata[&1] != "")) and
+        daemon_identity?(metadata, pane_ref)
 
     if valid?, do: :ok, else: {:error, :invalid}
   end
 
   defp validate_claim(_metadata, _pane_ref), do: {:error, :invalid}
+
+  # absent: a claim made without a version 3 read (valid as before); present: a complete recorded identity of this
+  # pane, or the whole claim is malformed (fail closed)
+  defp daemon_identity?(%{"daemon_identity" => identity}, pane_ref) do
+    PaneIdentity.valid?(identity) and identity["pane_id"] == pane_ref and is_integer(identity["verified_at_unix"]) and
+      identity["source"] == "status_v3"
+  end
+
+  defp daemon_identity?(_metadata, _pane_ref), do: true
 
   defp owner_status(metadata, opts) do
     case Keyword.get(opts, :owner_status) do

@@ -41,11 +41,10 @@ defmodule AiOrchestrator.CLIPaneIdentityRedTest do
 
     def release(_claim), do: :ok
 
-    # the read-only holder snapshot (D5): recorded, then delegated to FileRegistry.holder/2 (reached through a runtime
-    # module name so this file compiles before GREEN adds it; GREEN replaces it with a defdelegate)
+    # the read-only holder snapshot (D5): recorded, then delegated to FileRegistry.holder/2
     def holder(root, pane_ref) do
       send(:persistent_term.get({__MODULE__, :test_pid}), {:holder, pane_ref})
-      Module.concat(["AiOrchestrator", "PaneRegistry", "FileRegistry"]).holder(root, pane_ref)
+      FileRegistry.holder(root, pane_ref)
     end
   end
 

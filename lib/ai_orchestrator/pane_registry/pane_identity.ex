@@ -9,6 +9,20 @@ defmodule AiOrchestrator.PaneRegistry.PaneIdentity do
   """
 
   @fields ~w(pane_id registration_id generation)
+  @registration_id ~r/\Areg_[0-9a-f]{32}\z/
+  @generation ~r/\A[0-9]+\z/
+
+  @doc """
+  Whether `identity` is a well-formed pane identity: a non-empty `pane_id`, a `registration_id` of `reg_` + 32
+  lowercase hex, and a `generation` string of decimal digits (ipc-v3.org L74-89). Extra keys are ignored.
+  """
+  @spec valid?(term()) :: boolean()
+  def valid?(%{"pane_id" => pane_id, "registration_id" => registration_id, "generation" => generation})
+      when is_binary(pane_id) and pane_id != "" and is_binary(registration_id) and is_binary(generation) do
+    Regex.match?(@registration_id, registration_id) and Regex.match?(@generation, generation)
+  end
+
+  def valid?(_identity), do: false
 
   @spec compare(term(), term()) :: :match | {:mismatch, [String.t()]} | {:error, :incomplete_identity}
   def compare(claim_identity, reply_identity) do
