@@ -150,25 +150,58 @@ defmodule AiOrchestrator.Dispatch.PaneClient do
     end
   end
 
+  # B3a (NS-15.G.005): a status read is an answer about one pane only when the reply says so. A
+  # success is ok:true at exit 0 echoing the requested pane; the two typed refusals the v1
+  # contract names (pane_dead, pane_not_found) are typed at any exit once their echo binds,
+  # and carry nothing else from the reply; an echo naming another pane, or none, is the same
+  # mismatch/missing the v2 path reports. Everything else is the undifferentiated failure.
+  @typed_status_refusals ["pane_dead", "pane_not_found"]
+
   @spec status(String.t(), keyword()) :: {:ok, map()} | {:error, map()}
   def status(pane_ref, opts \\ []) when is_binary(pane_ref) do
-    run_ap(["pane_status", pane_ref], opts)
+    with {:ok, {output, exit_status}} <- run_ap_raw(["pane_status", pane_ref], opts) do
+      output
+      |> decode_last_json()
+      |> status_reply(output, exit_status, pane_ref)
+    end
   end
 
-  defp run_ap(args, opts) do
-    with {:ok, config} <- Runtime.resolve(opts) do
-      # Transient IPC children never write crash dumps: an orphaned child that
-      # inherited ERL_CRASH_DUMP could clobber the product VM's own dump
-      # (DD-9 capture incident, 2026-09-01).
-      cmd_opts = [stderr_to_stdout: true, env: [{"ERL_CRASH_DUMP_SECONDS", "0"}]]
+  defp status_reply({:ok, %{"ok" => false, "error" => code} = reply}, _output, _exit_status, pane_ref)
+       when code in @typed_status_refusals do
+    with :ok <- status_echo(reply, pane_ref), do: {:error, %{"reason" => code}}
+  end
 
-      case execute(config.ap_path, args, opts, cmd_opts) do
+  defp status_reply({:ok, %{"ok" => true} = reply}, _output, 0, pane_ref) do
+    with :ok <- status_echo(reply, pane_ref), do: {:ok, reply}
+  end
+
+  defp status_reply({:error, _reason} = error, _output, 0, _pane_ref), do: error
+  defp status_reply(_decoded, output, exit_status, _pane_ref), do: ap_failure(output, exit_status)
+
+  defp status_echo(%{"pane_id" => pane_ref}, pane_ref), do: :ok
+  defp status_echo(%{"pane_id" => _other}, _pane_ref), do: {:error, %{"reason" => "reply_pane_mismatch"}}
+  defp status_echo(_no_echo, _pane_ref), do: {:error, %{"reason" => "reply_pane_missing"}}
+
+  defp run_ap(args, opts) do
+    with {:ok, result} <- run_ap_raw(args, opts) do
+      case result do
         {output, 0} ->
           decode_last_json(output)
 
         {output, exit_status} ->
           ap_failure(output, exit_status)
       end
+    end
+  end
+
+  defp run_ap_raw(args, opts) do
+    with {:ok, config} <- Runtime.resolve(opts) do
+      # Transient IPC children never write crash dumps: an orphaned child that
+      # inherited ERL_CRASH_DUMP could clobber the product VM's own dump
+      # (DD-9 capture incident, 2026-09-01).
+      cmd_opts = [stderr_to_stdout: true, env: [{"ERL_CRASH_DUMP_SECONDS", "0"}]]
+
+      {:ok, execute(config.ap_path, args, opts, cmd_opts)}
     end
   end
 

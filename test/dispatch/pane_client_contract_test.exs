@@ -57,10 +57,28 @@ defmodule AiOrchestrator.Dispatch.PaneClientContractTest do
     expected = Jason.decode!(raw)
     output = "12:00:00.000 [info] OTLP exporter successfully initialized\n" <> raw <> "\n"
 
-    assert {:ok, decoded} = decode_via(command, output)
+    assert {:ok, decoded} = decode_via(decoder(command, outcome), output)
     assert decoded == expected
     assert_outcome_shape(outcome, decoded)
+    assert_status_answer(command, outcome, expected, output)
   end
+
+  # B3a: a pane_status reply that is not ok is decoded as the daemon emitted it, but the status
+  # operation answers it as a typed refusal (pane_dead, pane_not_found) or the undifferentiated
+  # failure, never as a status map.
+  defp decoder(:pane_status, outcome) when outcome != :ok, do: :decode_only
+  defp decoder(command, _outcome), do: command
+
+  defp assert_status_answer(:pane_status, :typed_refusal, expected, output) do
+    assert decode_via(:pane_status, output) == {:error, %{"reason" => expected["error"]}}
+  end
+
+  defp assert_status_answer(:pane_status, :request_error, _expected, output) do
+    result = decode_via(:pane_status, output)
+    assert match?({:error, %{"reason" => "ap_failed", "exit_status" => 0}}, result), inspect(result)
+  end
+
+  defp assert_status_answer(_command, _outcome, _expected, _output), do: :ok
 
   defp decode_via(:send, output) do
     PaneClient.send("<pane_id>", "hello", ap_path: "/tmp/ap", input_runner: fn _, _, _, _ -> {output, 0} end)

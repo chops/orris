@@ -8,10 +8,10 @@ defmodule AiOrchestrator.Dispatch.PaneClientTest do
 
     runner = fn ap_path, args, opts ->
       Process.send(parent, {:ap_call, ap_path, args, opts}, [])
-      {~s(log line\n{"state":"idle","pane_ref":"pane_writer","pending_count":0}\n), 0}
+      {~s(log line\n{"ok":true,"state":"idle","pane_id":"pane_writer","pending_count":0}\n), 0}
     end
 
-    assert {:ok, %{"state" => "idle", "pane_ref" => "pane_writer", "pending_count" => 0}} =
+    assert {:ok, %{"state" => "idle", "pane_id" => "pane_writer", "pending_count" => 0}} =
              PaneClient.status("pane_writer", ap_path: "/tmp/ap", runner: runner)
 
     assert_receive {:ap_call, "/tmp/ap", ["pane_status", "pane_writer"],
@@ -93,7 +93,7 @@ defmodule AiOrchestrator.Dispatch.PaneClientTest do
   test "ap children run with crash dumps disabled via scrubbed env" do
     runner = fn _cmd, _args, cmd_opts ->
       send(self(), {:cmd_opts, cmd_opts})
-      {~s({"ok":true}), 0}
+      {~s({"ok":true,"pane_id":"pane_a"}), 0}
     end
 
     assert {:ok, _response} = PaneClient.status("pane_a", runner: runner, env: %{})

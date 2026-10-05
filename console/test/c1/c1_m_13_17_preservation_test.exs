@@ -233,6 +233,7 @@ defmodule C1.MutationPreservationTest do
     # Also the S3 pane_quarantined consumer delivery: the v1/v2 fixtures, the typed refusal and its lifecycle tests.
     # Also the IPC v3 contract specification: the v3 example fixtures and their hash and shape test (test only).
     # Also the NS-15.G.005 B3a RED rows: typed status, diagnosis, root lock and CLI pane-check tests (test only).
+    # Also the NS-15.G.005 B3a G1 delivery: typed v1 pane_status with pane_id echo binding (PaneClient.status).
     # Pin root entries so another core commit cannot silently pass. A later authorized core delivery must update
     # this snapshot explicitly in its review. Console files are outside the
     # snapshot, avoiding a self-referential commit id.
@@ -242,11 +243,11 @@ defmodule C1.MutationPreservationTest do
     040000 tree 588f175d8b6fd718e4ce9f00bec4e501b26e34bf\tbin
     100644 blob cfbb9f900c6f1442d2552baa0063cff01b270413\tflake.lock
     100644 blob 9b31a69229898038e39a7ba19c6a6e3ff1da3b27\tflake.nix
-    040000 tree 905d6f074dae7f3be83d859c2af6874f4fe2ccd7\tlib
+    040000 tree 06605f75b15adfdd6d95a1142449c9d9a305e33c\tlib
     100644 blob 6f8544e74c5907bebfdba64381e9320b07fcd7e3\tmix.exs
     100644 blob 0575c59cd4c68075227b8e9f11476fd3fd9bc85e\tmix.lock
     040000 tree 950aae97c234450184c6cf696d2dadd28520f48f\tnative
-    040000 tree 84c39090f7cdad332d36bed32370caae13ae9730\ttest
+    040000 tree 12e4561eecfb25dd9b2ce9371e3dd9d2b2b318e9\ttest
     """
 
     {committed, 0} = System.cmd("git", ["ls-tree", "HEAD", "--"] ++ core_paths, cd: Harness.core_path())
