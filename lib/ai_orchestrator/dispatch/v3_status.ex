@@ -51,12 +51,14 @@ defmodule AiOrchestrator.Dispatch.V3Status do
   defp identity?(_identity, _pane_ref), do: false
 
   # ipc-v3.org Status: an ok status answers all four of state, quarantined, queue_depth and pane_pid
-  defp status_fields?(%{"state" => state, "quarantined" => quarantined, "queue_depth" => depth, "pane_pid" => pid})
-       when is_binary(state) and state != "" and is_boolean(quarantined) and is_integer(depth) and depth >= 0 and
-              is_integer(pid) and pid > 0,
-       do: true
+  defp status_fields?(%{"state" => state, "quarantined" => quarantined, "queue_depth" => depth, "pane_pid" => pid}) do
+    is_binary(state) and state != "" and is_boolean(quarantined) and nonnegative?(depth) and nonnegative?(pid) and
+      pid > 0
+  end
 
   defp status_fields?(_reply), do: false
+
+  defp nonnegative?(value), do: is_integer(value) and value >= 0
 
   defp reply_identity(detail), do: {:error, :reply_identity, detail}
 end
