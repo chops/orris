@@ -133,6 +133,32 @@ defmodule AiOrchestrator.PaneRegistry.FileRegistry do
     end
   end
 
+  @doc """
+  The daemon identity recorded in this run's own claim for `pane_ref` (B3b scope r2 D4), read back from the claim
+  file: `{:ok, identity}` when the claim with `token` records one, `{:ok, nil}` when it records none or no claim file
+  exists (a registry that keeps no files), and `{:error, reason}` when the file is unreadable, malformed or now
+  carries another token; the caller treats an error as fail closed.
+  """
+  @spec claimed_identity(String.t(), String.t(), String.t()) :: {:ok, map() | nil} | {:error, String.t()}
+  def claimed_identity(root, pane_ref, token) when is_binary(root) and is_binary(pane_ref) and is_binary(token) do
+    case File.read(claim_path(root, pane_ref)) do
+      {:error, :enoent} -> {:ok, nil}
+      {:ok, bytes} -> identity_of(bytes, pane_ref, token)
+      {:error, _unreadable} -> {:error, "claim_unreadable"}
+    end
+  end
+
+  defp identity_of(bytes, pane_ref, token) do
+    with {:ok, metadata} <- Jason.decode(bytes),
+         :ok <- validate_claim(metadata, pane_ref) do
+      if metadata["token"] == token,
+        do: {:ok, Map.get(metadata, "daemon_identity")},
+        else: {:error, "claim_changed"}
+    else
+      _malformed -> {:error, "claim_malformed"}
+    end
+  end
+
   @spec claim_path(String.t(), String.t()) :: String.t()
   def claim_path(root, pane_ref) when is_binary(root) and is_binary(pane_ref) do
     digest = :sha256 |> :crypto.hash(pane_ref) |> Base.encode16(case: :lower)

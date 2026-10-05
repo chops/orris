@@ -18,6 +18,7 @@ defmodule AiOrchestrator.Prepare.PaneCheck do
   alias AiOrchestrator.Dispatch.V3Status
   alias AiOrchestrator.PaneRegistry.Diagnosis
   alias AiOrchestrator.PaneRegistry.FileRegistry
+  alias AiOrchestrator.PaneRegistry.PaneIdentity
 
   # the dispatch default Effects uses (effects.ex dispatch_module/1)
   @default_dispatch AiOrchestrator.Dispatch.LocalPane
@@ -26,25 +27,88 @@ defmodule AiOrchestrator.Prepare.PaneCheck do
     "dead" => %{"code" => "reattach_pane", "text" => "reattach the pane to the daemon, then retry"},
     "unregistered" => %{"code" => "reattach_pane", "text" => "register the pane with the daemon, then retry"},
     "daemon_unavailable" => %{"code" => "reconcile_daemon", "text" => "check the daemon and the pane, then retry"},
+    "contradictory" => %{
+      "code" => "inspect_identity_mismatch",
+      "text" => "the daemon's pane identity differs from the claim's; inspect the pane registration, then retry"
+    },
     "live_holder" => %{"code" => "wait_for_holder", "text" => "wait for the holding run to release the pane"}
   }
 
   @type refusal :: (-> map())
 
+  @doc """
+  The check after the claim. The path is chosen from the CLAIM (B3b scope r2 D4): a claim without a recorded
+  daemon_identity takes the version 1 read above, unchanged; a claim with one is checked by its version 3 status
+  only (never `pane_status/2`): no `status_v3/2` -> daemon_unavailable "status_v3_unavailable"; a transport error,
+  raise or exit -> daemon_unavailable typed; a reply-identity error -> daemon_unavailable "reply_identity:<detail>";
+  pane_not_found -> unregistered; a valid identity differing from the claim's -> contradictory
+  (inspect_identity_mismatch, with the observed identity and the differing fields); an equal identity -> dead when
+  its state is "dead", else healthy. A claim file that cannot be read back as this claim refuses (fail closed).
+  A healthy version 3 read resolves the pane's open dead, unregistered, daemon_unavailable and contradictory
+  diagnoses (check "status_v3"); a healthy version 1 read never resolves contradictory.
+  """
   @spec check([String.t()], String.t(), keyword()) :: :ok | {:refuse, refusal()}
   def check(pane_refs, claim_token, opts) do
     root = Keyword.fetch!(opts, :pane_registry_root)
     dispatch = Keyword.get(opts, :dispatch, @default_dispatch)
     dispatch_opts = Keyword.get(opts, :dispatch_opts, [])
-    observations = Enum.map(pane_refs, &{&1, observe(dispatch, &1, dispatch_opts)})
+    observations = Enum.map(pane_refs, &observe_claimed(root, claim_token, dispatch, &1, dispatch_opts))
 
-    case Enum.find(observations, fn {_pane_ref, observation} -> not match?({:healthy, _state}, observation) end) do
-      {pane_ref, {trigger, observed}} ->
-        {:refuse, fn -> open(root, attrs(pane_ref, trigger, observed, nil), diagnosis_opts(opts)) end}
+    case Enum.find(observations, &(not healthy?(&1))) do
+      {pane_ref, {trigger, observed}, daemon_pane_id} ->
+        {:refuse, fn -> open(root, attrs(pane_ref, trigger, observed, nil, daemon_pane_id), diagnosis_opts(opts)) end}
 
       nil ->
         resolve(root, observations, claim_token, diagnosis_opts(opts))
     end
+  end
+
+  defp healthy?({_pane_ref, {:healthy, _check, _state}, _daemon_pane_id}), do: true
+  defp healthy?(_observation), do: false
+
+  defp observe_claimed(root, claim_token, dispatch, pane_ref, dispatch_opts) do
+    case FileRegistry.claimed_identity(root, pane_ref, claim_token) do
+      {:ok, nil} -> {pane_ref, observe(dispatch, pane_ref, dispatch_opts), nil}
+      {:ok, identity} -> {pane_ref, observe_v3(dispatch, pane_ref, identity, dispatch_opts), identity["pane_id"]}
+      {:error, reason} -> {pane_ref, {"daemon_unavailable", unavailable(reason)}, nil}
+    end
+  end
+
+  defp observe_v3(dispatch, pane_ref, identity, dispatch_opts) do
+    if Code.ensure_loaded?(dispatch) and function_exported?(dispatch, :status_v3, 2) do
+      dispatch |> read_status_v3(pane_ref, dispatch_opts) |> classify_claimed(pane_ref, identity)
+    else
+      {"daemon_unavailable", unavailable("status_v3_unavailable")}
+    end
+  end
+
+  defp classify_claimed({:ok, bytes}, pane_ref, identity) when is_binary(bytes) do
+    case V3Status.decode(bytes, pane_ref) do
+      {:ok, status} -> compare_identity(status, identity)
+      other -> refused_v3(other)
+    end
+  end
+
+  defp classify_claimed({:error, %{"reason" => reason}}, _pane_ref, _identity) when is_binary(reason),
+    do: {"daemon_unavailable", unavailable(reason)}
+
+  defp classify_claimed(_invalid, _pane_ref, _identity), do: {"daemon_unavailable", unavailable("status_v3_invalid")}
+
+  defp compare_identity(status, identity) do
+    case PaneIdentity.compare(identity, status["pane_identity"]) do
+      :match -> matched(status)
+      {:mismatch, fields} -> {"contradictory", Map.put(observed_v3(status), "mismatch", fields)}
+      {:error, _incomplete} -> {"daemon_unavailable", unavailable("identity_incomplete")}
+    end
+  end
+
+  defp matched(%{"state" => "dead"} = status), do: {"dead", observed_v3(status)}
+  defp matched(%{"state" => state}), do: {:healthy, "status_v3", state}
+
+  defp observed_v3(status) do
+    status
+    |> Map.take(["state", "quarantined", "pane_identity"])
+    |> Map.merge(%{"source" => "status_v3", "observed_at" => now()})
   end
 
   @doc """
@@ -81,11 +145,14 @@ defmodule AiOrchestrator.Prepare.PaneCheck do
 
   defp claim_time_status(dispatch, pane_ref, dispatch_opts) do
     case read_status_v3(dispatch, pane_ref, dispatch_opts) do
-      {:ok, bytes} when is_binary(bytes) -> classify_v3(V3Status.decode(bytes, pane_ref))
+      {:ok, bytes} when is_binary(bytes) -> claim_time_identity(V3Status.decode(bytes, pane_ref))
       {:error, %{"reason" => reason}} when is_binary(reason) -> {"daemon_unavailable", unavailable(reason)}
       _invalid -> {"daemon_unavailable", unavailable("status_v3_invalid")}
     end
   end
+
+  defp claim_time_identity({:ok, %{"pane_identity" => identity}}), do: {:identity, identity}
+  defp claim_time_identity(other), do: refused_v3(other)
 
   defp read_status_v3(dispatch, pane_ref, dispatch_opts) do
     dispatch.status_v3(pane_ref, dispatch_opts)
@@ -95,18 +162,16 @@ defmodule AiOrchestrator.Prepare.PaneCheck do
     :exit, _reason -> {:error, %{"reason" => "ap_unavailable"}}
   end
 
-  defp classify_v3({:ok, %{"pane_identity" => identity}}), do: {:identity, identity}
-  defp classify_v3({:refused, "pane_not_found"}), do: {"unregistered", status_v3("not_found")}
-  defp classify_v3({:refused, reason}), do: {"daemon_unavailable", unavailable(reason)}
-
-  defp classify_v3({:error, :reply_identity, detail}),
-    do: {"daemon_unavailable", unavailable("reply_identity:" <> detail)}
+  # a decoded version 3 answer without a usable identity, the same at claim time and after the claim
+  defp refused_v3({:refused, "pane_not_found"}), do: {"unregistered", status_v3("not_found")}
+  defp refused_v3({:refused, reason}), do: {"daemon_unavailable", unavailable(reason)}
+  defp refused_v3({:error, :reply_identity, detail}), do: {"daemon_unavailable", unavailable("reply_identity:" <> detail)}
 
   defp status_v3(state), do: %{"source" => "status_v3", "observed_at" => now(), "state" => state}
 
   defp preclaim(pane_ref, trigger, observed, registry, opts) do
     root = Keyword.fetch!(opts, :pane_registry_root)
-    open(root, attrs(pane_ref, trigger, observed, holder(registry, root, pane_ref)), diagnosis_opts(opts))
+    open(root, attrs(pane_ref, trigger, observed, holder(registry, root, pane_ref), nil), diagnosis_opts(opts))
   end
 
   # exactly one read-only snapshot of the pane's existing claim file, through the configured registry
@@ -134,7 +199,7 @@ defmodule AiOrchestrator.Prepare.PaneCheck do
 
     opts
     |> Keyword.fetch!(:pane_registry_root)
-    |> open(attrs(pane_ref, "live_holder", observed, holder), diagnosis_opts(opts))
+    |> open(attrs(pane_ref, "live_holder", observed, holder, nil), diagnosis_opts(opts))
     |> Map.put("rejection", rejection)
   end
 
@@ -157,7 +222,7 @@ defmodule AiOrchestrator.Prepare.PaneCheck do
   end
 
   defp classify({:ok, %{"state" => "dead"}}), do: {"dead", status_v1("dead")}
-  defp classify({:ok, %{"state" => state}}) when is_binary(state) and state != "", do: {:healthy, state}
+  defp classify({:ok, %{"state" => state}}) when is_binary(state) and state != "", do: {:healthy, "pane_status_v1", state}
   defp classify({:error, %{"reason" => "pane_dead"}}), do: {"dead", status_v1("dead")}
   defp classify({:error, %{"reason" => "pane_not_found"}}), do: {"unregistered", status_v1("not_found")}
 
@@ -168,11 +233,11 @@ defmodule AiOrchestrator.Prepare.PaneCheck do
   defp status_v1(state), do: %{"source" => "pane_status_v1", "observed_at" => now(), "state" => state}
   defp unavailable(reason), do: %{"source" => "unavailable", "error" => reason}
 
-  defp attrs(pane_ref, trigger, observed, holder) do
+  defp attrs(pane_ref, trigger, observed, holder, daemon_pane_id) do
     %{
       "trigger" => trigger,
       "pane_ref" => pane_ref,
-      "daemon_pane_id" => nil,
+      "daemon_pane_id" => daemon_pane_id,
       "holder" => holder,
       "observed_daemon_state" => observed,
       "next_action" => Map.fetch!(@next_actions, trigger)
@@ -196,9 +261,9 @@ defmodule AiOrchestrator.Prepare.PaneCheck do
   defp resolve(root, observations, claim_token, opts) do
     claim = %{"check" => "file_registry_claim", "observed_daemon_state" => nil, "claim_token" => claim_token}
 
-    Enum.reduce_while(observations, :ok, fn {pane_ref, {:healthy, state}}, :ok ->
-      status = %{"check" => "pane_status_v1", "observed_daemon_state" => %{"state" => state}, "claim_token" => nil}
-      resolutions = [{"dead", status}, {"unregistered", status}, {"daemon_unavailable", status}, {"live_holder", claim}]
+    Enum.reduce_while(observations, :ok, fn {pane_ref, {:healthy, check, state}, _daemon_pane_id}, :ok ->
+      status = %{"check" => check, "observed_daemon_state" => %{"state" => state}, "claim_token" => nil}
+      resolutions = Enum.map(verified_triggers(check), &{&1, status}) ++ [{"live_holder", claim}]
 
       case Diagnosis.resolve_verified(root, pane_ref, resolutions, opts) do
         {:ok, _resolved} ->
@@ -209,6 +274,10 @@ defmodule AiOrchestrator.Prepare.PaneCheck do
       end
     end)
   end
+
+  # the triggers a healthy read verifies gone: only a version 3 read can verify an identity (contradictory)
+  defp verified_triggers("status_v3"), do: ["dead", "unregistered", "daemon_unavailable", "contradictory"]
+  defp verified_triggers("pane_status_v1"), do: ["dead", "unregistered", "daemon_unavailable"]
 
   defp unpersisted(persistence), do: fn -> %{"reason" => @refused, "persistence" => persistence} end
 
