@@ -447,6 +447,9 @@ defmodule AiOrchestrator.CLIPaneCheckRedTest do
     assert match?(%{status: 0}, healthy), inspect(Map.take(healthy, [:status]))
     before = root |> Path.join("diagnoses") |> Path.join(name) |> File.read!()
 
+    # the healthy run above delivered, as a healthy run must: the refused run's "nothing delivered" and "claims
+    # balanced" witnesses count from here (B3a G4 fix3; hosted run 37272773545 failed only on this carried count)
+    Witness.reset()
     script("pane_status.error.pane_not_found.json", 1)
     fs = FaultFs.new()
 
