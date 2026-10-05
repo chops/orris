@@ -61,19 +61,20 @@ defmodule AiOrchestrator.PaneRegistry.Diagnosis do
   def resolve_verified(root, pane_ref, resolutions, opts) when is_binary(pane_ref) and is_list(resolutions) do
     locked(root, opts, fn dir, fs ->
       with {:ok, docs} <- read_all(dir, fs) do
-        Enum.reduce_while(resolutions, {:ok, []}, fn {trigger, resolved_by}, {:ok, resolved} ->
-          with {:ok, doc} <- open_doc(docs, pane_ref, trigger),
-               :ok <- resolving_check(trigger, resolved_by) do
-            case resolve_doc(dir, fs, doc, resolved_by, opts) do
-              {:ok, updated} -> {:cont, {:ok, resolved ++ [updated["diagnosis_id"]]}}
-              {:error, _persistence} = error -> {:halt, error}
-            end
-          else
-            {:error, %{"reason" => _not_open_or_unverified}} -> {:cont, {:ok, resolved}}
-          end
-        end)
+        Enum.reduce_while(resolutions, {:ok, []}, &resolve_pair(&1, &2, dir, fs, docs, pane_ref, opts))
       end
     end)
+  end
+
+  defp resolve_pair({trigger, resolved_by}, {:ok, resolved}, dir, fs, docs, pane_ref, opts) do
+    with {:ok, doc} <- open_doc(docs, pane_ref, trigger),
+         :ok <- resolving_check(trigger, resolved_by),
+         {:ok, updated} <- resolve_doc(dir, fs, doc, resolved_by, opts) do
+      {:cont, {:ok, resolved ++ [updated["diagnosis_id"]]}}
+    else
+      {:error, %{"persistence" => _failure}} = error -> {:halt, error}
+      {:error, %{"reason" => _not_open_or_unverified}} -> {:cont, {:ok, resolved}}
+    end
   end
 
   defp locked(root, opts, fun) do
@@ -222,15 +223,19 @@ defmodule AiOrchestrator.PaneRegistry.Diagnosis do
   # The full schema this module writes, with types; anything else is not a diagnosis and is never matched, repeated,
   # resolved or evicted (it stays exactly as found for an operator).
   defp diagnosis?(name, %{"diagnosis_id" => id, "status" => status} = doc) when is_binary(id) do
-    name == id <> ".json" and status in ["open", "resolved"] and
-      Map.get(doc, "trigger") in Map.keys(@resolving_checks) and
-      Enum.all?(~w(pane_ref opened_at last_seen_at), &(is_binary(Map.get(doc, &1)) and Map.get(doc, &1) != "")) and
-      positive_integer?(Map.get(doc, "seen_count")) and
-      Enum.all?(~w(daemon_pane_id holder observed_daemon_state next_action), &Map.has_key?(doc, &1)) and
-      status_fields?(status, doc)
+    name == id <> ".json" and status in ["open", "resolved"] and fields?(doc) and status_fields?(status, doc)
   end
 
   defp diagnosis?(_name, _doc), do: false
+
+  defp fields?(doc) do
+    Map.get(doc, "trigger") in Map.keys(@resolving_checks) and
+      Enum.all?(~w(pane_ref opened_at last_seen_at), &non_empty_string?(Map.get(doc, &1))) and
+      positive_integer?(Map.get(doc, "seen_count")) and
+      Enum.all?(~w(daemon_pane_id holder observed_daemon_state next_action), &Map.has_key?(doc, &1))
+  end
+
+  defp non_empty_string?(value), do: is_binary(value) and value != ""
 
   defp status_fields?("open", doc), do: not Map.has_key?(doc, "resolved_at") and not Map.has_key?(doc, "resolved_by")
 

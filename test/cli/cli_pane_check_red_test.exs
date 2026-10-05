@@ -30,7 +30,6 @@ defmodule AiOrchestrator.CLIPaneCheckRedTest do
   alias AiOrchestrator.Test.FaultFs
   alias AiOrchestrator.Test.GateDouble
 
-  @journal "events.jsonl"
   @v1 Path.expand("../fixtures/contracts/ipc/v1", __DIR__)
   @keys ~w(diagnosis_id holder last_seen_at next_action observed_daemon_state opened_at pane_ref daemon_pane_id
            seen_count status trigger)

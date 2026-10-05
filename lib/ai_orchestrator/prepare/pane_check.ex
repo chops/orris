@@ -132,10 +132,12 @@ defmodule AiOrchestrator.Prepare.PaneCheck do
           {:cont, :ok}
 
         {:error, %{"persistence" => persistence}} ->
-          {:halt, {:refuse, fn -> %{"reason" => @refused, "persistence" => persistence} end}}
+          {:halt, {:refuse, unpersisted(persistence)}}
       end
     end)
   end
+
+  defp unpersisted(persistence), do: fn -> %{"reason" => @refused, "persistence" => persistence} end
 
   defp diagnosis_opts(opts) do
     Enum.reject([diagnosis_fs: opts[:diagnosis_fs], resolved_bound: opts[:diagnosis_resolved_bound]], fn {_key, value} ->

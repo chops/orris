@@ -51,7 +51,7 @@ defmodule AiOrchestrator.PaneRegistry.DiagnosisRedTest do
     end
   end
 
-  defp open(root, attrs, opts \\ []), do: apply(@diagnosis, :open, [root, attrs, opts])
+  defp open(root, attrs, opts), do: apply(@diagnosis, :open, [root, attrs, opts])
   defp resolve(root, pane, trigger, by, opts \\ []), do: apply(@diagnosis, :resolve, [root, pane, trigger, by, opts])
 
   defp opened!(root, attrs, opts \\ []) do

@@ -56,17 +56,18 @@ defmodule AiOrchestrator.PaneRegistry.Diagnosis.LocalFs do
     unlink = Keyword.get(opts, :unlink, &File.rm/1)
 
     case write_temp(dir, name, bytes) do
-      {:ok, temp} ->
-        case File.ln(temp, Path.join(dir, name)) do
-          :ok ->
-            if unlink.(temp) == :ok and dir_sync(dir) == :ok, do: :ok, else: {:error, "create_uncertain"}
+      {:ok, temp} -> link_new(temp, dir, name, unlink)
+      :error -> {:error, "create_failed"}
+    end
+  end
 
-          {:error, _reason} ->
-            unlink.(temp)
-            {:error, "create_failed"}
-        end
+  defp link_new(temp, dir, name, unlink) do
+    case File.ln(temp, Path.join(dir, name)) do
+      :ok ->
+        if unlink.(temp) == :ok and dir_sync(dir) == :ok, do: :ok, else: {:error, "create_uncertain"}
 
-      :error ->
+      {:error, _reason} ->
+        unlink.(temp)
         {:error, "create_failed"}
     end
   end
