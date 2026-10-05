@@ -184,6 +184,16 @@ defmodule AiOrchestrator.Dispatch.LocalPane do
     end
   end
 
+  @doc """
+  One daemon status read for `pane_ref` through the configured pane client (B3a G4: the claim-time check calls this
+  through the run's dispatch module). The answer is the client's own: for the product client, the typed v1 contract
+  of `PaneClient.status/2`.
+  """
+  @spec pane_status(String.t(), keyword()) :: {:ok, map()} | {:error, map()}
+  def pane_status(pane_ref, opts) when is_binary(pane_ref) do
+    Keyword.get(opts, :pane_client, PaneClient).status(pane_ref, opts)
+  end
+
   # The declared capability is obtained from the daemon on this invocation. Unknown
   # well-formed wire capabilities are additive; Dispatch validates the result before
   # deciding whether its required capability is present.

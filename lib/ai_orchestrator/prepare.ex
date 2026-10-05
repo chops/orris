@@ -83,6 +83,8 @@ defmodule AiOrchestrator.Prepare do
       {:ok, {:ok, result}} -> {:ok, %{events: Map.get(result, :events, []), close: Map.get(result, :close, :ok)}}
       {:ok, {:error, rejection}} -> {:error, public_rejection(rejection)}
       {:error, %{stage: :claim, reason: reason}} -> {:error, %{clause: "pane_claim_refused", detail: reason}}
+      # B3a G4: the claim-time daemon check refuses under the same public clause (design r2 D4)
+      {:error, %{stage: :pane_check, reason: reason}} -> {:error, %{clause: "pane_claim_refused", detail: reason}}
       {:error, %{stage: :release, reason: reason}} -> {:error, %{clause: "pane_release_failed", detail: reason}}
     end
   end

@@ -176,7 +176,16 @@ defmodule AiOrchestrator.Contracts.PublicConsoleSeamRedTest do
     server_opts = Keyword.put(seams, :root, root)
     assert {:ok, prepared} = @prepare.start(ref, server_opts)
     assert {:error, %{clause: "pane_claim_refused", detail: detail}} = @prepare.invoke(@console, prepared, server_opts)
-    assert detail == Jason.decode!(stderr)
+    # B3a G4: a live-holder rejection is a diagnosed refusal. Both refusals use the same claims root, so the second (the
+    # seam's) repeats the CLI's open diagnosis: everything is equal except the repeat's seen_count and last_seen_at.
+    cli = Jason.decode!(stderr)
+    assert Map.delete(detail, "diagnosis") == Map.delete(cli, "diagnosis")
+
+    assert Map.drop(detail["diagnosis"], ~w(seen_count last_seen_at)) ==
+             Map.drop(cli["diagnosis"], ~w(seen_count last_seen_at))
+
+    assert {cli["diagnosis"]["seen_count"], detail["diagnosis"]["seen_count"]} == {1, 2}
+    assert cli["diagnosis"]["trigger"] == "live_holder" and cli["diagnosis"]["holder"] == nil
     refute File.exists?(Path.join([root, ref, "events.jsonl"]))
   end
 

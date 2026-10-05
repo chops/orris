@@ -113,7 +113,13 @@ defmodule AiOrchestrator.CLITest do
 
     journal_before = File.read!(Path.join(first_dir, "events.jsonl"))
     assert %{status: 70, stdout: "", stderr: stderr} = CLI.run(["run", second_dir], fsm_opts(registry_root))
-    assert %{"reason" => "pane_claim_rejected", "pane_ref" => "pane_writer"} = Jason.decode!(stderr)
+    # B3a G4: a live holder is a diagnosed claim refusal; the registry's rejection is kept under "rejection"
+    assert %{
+             "reason" => "pane_claim_refused",
+             "diagnosis" => %{"trigger" => "live_holder"},
+             "rejection" => %{"reason" => "pane_claim_rejected", "pane_ref" => "pane_writer"}
+           } = Jason.decode!(stderr)
+
     refute File.exists?(Path.join(second_dir, "events.jsonl"))
     assert File.read!(Path.join(first_dir, "events.jsonl")) == journal_before
 
@@ -148,7 +154,9 @@ defmodule AiOrchestrator.CLITest do
     assert %{status: 70, stdout: "", stderr: stderr} =
              CLI.run(["run", "--resume", run_dir], fsm_opts(registry_root))
 
-    assert %{"reason" => "pane_claim_rejected"} = Jason.decode!(stderr)
+    assert %{"reason" => "pane_claim_refused", "rejection" => %{"reason" => "pane_claim_rejected"}} =
+             Jason.decode!(stderr)
+
     assert File.read!(Path.join(run_dir, "events.jsonl")) == before
     assert :ok = FileRegistry.release(claim)
   end

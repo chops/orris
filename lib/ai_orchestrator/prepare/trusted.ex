@@ -18,6 +18,7 @@ defmodule AiOrchestrator.Prepare.Trusted do
   alias AiOrchestrator.Journal.Fold
   alias AiOrchestrator.Journal.Reader
   alias AiOrchestrator.PaneRegistry.FileRegistry
+  alias AiOrchestrator.Prepare.PaneCheck
   alias AiOrchestrator.Prepare.Prepared
   alias AiOrchestrator.Spec.PathBoundary
   alias AiOrchestrator.Spec.Plan
@@ -120,7 +121,7 @@ defmodule AiOrchestrator.Prepare.Trusted do
   or `{:error, %{stage: :release, reason: map}}` after the outcome when the release fails (legacy precedence).
   """
   @spec invoke(map(), Prepared.t(), module(), outcome()) ::
-          {:ok, term()} | {:error, %{stage: :claim | :release, reason: reason()}}
+          {:ok, term()} | {:error, %{stage: :claim | :pane_check | :release, reason: reason()}}
   def invoke(actor, prepared, executor, outcome) when is_atom(executor) and is_function(outcome, 1) do
     run = fn claimed_opts -> outcome.(commands_invoke(actor, prepared, executor, claimed_opts)) end
 
@@ -140,6 +141,8 @@ defmodule AiOrchestrator.Prepare.Trusted do
           :agent_roster_hash,
           :clock,
           :context_initial_hash,
+          :diagnosis_fs,
+          :diagnosis_resolved_bound,
           :dispatch,
           :dispatch_opts,
           :fs,
@@ -433,19 +436,34 @@ defmodule AiOrchestrator.Prepare.Trusted do
     case registry.claim(pane_refs, owner, claim_opts) do
       {:ok, claim} ->
         claimed_opts = Keyword.put(opts, :pane_claim_tokens, Map.new(pane_refs, &{&1, claim.token}))
-        run_with_claim(registry, claim, claimed_opts, fun)
+        run_with_claim(registry, claim, pane_refs, claimed_opts, fun)
+
+      {:error, %{"reason" => "pane_claim_rejected", "pane_ref" => pane_ref} = reason} when is_binary(pane_ref) ->
+        {:error, %{stage: :claim, reason: PaneCheck.live_holder(reason, opts)}}
 
       {:error, reason} ->
         {:error, %{stage: :claim, reason: reason}}
     end
   end
 
-  defp run_with_claim(registry, claim, claimed_opts, fun) do
-    result = fun.(claimed_opts)
+  # B3a G4 (design r2): with the claim held, one daemon status read per claimed pane; a refusal releases the claim
+  # first and only then opens its diagnosis (a failed release keeps the legacy release-failure result and opens
+  # nothing); a healthy check resolves the pane's verified diagnoses before the command runs.
+  defp run_with_claim(registry, claim, pane_refs, claimed_opts, fun) do
+    case PaneCheck.check(pane_refs, claim.token, claimed_opts) do
+      :ok ->
+        result = fun.(claimed_opts)
 
-    case registry.release(claim) do
-      :ok -> {:ok, result}
-      {:error, reason} -> {:error, %{stage: :release, reason: reason}}
+        case registry.release(claim) do
+          :ok -> {:ok, result}
+          {:error, reason} -> {:error, %{stage: :release, reason: reason}}
+        end
+
+      {:refuse, refusal} ->
+        case registry.release(claim) do
+          :ok -> {:error, %{stage: :pane_check, reason: refusal.()}}
+          {:error, reason} -> {:error, %{stage: :release, reason: reason}}
+        end
     end
   rescue
     error ->

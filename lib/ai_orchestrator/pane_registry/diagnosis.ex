@@ -51,6 +51,31 @@ defmodule AiOrchestrator.PaneRegistry.Diagnosis do
     locked(root, opts, fn dir, fs -> resolve_locked(dir, fs, pane_ref, trigger, resolved_by, opts) end)
   end
 
+  @doc """
+  Resolves, under ONE lock and one directory read, each open diagnosis of `pane_ref` named in `resolutions`
+  (`[{trigger, resolved_by}]`) whose check verifies its trigger; pairs with no open diagnosis are skipped. Answers
+  the resolved ids, or the first persistence failure (diagnoses resolved before it stay resolved).
+  """
+  @spec resolve_verified(String.t(), String.t(), [{String.t(), map()}], keyword()) ::
+          {:ok, [String.t()]} | {:error, map()}
+  def resolve_verified(root, pane_ref, resolutions, opts) when is_binary(pane_ref) and is_list(resolutions) do
+    locked(root, opts, fn dir, fs ->
+      with {:ok, docs} <- read_all(dir, fs) do
+        Enum.reduce_while(resolutions, {:ok, []}, fn {trigger, resolved_by}, {:ok, resolved} ->
+          with {:ok, doc} <- open_doc(docs, pane_ref, trigger),
+               :ok <- resolving_check(trigger, resolved_by) do
+            case resolve_doc(dir, fs, doc, resolved_by, opts) do
+              {:ok, updated} -> {:cont, {:ok, resolved ++ [updated["diagnosis_id"]]}}
+              {:error, _persistence} = error -> {:halt, error}
+            end
+          else
+            {:error, %{"reason" => _not_open_or_unverified}} -> {:cont, {:ok, resolved}}
+          end
+        end)
+      end
+    end)
+  end
+
   defp locked(root, opts, fun) do
     root = Path.expand(root)
     fs = Keyword.get(opts, :diagnosis_fs, LocalFs)
@@ -143,15 +168,19 @@ defmodule AiOrchestrator.PaneRegistry.Diagnosis do
     with {:ok, docs} <- read_all(dir, fs),
          {:ok, doc} <- open_doc(docs, pane_ref, trigger),
          :ok <- resolving_check(trigger, resolved_by) do
-      updated =
-        doc
-        |> Map.put("status", "resolved")
-        |> Map.put("resolved_at", now(opts))
-        |> Map.put("resolved_by", resolved_by)
+      resolve_doc(dir, fs, doc, resolved_by, opts)
+    end
+  end
 
-      with :ok <- fs_call(fs.replace(dir, file_name(updated), Jason.encode!(updated))) do
-        {:ok, updated}
-      end
+  defp resolve_doc(dir, fs, doc, resolved_by, opts) do
+    updated =
+      doc
+      |> Map.put("status", "resolved")
+      |> Map.put("resolved_at", now(opts))
+      |> Map.put("resolved_by", resolved_by)
+
+    with :ok <- fs_call(fs.replace(dir, file_name(updated), Jason.encode!(updated))) do
+      {:ok, updated}
     end
   end
 

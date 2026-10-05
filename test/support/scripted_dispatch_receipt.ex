@@ -20,6 +20,10 @@ defmodule AiOrchestrator.Test.ScriptedDispatchReceipt do
       end
 
       def reconcile(command, _opts), do: unquote(__MODULE__).reconcile(__MODULE__, command)
+
+      # B3a G4: the claim-time daemon check reads every claimed pane through the run's dispatch module; a synthetic
+      # fixture's pane is live and idle. A fixture that must refuse defines its own dispatch without this.
+      def pane_status(_pane_ref, _opts), do: {:ok, %{"state" => "idle"}}
       @before_compile unquote(__MODULE__)
     end
   end

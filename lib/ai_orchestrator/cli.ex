@@ -147,8 +147,15 @@ defmodule AiOrchestrator.CLI do
     actor = %{"class" => "operator", "id" => Keyword.get(Prepared.context(prepared), :operator, "operator")}
 
     case Trusted.invoke(actor, prepared, Run.Executor, &command_outcome(&1, Prepared.run_dir(prepared))) do
-      {:ok, result} -> result
-      {:error, %{reason: reason}} -> error(70, reason)
+      {:ok, result} ->
+        result
+
+      # B3a G4: a claim refusal whose diagnosis could not be persisted is exit 74 (EX_IOERR), the reason unchanged
+      {:error, %{stage: stage, reason: %{"persistence" => _} = reason}} when stage in [:claim, :pane_check] ->
+        error(74, reason)
+
+      {:error, %{reason: reason}} ->
+        error(70, reason)
     end
   end
 
