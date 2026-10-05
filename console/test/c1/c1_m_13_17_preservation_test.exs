@@ -232,6 +232,7 @@ defmodule C1.MutationPreservationTest do
     # Also the NS-13.B.001 test delivery: a run resumes from the journal alone with its projections absent.
     # Also the S3 pane_quarantined consumer delivery: the v1/v2 fixtures, the typed refusal and its lifecycle tests.
     # Also the IPC v3 contract specification: the v3 example fixtures and their hash and shape test (test only).
+    # Also the NS-15.G.005 B3a RED rows: typed status, diagnosis, root lock and CLI pane-check tests (test only).
     # Pin root entries so another core commit cannot silently pass. A later authorized core delivery must update
     # this snapshot explicitly in its review. Console files are outside the
     # snapshot, avoiding a self-referential commit id.
@@ -245,7 +246,7 @@ defmodule C1.MutationPreservationTest do
     100644 blob 6f8544e74c5907bebfdba64381e9320b07fcd7e3\tmix.exs
     100644 blob 0575c59cd4c68075227b8e9f11476fd3fd9bc85e\tmix.lock
     040000 tree 950aae97c234450184c6cf696d2dadd28520f48f\tnative
-    040000 tree 3ceef6c4f2b8080c53a526789821ee01e7575bc0\ttest
+    040000 tree 84c39090f7cdad332d36bed32370caae13ae9730\ttest
     """
 
     {committed, 0} = System.cmd("git", ["ls-tree", "HEAD", "--"] ++ core_paths, cd: Harness.core_path())
