@@ -238,6 +238,7 @@ defmodule C1.MutationPreservationTest do
     # script, RootLock over a Port, reclaim under the lock in place of the removed mkdir mutex, waiter lifecycle tests).
     # Also the NS-15.G.005 B3a G3 delivery: durable claim-refusal diagnoses (Diagnosis over the six LocalFs primitives).
     # Also the NS-15.G.005 B3a G4 delivery: the claim-time daemon check (Prepare.PaneCheck) and its 70/74 refusal surface.
+    # Also the NS-15.G.004 B2 RED rows: the claim-leak test and its no-release claimant helper (test only).
     # Pin root entries so another core commit cannot silently pass. A later authorized core delivery must update
     # this snapshot explicitly in its review. Console files are outside the
     # snapshot, avoiding a self-referential commit id.
@@ -251,7 +252,7 @@ defmodule C1.MutationPreservationTest do
     100644 blob 6f8544e74c5907bebfdba64381e9320b07fcd7e3\tmix.exs
     100644 blob 0575c59cd4c68075227b8e9f11476fd3fd9bc85e\tmix.lock
     040000 tree de1293b8faa71d7fd58a3418d1574c9b589af1d5\tnative
-    040000 tree fe32a22cdb0025cd9c6d8ac725830333a22bcfb5\ttest
+    040000 tree 8ca241cd444ceb2b0e92e8c6ffd40b100b8df28a\ttest
     """
 
     {committed, 0} = System.cmd("git", ["ls-tree", "HEAD", "--"] ++ core_paths, cd: Harness.core_path())
