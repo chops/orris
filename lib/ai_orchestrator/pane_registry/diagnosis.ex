@@ -82,16 +82,16 @@ defmodule AiOrchestrator.PaneRegistry.Diagnosis do
     fs = Keyword.get(opts, :diagnosis_fs, LocalFs)
 
     with :ok <- ensure_root(root) do
-      case RootLock.run(root, "diagnosis", Keyword.take(opts, @lock_opts), fn _lock ->
-             fun.(Path.join(root, "diagnoses"), fs)
-           end) do
-        {:ok, result} -> result
-        {:error, %{"lock" => "release_unconfirmed", "result" => result}} -> result
-        {:error, %{"lock" => "lost"}} -> persistence("lock_lost")
-        {:error, reason} when is_binary(reason) -> persistence(reason)
-      end
+      root
+      |> RootLock.run("diagnosis", Keyword.take(opts, @lock_opts), fn _lock -> fun.(Path.join(root, "diagnoses"), fs) end)
+      |> lock_result()
     end
   end
+
+  defp lock_result({:ok, result}), do: result
+  defp lock_result({:error, %{"lock" => "release_unconfirmed", "result" => result}}), do: result
+  defp lock_result({:error, %{"lock" => "lost"}}), do: persistence("lock_lost")
+  defp lock_result({:error, reason}) when is_binary(reason), do: persistence(reason)
 
   # The lock file lives in the claims root, so the root must exist before the lock; it is the registry's own
   # directory, created 0700 as FileRegistry creates it.
@@ -204,12 +204,14 @@ defmodule AiOrchestrator.PaneRegistry.Diagnosis do
   # failing diagnosis?/2) is never matched and never changed; a read failure is a persistence failure.
   defp read_all(dir, fs) do
     with {:ok, names} <- fs_call(fs.list(dir)) do
-      Enum.reduce_while(names, {:ok, []}, fn name, {:ok, docs} ->
-        case fs_call(fs.read(dir, name)) do
-          {:ok, bytes} -> {:cont, {:ok, decoded(name, bytes, docs)}}
-          {:error, _persistence} = error -> {:halt, error}
-        end
-      end)
+      Enum.reduce_while(names, {:ok, []}, &read_one(&1, &2, dir, fs))
+    end
+  end
+
+  defp read_one(name, {:ok, docs}, dir, fs) do
+    case fs_call(fs.read(dir, name)) do
+      {:ok, bytes} -> {:cont, {:ok, decoded(name, bytes, docs)}}
+      {:error, _persistence} = error -> {:halt, error}
     end
   end
 

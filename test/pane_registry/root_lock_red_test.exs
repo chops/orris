@@ -16,9 +16,8 @@ defmodule AiOrchestrator.PaneRegistry.RootLockRedTest do
 
   use ExUnit.Case, async: false
 
+  alias AiOrchestrator.PaneRegistry.Diagnosis
   alias AiOrchestrator.PaneRegistry.FileRegistry
-
-  @diagnosis Module.concat([AiOrchestrator, PaneRegistry, Diagnosis])
 
   setup do
     root = Path.join(System.tmp_dir!(), "ai_orchestrator_root_lock_#{System.unique_integer([:positive])}")
@@ -34,7 +33,7 @@ defmodule AiOrchestrator.PaneRegistry.RootLockRedTest do
            "root lock helper is not available (FileRegistry.with_root_lock/4)"
   end
 
-  defp with_lock(root, token, opts, fun), do: apply(FileRegistry, :with_root_lock, [root, token, opts, fun])
+  defp with_lock(root, token, opts, fun), do: FileRegistry.with_root_lock(root, token, opts, fun)
 
   # a holder that takes the lock and waits for :release; it reports :locked with the lock map. It is killed at test
   # exit whatever happened, so a failed assertion never leaves it holding the lock.
@@ -74,7 +73,7 @@ defmodule AiOrchestrator.PaneRegistry.RootLockRedTest do
 
   test "L1 RED a live holder past any age keeps the lock against a diagnosis", %{root: root} do
     api!()
-    {:ok, _} = apply(@diagnosis, :open, [root, attrs(), []])
+    {:ok, _} = Diagnosis.open(root, attrs(), [])
     [name] = root |> Path.join("diagnoses") |> File.ls!()
     before = root |> Path.join("diagnoses") |> Path.join(name) |> File.read!()
 
@@ -82,12 +81,12 @@ defmodule AiOrchestrator.PaneRegistry.RootLockRedTest do
     {holder, _lock} = await_locked()
     File.touch!(Path.join(root, ".root-lock"), System.os_time(:second) - 3_600)
 
-    result = apply(@diagnosis, :open, [root, attrs(), [wait_ms: 50]])
+    result = Diagnosis.open(root, attrs(), wait_ms: 50)
     assert result == {:error, %{"persistence" => %{"ok" => false, "error" => "lock_busy"}}}
     assert root |> Path.join("diagnoses") |> Path.join(name) |> File.read!() == before
 
     send(holder, :release)
-    assert match?({:ok, _}, apply(@diagnosis, :open, [root, attrs(), []]))
+    assert match?({:ok, _}, Diagnosis.open(root, attrs(), []))
   end
 
   test "L2 RED a live holder keeps the lock against reclaim", %{root: root} do
@@ -147,7 +146,7 @@ defmodule AiOrchestrator.PaneRegistry.RootLockRedTest do
   # sequences race for the lock and neither update may be lost.
   test "L6 RED two concurrent repeats through the lock are not lost", %{root: root} do
     api!()
-    assert match?({:ok, _}, apply(@diagnosis, :open, [root, attrs(), []]))
+    assert match?({:ok, _}, Diagnosis.open(root, attrs(), []))
     holder = start_holder(root)
     await_locked()
     parent = self()
@@ -156,7 +155,7 @@ defmodule AiOrchestrator.PaneRegistry.RootLockRedTest do
       for name <- [:a, :b] do
         Task.async(fn ->
           opts = [wait_ms: 5_000, on_contend: fn -> send(parent, {:contending, name}) end]
-          apply(@diagnosis, :open, [root, attrs(), opts])
+          Diagnosis.open(root, attrs(), opts)
         end)
       end
 

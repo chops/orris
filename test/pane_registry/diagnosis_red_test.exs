@@ -16,7 +16,9 @@ defmodule AiOrchestrator.PaneRegistry.DiagnosisRedTest do
 
   use ExUnit.Case, async: true
 
-  @diagnosis Module.concat([AiOrchestrator, PaneRegistry, Diagnosis])
+  alias AiOrchestrator.PaneRegistry.Diagnosis
+
+  @diagnosis Diagnosis
 
   setup do
     root = Path.join(System.tmp_dir!(), "ai_orchestrator_diagnosis_#{System.unique_integer([:positive])}")
@@ -51,8 +53,8 @@ defmodule AiOrchestrator.PaneRegistry.DiagnosisRedTest do
     end
   end
 
-  defp open(root, attrs, opts), do: apply(@diagnosis, :open, [root, attrs, opts])
-  defp resolve(root, pane, trigger, by, opts \\ []), do: apply(@diagnosis, :resolve, [root, pane, trigger, by, opts])
+  defp open(root, attrs, opts), do: Diagnosis.open(root, attrs, opts)
+  defp resolve(root, pane, trigger, by, opts \\ []), do: Diagnosis.resolve(root, pane, trigger, by, opts)
 
   defp opened!(root, attrs, opts \\ []) do
     result = open(root, attrs, opts)
@@ -317,6 +319,6 @@ defmodule AiOrchestrator.PaneRegistry.DiagnosisRedTest do
     def replace(dir, name, bytes), do: fail_or(:replace, fn -> local().replace(dir, name, bytes) end)
     def remove(dir, name), do: fail_or(:remove, fn -> local().remove(dir, name) end)
 
-    defp local, do: Module.concat([AiOrchestrator, PaneRegistry, Diagnosis, LocalFs])
+    defp local, do: Diagnosis.LocalFs
   end
 end
