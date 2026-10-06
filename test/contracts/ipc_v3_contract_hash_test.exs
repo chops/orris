@@ -10,21 +10,26 @@ defmodule AiOrchestrator.Contracts.IpcV3ContractHashTest do
   set and its agreement with the text; they say nothing about any daemon. There is no
   pairing row yet: the producer has not vendored this document, and the paired block is
   added in that re-pairing.
+
+  The identity core (ping, status, send and reconcile at version 3, the
+  pane_identity_unavailable refusal and the version 2 refusals) splits the set into core
+  replies, client requests and examples; every file is in exactly one class, and only the
+  core replies (and exercised client requests) may later be claimed by a pairing.
   """
 
   use ExUnit.Case, async: true
 
   @fixture_dir Path.expand("../fixtures/contracts/ipc/v3", __DIR__)
   @hash_path Path.join(@fixture_dir, "CONTRACT_HASH")
-  @pinned_hash "5f82237167ec609ef6dd0eb6de6754a5a233375c9baa737e99f9ceed6b0c0a3b"
-  @expected_fixture_count 40
+  @pinned_hash "9f84d375bf6084ad8d703fe46de6605114167a3eed515dfaf22e9beac09a76fd"
+  @expected_fixture_count 46
   @document Path.expand("../../docs/contracts/ipc-v3.org", __DIR__)
   @v2_dir Path.expand("../fixtures/contracts/ipc/v2", __DIR__)
 
   # Every fixture file is named here exactly once, in one of two classes, so a new file cannot pass unclassified.
   @with_identity ~w(
     send.sent.json send.queued.json send.duplicate.cancelled.json
-    status.ok.json status.quarantined.json
+    status.ok.json status.quarantined.json reconcile.queued.json reconcile.delivered.json
     cancel.cancelled.json cancel.too_late.json cancel.ambiguous.json reconcile.cancelled.json
     event.pane_state.json event.receipt.json event.pane_gone.json
     event.registration.attach.json event.registration.detach.json
@@ -35,6 +40,22 @@ defmodule AiOrchestrator.Contracts.IpcV3ContractHashTest do
     v2_request.subscribe.json v2_reply.subscribe.unsupported_command.json
     v2_request.cancel.json v2_reply.cancel.unsupported_command.json
     scenario.cancelled.v2_reconcile.json scenario.cancelled.v2_send.json
+    ping.ok.identity_core.json status.error.pane_identity_unavailable.json
+    send.error.pane_identity_unavailable.json reconcile.error.pane_identity_unavailable.json
+  )
+  # The identity-core classes; every file not named here is an example.
+  @core_replies ~w(
+    ping.ok.identity_core.json send.sent.json send.queued.json
+    status.ok.json status.quarantined.json status.error.pane_not_found.json
+    reconcile.queued.json reconcile.delivered.json
+    status.error.pane_identity_unavailable.json send.error.pane_identity_unavailable.json
+    reconcile.error.pane_identity_unavailable.json
+    v2_reply.subscribe.unsupported_command.json v2_reply.cancel.unsupported_command.json
+  )
+  @client_requests ~w(v2_request.subscribe.json v2_request.cancel.json)
+  @identity_refusals ~w(
+    status.error.pane_identity_unavailable.json send.error.pane_identity_unavailable.json
+    reconcile.error.pane_identity_unavailable.json
   )
   @snapshots ~w(
     subscribe.pane.snapshot.json subscribe.all.snapshot.json subscribe.all.empty.json
@@ -170,7 +191,9 @@ defmodule AiOrchestrator.Contracts.IpcV3ContractHashTest do
 
           detached = for %{"detached" => true, "pane_identity" => id} <- snap["entries"], do: id["registration_id"]
           detaches = for %{"change" => "detach", "pane_identity" => id} <- events, do: id["registration_id"]
-          assert Enum.sort(detached) == Enum.sort(detaches), "#{name}: each detached entry pairs with exactly one detach"
+
+          assert Enum.sort(detached) == Enum.sort(detaches),
+                 "#{name}: each detached entry pairs with exactly one detach"
 
         [%{"frame" => "snapshot"} | _] ->
           :ok
@@ -187,13 +210,80 @@ defmodule AiOrchestrator.Contracts.IpcV3ContractHashTest do
     assert snap["max_epoch_at_snapshot"] == snap["epoch"]
   end
 
+  test "the identity-core classes partition the set: 13 core replies, 2 client requests, 31 examples" do
+    examples = names() -- (@core_replies ++ @client_requests)
+
+    assert length(Enum.uniq(@core_replies)) == 13
+    assert length(Enum.uniq(@client_requests)) == 2
+    assert length(examples) == 31
+    assert Enum.sort(@core_replies ++ @client_requests ++ examples) == names()
+
+    for name <- ["ping.ok.json", "ping.missing_tokens.json", "send.sent.no_pane_identity.json"] do
+      assert name in examples, name
+    end
+
+    for name <- @core_replies ++ @client_requests,
+        prefix <- ~w(cancel. subscribe. event. subscription_lost. seq. scenario.) do
+      refute String.starts_with?(name, prefix), "#{name} is outside the identity core"
+    end
+
+    for name <- @core_replies do
+      reply = decode(name)
+      refute reply["outcome"] == "cancelled" or reply["status"] == "cancelled", name
+    end
+  end
+
+  test "the example set table names every core reply and client request by its full file name and class" do
+    rows = @document |> File.read!() |> String.split("\n") |> Enum.filter(&String.starts_with?(&1, "|"))
+
+    named? = fn name, class ->
+      Enum.any?(rows, &(String.contains?(&1, "~#{name}~") and &1 =~ ~r/\|\s*#{class}\s*\|/))
+    end
+
+    for name <- @core_replies, do: assert(named?.(name, "core reply"), name)
+    for name <- @client_requests, do: assert(named?.(name, "client request"), name)
+  end
+
+  test "an identity-core daemon advertises pane_identity and neither cancel nor subscribe" do
+    tokens = decode("ping.ok.identity_core.json")["capabilities"]
+
+    assert "pane_identity" in tokens
+    refute "cancel" in tokens
+    refute "subscribe" in tokens
+  end
+
+  test "pane_identity_unavailable refuses status, send and reconcile with a typed, echoing, identity-free reply" do
+    for name <- @identity_refusals do
+      reply = decode(name)
+      message_bound = not String.starts_with?(name, "status.")
+
+      assert reply["ok"] == false and reply["error"] == "pane_identity_unavailable", name
+      assert reply["protocol_version"] == 3 and reply["pane_id"] == "<pane_id>", name
+      assert Map.has_key?(reply, "msg_id") == message_bound, name
+      refute Map.has_key?(reply, "pane_identity"), name
+    end
+  end
+
+  # structural equality with the decoded v2 fixture once the v3 additions are removed
+  test "the version 3 reconcile queued and delivered replies are the version 2 replies plus pane_identity" do
+    for outcome <- ["queued", "delivered"] do
+      v3 = decode("reconcile.#{outcome}.json")
+      v2 = @v2_dir |> Path.join("reconcile.#{outcome}.json") |> File.read!() |> Jason.decode!()
+
+      assert v3 |> Map.delete("pane_identity") |> Map.put("protocol_version", 2) == v2, outcome
+    end
+  end
+
   test "the contract text names every fixture family it pins" do
     document = File.read!(@document)
 
     for family <-
           ~w(ping.ok.json ping.missing_tokens.json send.sent.no_pane_identity.json send.duplicate.cancelled.json
              reconcile.cancelled.json v2_request.subscribe.json v2_reply.cancel.unsupported_command.json
-             scenario.cancelled.v2_reconcile.json subscribe.all.empty.json seq.close_no_frame seq.race) do
+             scenario.cancelled.v2_reconcile.json subscribe.all.empty.json seq.close_no_frame seq.race
+             ping.ok.identity_core.json reconcile.queued.json reconcile.delivered.json
+             status.error.pane_identity_unavailable.json send.error.pane_identity_unavailable.json
+             reconcile.error.pane_identity_unavailable.json) do
       assert String.contains?(document, family), family
     end
   end

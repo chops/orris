@@ -17,11 +17,37 @@ every existing client; a daemon serves both versions side by side.
 The fixture bytes in ~test/fixtures/contracts/ipc/v3/~ are the version 3 shapes
 this repository pins, with their ~CONTRACT_HASH~ computed under the v1 hash rule
 (see ~ipc-v1.org~), checked by ~test/contracts/ipc_v3_contract_hash_test.exs~.
-They are examples written from this text, not frames captured from a daemon. The
-producer owns the frames: when it implements version 3 it vendors this document
-verbatim and replaces each example with the byte-identical frame its real
-implementation produces, or this text changes first. Until then the set proves
-shape agreement only.
+They are written from this text, not frames captured from a daemon, and each
+belongs to one of the classes below. The producer owns the frames: when it
+implements the identity core it vendors this document verbatim and replaces each
+/core reply/ file with the byte-identical frame its real implementation produces,
+or this text changes first. A /client request/ file is never replaced; it becomes
+an exercised request as described under its class. An /example/ file is not
+replaced by that implementation and stays shape only. Until a pairing records
+produced frames, the set proves shape agreement only.
+
+*** Identity core
+The first producer implements a bounded subset, the /identity core/: ~ping~,
+~status~, ~send~ and ~reconcile~ at version 3 with ~pane_identity~, the
+~pane_identity_unavailable~ refusal, and the version 2 refusal of version 3
+commands. ~cancel~ and ~subscribe~ stay specified and are not part of it; a daemon
+that implements only the identity core advertises ~pane_identity~ and neither
+~cancel~ nor ~subscribe~ (~ping.ok.identity_core.json~), so no client sends them.
+
+Every fixture belongs to exactly one class:
+- /core reply/: a reply the identity-core producer emits byte for byte
+  (placeholders aside). These are the only files a pairing replaces with produced
+  frames.
+- /client request/: a request frame a client sends. The daemon never produces it.
+  It counts as an exercised request only once a producer test sends it unchanged
+  to the real dispatch path and receives its paired reply.
+- /example/: shape only, including every ~cancel~, ~subscribe~, event, loss and
+  sequence file, the full-token ~ping.ok.json~, the client-side
+  ~ping.missing_tokens.json~, and the negative ~send.sent.no_pane_identity.json~,
+  which a correct daemon never emits. An example stays an example until the
+  feature that produces it is implemented and this text changes first.
+The class of each file is listed in the example set below. No file is a produced
+frame until a pairing records it.
 
 What version 3 adds, and why each piece exists:
 - pane identity in every pane-bound reply, so a pre-dispatch claim check can tell
@@ -38,7 +64,9 @@ What version 3 adds, and why each piece exists:
 Not yet paired. The producer vendors this document between ~BEGIN VENDORED~ /
 ~END VENDORED~ markers when it adopts version 3, as it does for version 2, and the
 reciprocal ~paired_*~ block is added here in that re-pairing. Until then no
-statement in this file is a claim about any producer revision.
+statement in this file is a claim about any producer revision. A pairing of the
+identity core claims only the /core reply/ files and the /client request/ files it
+exercised; every /example/ file stays unclaimed.
 
 ** Framing and version
 :PROPERTIES:
@@ -64,8 +92,23 @@ statement in this file is a claim about any producer revision.
   ~request~ / ~reply~ inside the ~scenario.*~ files, are the only version 2 bytes in
   this set.
 - ~send~ and ~reconcile~ keep their version 2 requests, grammars and refusals.
-  Their version 3 replies add ~pane_identity~; ~reconcile~ adds the outcome
-  ~cancelled~ (below).
+  Their version 3 replies add ~pane_identity~ (~send.sent.json~,
+  ~send.queued.json~, ~reconcile.queued.json~, ~reconcile.delivered.json~);
+  ~reconcile~ adds the outcome ~cancelled~ (below).
+- ~pane_identity_unavailable~: a daemon that cannot produce a complete
+  ~pane_identity~ for a pane (for example one that mints no registrations, or one
+  without a pane-intent generation) refuses every version 3 pane-bound command --
+  ~status~, ~send~ and ~reconcile~ -- with ~ok: false~ and error
+  ~pane_identity_unavailable~ in a version 3 reply that echoes ~pane_id~, and
+  ~msg_id~ for ~send~ and ~reconcile~
+  (~status.error.pane_identity_unavailable.json~,
+  ~send.error.pane_identity_unavailable.json~,
+  ~reconcile.error.pane_identity_unavailable.json~). The refusal comes before any
+  effect: no receipt is admitted or changed and nothing is pasted. Such a daemon does
+  not advertise ~pane_identity~ in its version 3 ~ping~. It never answers a version
+  3 pane-bound command with success without ~pane_identity~. A client treats the
+  refusal as the daemon being unavailable for an identity-gated claim and does not
+  dispatch. Version 1 and version 2 are unchanged.
 
 ** Pane identity
 :PROPERTIES:
@@ -94,7 +137,8 @@ statement in this file is a claim about any producer revision.
   (~cancelled~, ~too_late~, ~ambiguous~), successful ~status~, every snapshot entry
   and every pane or registration event. Replies that name no registration omit it:
   ~reconcile~ and ~cancel~ ~absent~ and ~conflict~ (no stored record, or the caller's
-  identities only), every refusal (~ok: false~, for example ~pane_not_found~), and
+  identities only), every refusal (~ok: false~, for example ~pane_not_found~ and
+  ~pane_identity_unavailable~), and
   ~ping~ and ~subscription_lost~. A client MUST NOT require ~pane_identity~ on those
   and MUST NOT treat its absence there as proof of anything about the pane.
 - A client holding a claim for a pane MUST compare the reply's ~registration_id~ and
@@ -111,7 +155,8 @@ statement in this file is a claim about any producer revision.
 :END:
 - ~status~ ~{pane_id}~ answers ~state~, ~quarantined~, ~queue_depth~, ~pane_pid~ and
   ~pane_identity~ (~status.ok.json~, ~status.quarantined.json~), or a typed refusal
-  such as ~pane_not_found~ (~status.error.pane_not_found.json~).
+  such as ~pane_not_found~ (~status.error.pane_not_found.json~) or
+  ~pane_identity_unavailable~ (above).
 - It is a per-pane read. The registry-wide read and its JSON shape are not defined
   here.
 
@@ -255,24 +300,34 @@ until they are, no implementation may claim conformance.
 :PROPERTIES:
 :CUSTOM_ID: example-set
 :END:
-| Fixture                                          | Shows                                                                     |
-|--------------------------------------------------+---------------------------------------------------------------------------|
-| ~ping.ok.json~                                   | version 3 ping with all tokens                                            |
-| ~ping.missing_tokens.json~                       | a daemon without the version 3 tokens; the client fails closed            |
-| ~send.sent.json~, ~send.queued.json~             | version 2 send replies plus ~pane_identity~                               |
-| ~send.sent.no_pane_identity.json~                | a reply the client MUST refuse for missing identity                       |
-| ~send.duplicate.cancelled.json~                  | duplicate of a cancelled send                                             |
-| ~status.*.json~                                  | per-pane status and its refusal                                           |
-| ~cancel.*.json~                                  | the five cancel outcomes                                                  |
-| ~reconcile.cancelled.json~                       | the sixth reconcile outcome                                               |
-| ~v2_request.*.json~, ~v2_reply.*.json~           | version 2 requests for version 3 commands and their typed refusals        |
-| ~scenario.cancelled.*.json~                      | a cancelled receipt read through version 2 reconcile and send             |
-| ~subscribe.pane.snapshot.json~                   | per-pane snapshot                                                         |
-| ~subscribe.all.*.json~                           | all-panes snapshots: ordinary, empty, with a detached entry, unknown state |
-| ~event.*.json~                                   | one of each event kind                                                    |
-| ~subscription_lost.*.json~                       | the two loss frames                                                       |
-| ~seq.close_no_frame.*.json~                      | frames then close with no final frame: overflow, restart, snapshot timeout |
-| ~seq.race.*.json~                                | attach, detach, detach-then-reattach, owner exit before the read          |
+| Fixture                                          | Class          | Shows                                                                     |
+|--------------------------------------------------+----------------+---------------------------------------------------------------------------|
+| ~ping.ok.identity_core.json~                     | core reply     | version 3 ping of an identity-core daemon: no ~cancel~ or ~subscribe~     |
+| ~ping.ok.json~                                   | example        | version 3 ping with all tokens                                            |
+| ~ping.missing_tokens.json~                       | example        | a daemon without the version 3 tokens; the client fails closed            |
+| ~send.sent.json~, ~send.queued.json~             | core reply     | version 2 send replies plus ~pane_identity~                               |
+| ~send.error.pane_identity_unavailable.json~      | core reply     | send refused: no complete pane identity                                   |
+| ~send.sent.no_pane_identity.json~                | example        | a reply the client MUST refuse for missing identity (never emitted)       |
+| ~send.duplicate.cancelled.json~                  | example        | duplicate of a cancelled send                                             |
+| ~status.ok.json~, ~status.quarantined.json~      | core reply     | per-pane status: live and quarantined                                     |
+| ~status.error.pane_not_found.json~               | core reply     | status refused: unknown pane                                              |
+| ~status.error.pane_identity_unavailable.json~    | core reply     | status refused: no complete pane identity                                 |
+| ~reconcile.queued.json~                          | core reply     | version 2 reconcile outcome ~queued~ plus ~pane_identity~                 |
+| ~reconcile.delivered.json~                       | core reply     | version 2 reconcile outcome ~delivered~ plus ~pane_identity~              |
+| ~reconcile.error.pane_identity_unavailable.json~ | core reply     | reconcile refused: no complete pane identity                              |
+| ~cancel.*.json~                                  | example        | the five cancel outcomes                                                  |
+| ~reconcile.cancelled.json~                       | example        | the sixth reconcile outcome                                               |
+| ~v2_request.subscribe.json~                      | client request | version 2 request for ~subscribe~                                         |
+| ~v2_request.cancel.json~                         | client request | version 2 request for ~cancel~                                            |
+| ~v2_reply.subscribe.unsupported_command.json~    | core reply     | its typed version 2 refusal                                               |
+| ~v2_reply.cancel.unsupported_command.json~       | core reply     | its typed version 2 refusal                                               |
+| ~scenario.cancelled.*.json~                      | example        | a cancelled receipt read through version 2 reconcile and send             |
+| ~subscribe.pane.snapshot.json~                   | example        | per-pane snapshot                                                         |
+| ~subscribe.all.*.json~                           | example        | all-panes snapshots: ordinary, empty, with a detached entry, unknown state |
+| ~event.*.json~                                   | example        | one of each event kind                                                    |
+| ~subscription_lost.*.json~                       | example        | the two loss frames                                                       |
+| ~seq.close_no_frame.*.json~                      | example        | frames then close with no final frame: overflow, restart, snapshot timeout |
+| ~seq.race.*.json~                                | example        | attach, detach, detach-then-reattach, owner exit before the read          |
 
 A ~seq.*~ file is a sequence: ~frames~ in order, then ~then~ ~close~.
 

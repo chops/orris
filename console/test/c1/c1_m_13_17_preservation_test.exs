@@ -242,6 +242,7 @@ defmodule C1.MutationPreservationTest do
     # Also the NS-15.G.004 B2 GREEN delivery: claimant-scoped owner reading (erlang_pid) and FileRegistry.held?/3.
     # Also the NS-15.G.003 S1-C C3 delivery: three v2 store-refusal fixtures and their hash/pairing pins (test only).
     # Also the adapter-conformance fix: the reconcile-export row loads the adapter before function_exported?.
+    # Also the NS-15.G.002 B1-K contract amendment: v3 identity core, pane_identity_unavailable, fixture classes.
     # Pin root entries so another core commit cannot silently pass. A later authorized core delivery must update
     # this snapshot explicitly in its review. Console files are outside the
     # snapshot, avoiding a self-referential commit id.
@@ -255,7 +256,7 @@ defmodule C1.MutationPreservationTest do
     100644 blob 6f8544e74c5907bebfdba64381e9320b07fcd7e3\tmix.exs
     100644 blob 0575c59cd4c68075227b8e9f11476fd3fd9bc85e\tmix.lock
     040000 tree de1293b8faa71d7fd58a3418d1574c9b589af1d5\tnative
-    040000 tree 2643be3ba74c9e5b19b6083450c97373306c3ff0\ttest
+    040000 tree 4fa8a6ca1f2935e21091135d5f6e7191e7b22083\ttest
     """
 
     {committed, 0} = System.cmd("git", ["ls-tree", "HEAD", "--"] ++ core_paths, cd: Harness.core_path())
