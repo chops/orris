@@ -13,7 +13,8 @@ defmodule AiOrchestrator.Dispatch.LocalPaneStatusV3RedTest do
 
   use ExUnit.Case, async: true
 
-  alias AiOrchestrator.Dispatch.{LocalPane, PaneClient}
+  alias AiOrchestrator.Dispatch.LocalPane
+  alias AiOrchestrator.Dispatch.PaneClient
 
   @pane "pane_writer"
   @identity %{"pane_id" => @pane, "registration_id" => "reg_" <> String.duplicate("a", 32), "generation" => "7"}
