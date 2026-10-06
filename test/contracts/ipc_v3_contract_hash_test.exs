@@ -6,8 +6,8 @@ defmodule AiOrchestrator.Contracts.IpcV3ContractHashTest do
   the version 2 projection of a cancelled receipt. This repository pins the fixture bytes
   and CONTRACT_HASH under the v1 rule (sha256 over filename NUL bytes NUL, byte-sorted).
 
-  The identity core is implemented on both sides and paired (NS-15.G.002 B1c); cancel and
-  subscribe remain specified only. These rows check the fixture set, its agreement with the
+  The identity core is implemented on both sides and paired (NS-15.G.002 B1c); cancel,
+  subscribe and release (NS-15.G.003 S3, Charles decisions 49 and 50) remain specified only. These rows check the fixture set, its agreement with the
   text and the paired block's claims; they run no daemon.
 
   The identity core (ping, status, send and reconcile at version 3, the
@@ -20,8 +20,8 @@ defmodule AiOrchestrator.Contracts.IpcV3ContractHashTest do
 
   @fixture_dir Path.expand("../fixtures/contracts/ipc/v3", __DIR__)
   @hash_path Path.join(@fixture_dir, "CONTRACT_HASH")
-  @pinned_hash "9f84d375bf6084ad8d703fe46de6605114167a3eed515dfaf22e9beac09a76fd"
-  @expected_fixture_count 46
+  @pinned_hash "b6367efecc75bc1a5f414c4196647a06e274ef5262df1771633b83e452ad81d3"
+  @expected_fixture_count 57
   @document Path.expand("../../docs/contracts/ipc-v3.org", __DIR__)
   @v2_dir Path.expand("../fixtures/contracts/ipc/v2", __DIR__)
 
@@ -32,6 +32,7 @@ defmodule AiOrchestrator.Contracts.IpcV3ContractHashTest do
     cancel.cancelled.json cancel.too_late.json cancel.ambiguous.json reconcile.cancelled.json
     event.pane_state.json event.receipt.json event.pane_gone.json
     event.registration.attach.json event.registration.detach.json
+    release.released.json
   )
   @without_identity ~w(
     ping.ok.json ping.missing_tokens.json send.sent.no_pane_identity.json status.error.pane_not_found.json
@@ -41,6 +42,15 @@ defmodule AiOrchestrator.Contracts.IpcV3ContractHashTest do
     scenario.cancelled.v2_reconcile.json scenario.cancelled.v2_send.json
     ping.ok.identity_core.json status.error.pane_identity_unavailable.json
     send.error.pane_identity_unavailable.json reconcile.error.pane_identity_unavailable.json
+    ping.ok.identity_core_release.json v3_request.release.json
+    release.error.pane_identity_unavailable.json release.error.effect_unresolved.json
+    release.error.release_fence_unavailable.json release.error.release_stop_failed.json
+    release.error.release_failed_requarantined.json release.error.release_unstarted.json
+    v2_request.release.json v2_reply.release.unsupported_command.json
+  )
+  @release_refusals ~w(
+    pane_identity_unavailable effect_unresolved release_fence_unavailable release_stop_failed
+    release_failed_requarantined release_unstarted
   )
   # The identity-core classes; every file not named here is an example.
   @core_replies ~w(
@@ -143,7 +153,7 @@ defmodule AiOrchestrator.Contracts.IpcV3ContractHashTest do
   end
 
   test "each version 3 command named in a version 2 request is refused with a typed, echoing refusal" do
-    for cmd <- ["subscribe", "cancel"] do
+    for cmd <- ["subscribe", "cancel", "release"] do
       request = decode("v2_request.#{cmd}.json")
       reply = decode("v2_reply.#{cmd}.unsupported_command.json")
 
@@ -209,12 +219,12 @@ defmodule AiOrchestrator.Contracts.IpcV3ContractHashTest do
     assert snap["max_epoch_at_snapshot"] == snap["epoch"]
   end
 
-  test "the identity-core classes partition the set: 13 core replies, 2 client requests, 31 examples" do
+  test "the identity-core classes partition the set: 13 core replies, 2 client requests, 42 examples" do
     examples = names() -- (@core_replies ++ @client_requests)
 
     assert length(Enum.uniq(@core_replies)) == 13
     assert length(Enum.uniq(@client_requests)) == 2
-    assert length(examples) == 31
+    assert length(examples) == 42
     assert Enum.sort(@core_replies ++ @client_requests ++ examples) == names()
 
     for name <- ["ping.ok.json", "ping.missing_tokens.json", "send.sent.no_pane_identity.json"] do
@@ -222,7 +232,7 @@ defmodule AiOrchestrator.Contracts.IpcV3ContractHashTest do
     end
 
     for name <- @core_replies ++ @client_requests,
-        prefix <- ~w(cancel. subscribe. event. subscription_lost. seq. scenario.) do
+        prefix <- ~w(cancel. subscribe. event. subscription_lost. seq. scenario. release. v3_request.) do
       refute String.starts_with?(name, prefix), "#{name} is outside the identity core"
     end
 
@@ -296,8 +306,51 @@ defmodule AiOrchestrator.Contracts.IpcV3ContractHashTest do
              scenario.cancelled.v2_reconcile.json subscribe.all.empty.json seq.close_no_frame seq.race
              ping.ok.identity_core.json reconcile.queued.json reconcile.delivered.json
              status.error.pane_identity_unavailable.json send.error.pane_identity_unavailable.json
-             reconcile.error.pane_identity_unavailable.json) do
+             reconcile.error.pane_identity_unavailable.json ping.ok.identity_core_release.json
+             v3_request.release.json release.released.json v2_request.release.json
+             v2_reply.release.unsupported_command.json) do
       assert String.contains?(document, family), family
     end
+
+    for refusal <- @release_refusals do
+      assert String.contains?(document, "~release.error.#{refusal}.json~"), refusal
+    end
+  end
+
+  test "a release-capable identity-core ping advertises release beside pane_identity; the identity-core ping does not" do
+    tokens = decode("ping.ok.identity_core_release.json")["capabilities"]
+
+    assert "release" in tokens and "pane_identity" in tokens
+    refute "cancel" in tokens
+    refute "subscribe" in tokens
+    refute "release" in decode("ping.ok.identity_core.json")["capabilities"]
+    assert "release" in decode("ping.ok.json")["capabilities"]
+  end
+
+  test "the release request names only the pane, and success carries the identity and matched/held counts" do
+    assert decode("v3_request.release.json") == %{"cmd" => "release", "pane_id" => "<pane_id>", "protocol_version" => 3}
+
+    reply = decode("release.released.json")
+    assert reply["ok"] == true and reply["released"] == true and reply["pane_id"] == "<pane_id>"
+    assert identity_ok?(reply["pane_identity"])
+    assert %{"matched" => m, "held" => h} = reply["counts"]
+    assert map_size(reply["counts"]) == 2 and is_integer(m) and is_integer(h) and m >= 0 and h >= 0
+  end
+
+  test "each release refusal is typed, echoes pane_id, and carries no identity" do
+    for refusal <- @release_refusals do
+      reply = decode("release.error.#{refusal}.json")
+
+      assert reply == %{
+               "error" => refusal,
+               "ok" => false,
+               "pane_id" => "<pane_id>",
+               "protocol_version" => 3
+             },
+             refusal
+    end
+
+    on_disk = for name <- names(), String.starts_with?(name, "release.error."), do: name
+    assert Enum.sort(on_disk) == Enum.sort(Enum.map(@release_refusals, &"release.error.#{&1}.json"))
   end
 end

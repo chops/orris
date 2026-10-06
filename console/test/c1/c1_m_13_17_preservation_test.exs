@@ -244,6 +244,7 @@ defmodule C1.MutationPreservationTest do
     # Also the adapter-conformance fix: the reconcile-export row loads the adapter before function_exported?.
     # Also the NS-15.G.002 B1-K contract amendment: v3 identity core, pane_identity_unavailable, fixture classes.
     # Also the NS-15.G.002 B1c delivery: the version 3 status read, capability classes, quarantine refusal, pairing.
+    # Also the NS-15.G.003 S3-K contract amendment: the specified release command and its example fixtures (test only).
     # Pin root entries so another core commit cannot silently pass. A later authorized core delivery must update
     # this snapshot explicitly in its review. Console files are outside the
     # snapshot, avoiding a self-referential commit id.
@@ -257,7 +258,7 @@ defmodule C1.MutationPreservationTest do
     100644 blob 6f8544e74c5907bebfdba64381e9320b07fcd7e3\tmix.exs
     100644 blob 0575c59cd4c68075227b8e9f11476fd3fd9bc85e\tmix.lock
     040000 tree de1293b8faa71d7fd58a3418d1574c9b589af1d5\tnative
-    040000 tree 14f7f1ccf398a9b5703aa37d28efdae3db642639\ttest
+    040000 tree 50b27f10e616b206d60caa21530f1e9b477bdc1c\ttest
     """
 
     {committed, 0} = System.cmd("git", ["ls-tree", "HEAD", "--"] ++ core_paths, cd: Harness.core_path())

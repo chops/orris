@@ -12,7 +12,8 @@ The identity core below is implemented on both sides and paired (see
 "Pairing"): the producer (the ai-pair daemon, Orrisd, at the paired revision)
 serves it, and the consumer in this repository reads version 3 ~status~ for its
 claim checks (NS-15.G.002 B1c). ~cancel~ and ~subscribe~ remain specified and NOT
-implemented on either side. No client may send a version 3 request until the
+implemented on either side. ~release~ (NS-15.G.003 S3, below) is specified and NOT
+implemented on either side; its files are examples. No client may send a version 3 request until the
 daemon advertises the capability tokens below in a version 3 ~ping~. Version 2
 (~ipc-v2.org~) is unchanged and stays the wire for every existing client; a daemon
 serves both versions side by side. An installed daemon older than the paired
@@ -59,7 +60,9 @@ What version 3 adds, and why each piece exists:
 - a per-pane ~status~ read for observation without the version 1 ~pane_status~;
 - ~cancel~, which withdraws a queued send and never un-pastes one;
 - ~subscribe~, a pushed stream of pane, receipt and registration changes, so a
-  client polls only when the stream is lost.
+  client polls only when the stream is lost;
+- ~release~, which lifts a restored pane's quarantine after the daemon proves its
+  pane identity, and pastes only the restored sends bound to that identity.
 
 ** Pairing
 :PROPERTIES:
@@ -91,17 +94,18 @@ here are unchanged by the pairing.
   without the version, or a version 2 reply to a version 3 request, is not a
   version 3 answer and a client MUST refuse it.
 - ~ping~ at version 3 answers ~capabilities~. The tokens this version defines are
-  ~pane_identity~, ~cancel~ and ~subscribe~; ~delivery_reconcile~ keeps its version
+  ~pane_identity~, ~cancel~, ~subscribe~ and ~release~; ~delivery_reconcile~ keeps its version
   2 meaning. A client MUST NOT send a command whose token is absent and fails closed
   instead (~ping.missing_tokens.json~). Unknown well-formed extra tokens are
   admissible.
 - A version 2 request naming a command that exists only in version 3 (~subscribe~,
-  ~cancel~, or ~status~) is refused by the daemon with ~unsupported_command~ in a
+  ~cancel~, ~status~ or ~release~) is refused by the daemon with ~unsupported_command~ in a
   version 2 reply that echoes ~cmd~ and any ~msg_id~ / ~pane_id~ the request carried.
   The refusal has no side effect: no subscription opens, no receipt changes, nothing
   is pasted, and it never hangs. The pairs ~v2_request.subscribe.json~ /
   ~v2_reply.subscribe.unsupported_command.json~ and ~v2_request.cancel.json~ /
-  ~v2_reply.cancel.unsupported_command.json~ show it. These four files, and the
+  ~v2_reply.cancel.unsupported_command.json~ show it, and so do the example pair
+  ~v2_request.release.json~ / ~v2_reply.release.unsupported_command.json~. These six files, and the
   ~request~ / ~reply~ inside the ~scenario.*~ files, are the only version 2 bytes in
   this set.
 - ~send~ and ~reconcile~ keep their version 2 requests, grammars and refusals.
@@ -147,7 +151,7 @@ here are unchanged by the pairing.
   receipt or the state of a registered pane -- ~send~ results and duplicates,
   ~reconcile~ outcomes that carry a receipt view (~delivered~, ~queued~,
   ~ambiguous~, ~cancelled~), ~cancel~ outcomes that carry a receipt view
-  (~cancelled~, ~too_late~, ~ambiguous~), successful ~status~, every snapshot entry
+  (~cancelled~, ~too_late~, ~ambiguous~), successful ~status~ and ~release~, every snapshot entry
   and every pane or registration event. Replies that name no registration omit it:
   ~reconcile~ and ~cancel~ ~absent~ and ~conflict~ (no stored record, or the caller's
   identities only), every refusal (~ok: false~, for example ~pane_not_found~ and
@@ -172,6 +176,59 @@ here are unchanged by the pairing.
   ~pane_identity_unavailable~ (above).
 - It is a per-pane read. The registry-wide read and its JSON shape are not defined
   here.
+
+** Release
+:PROPERTIES:
+:CUSTOM_ID: release
+:END:
+Specified, not implemented (NS-15.G.003 S3; Charles decisions 49 and 50). A daemon
+advertises ~release~ in its version 3 ~ping~ only when it implements it, in durable
+mode (~ping.ok.identity_core_release.json~); a client MUST NOT send it otherwise.
+
+- Request ~release~ ~{pane_id}~ (~v3_request.release.json~). It applies to a pane the
+  daemon restarted quarantined after a daemon restart.
+- Under the pane's lock the daemon first proves the pane's exact ~pane_identity~
+  (~registration_id~ and ~generation~), exactly as for ~status~. It then replaces the
+  quarantined pane with an unquarantined one bound to that identity. The proof stays
+  valid, and the daemon refuses to revoke it, from before each paste command until
+  tmux acknowledges that command.
+- Restored sends recorded with that exact ~{registration_id, generation}~ are pasted
+  in their original order. Restored sends recorded with no pair, or another pair, are
+  /held/: never pasted, kept and listed, and still counted against queue capacity.
+  No send is finalized or deleted by ~release~.
+- Success (~release.released.json~) answers ~released: true~, ~pane_identity~ and
+  ~counts~ ~{matched, held}~ at the moment of release. It reports the decision, not
+  delivery; each send's outcome is read with ~reconcile~.
+- Delivery guarantee: the guarantee ends at each paste command's terminal outcome,
+  the exit of the tmux client the daemon started for it. The proof stays valid
+  until that outcome. Three cases are distinct:
+  - exit 0: tmux acknowledged the command; the send is ~delivered~;
+  - any other exit: the command completed without that acknowledgement; the send is
+    ~ambiguous~ and the pane is not held;
+  - no terminal outcome (tmux, the daemon or its store died first): the send is
+    ~ambiguous~ and the pane is held. No further proof, release or paste happens
+    for it until a later decision.
+  An acknowledgement does not confirm that the bytes reached the pane, and this
+  contract claims nothing beyond it.
+- Refusals, each a version 3 reply that echoes ~pane_id~ and carries no
+  ~pane_identity~, and each before this release operation pastes anything:
+  - ~pane_identity_unavailable~: the identity could not be proven
+    (~release.error.pane_identity_unavailable.json~);
+  - ~effect_unresolved~: the pane is held after a paste command with no terminal
+    outcome (~release.error.effect_unresolved.json~);
+  - ~release_fence_unavailable~: the pane's lock is held or a paste command is still
+    in flight (~release.error.release_fence_unavailable.json~);
+  - ~release_stop_failed~: the quarantined pane could not be stopped; it stays
+    quarantined (~release.error.release_stop_failed.json~);
+  - ~release_failed_requarantined~: the unquarantined pane could not be started, and
+    the pane was started quarantined again
+    (~release.error.release_failed_requarantined.json~);
+  - ~release_unstarted~: neither could be started; the pane has no running process
+    and its sends stay queued and listed (~release.error.release_unstarted.json~).
+- Version 2 refuses ~release~ with ~unsupported_command~ (~v2_request.release.json~ /
+  ~v2_reply.release.unsupported_command.json~).
+- A released state does not survive a daemon restart: the pane comes back
+  quarantined and must be released again.
 
 ** Cancel
 :PROPERTIES:
@@ -334,6 +391,12 @@ until they are, no implementation may claim conformance.
 | ~v2_request.cancel.json~                         | client request | version 2 request for ~cancel~                                            |
 | ~v2_reply.subscribe.unsupported_command.json~    | core reply     | its typed version 2 refusal                                               |
 | ~v2_reply.cancel.unsupported_command.json~       | core reply     | its typed version 2 refusal                                               |
+| ~ping.ok.identity_core_release.json~             | example        | version 3 ping of an identity-core daemon that also implements ~release~  |
+| ~v3_request.release.json~                        | example        | version 3 request for ~release~                                           |
+| ~release.released.json~                          | example        | release succeeded: ~pane_identity~ and counts of matched and held sends   |
+| ~release.error.*.json~                           | example        | the six release refusals                                                  |
+| ~v2_request.release.json~                        | example        | version 2 request for ~release~                                           |
+| ~v2_reply.release.unsupported_command.json~      | example        | its typed version 2 refusal                                               |
 | ~scenario.cancelled.*.json~                      | example        | a cancelled receipt read through version 2 reconcile and send             |
 | ~subscribe.pane.snapshot.json~                   | example        | per-pane snapshot                                                         |
 | ~subscribe.all.*.json~                           | example        | all-panes snapshots: ordinary, empty, with a detached entry, unknown state |
