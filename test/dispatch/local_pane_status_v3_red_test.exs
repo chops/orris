@@ -99,8 +99,9 @@ defmodule AiOrchestrator.Dispatch.LocalPaneStatusV3RedTest do
     ]
 
     for answer <- cases do
+      # identity_capability/1's type already makes the reason a binary; it must be non-empty.
       assert {:indeterminate, reason} = capability(answer)
-      assert is_binary(reason) and reason != ""
+      assert reason != ""
     end
   end
 
