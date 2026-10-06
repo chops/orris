@@ -212,6 +212,33 @@ bytes of producer material would leave the pin's scope. The pin stays whole.
 Since 2026-09-30 its fixture is in the seventeen-file paired set, shipped by
 Orrisd ~b79863cdbffec41038e20996722c8cd6e9e3573f~.
 
+*** Next paired send refusals: queue and payload store (specified 2026-10-06)
+:PROPERTIES:
+:CUSTOM_ID: next-paired-send-refusals-queue-and-payload-store
+:END:
+Three more v2 send refusals are specified here as the NEXT paired replies. Their
+fixtures are not yet in the paired set: the inventory, count and pins above are
+unchanged until the producer ships them and this document re-pairs, as was done
+for ~send.error.pane_quarantined.json~.
+
+| Fixture                                   | Meaning |
+|-------------------------------------------+---------|
+| ~send.error.queue_full.json~              | The pane's bounded queue is full. The send was admitted and is then refused before any paste; its attempt is recorded ~not_delivered~, so a later reconcile answers ~absent~ with that attempt. Echoes ~msg_id~ and ~pane_id~. Already emitted by the producer; this fixture closes a gap, since v1 has one and v2 did not. |
+| ~send.error.payload_store_full.json~      | The send was to be queued, but the producer's bounded store for queued prompt bytes is at its object or byte limit. Refused before any queued receipt and before any paste; the attempt is recorded ~not_delivered~ (a later reconcile answers ~absent~). Echoes ~msg_id~ and ~pane_id~. |
+| ~send.error.payload_store_unavailable.json~ | The send was to be queued, but the producer could not durably and safely store its prompt bytes (an I/O failure, or an unsafe store directory). Refused before any queued receipt and before any paste; the attempt is recorded ~not_delivered~ when the receipt store can still record it. Echoes ~msg_id~ and ~pane_id~. |
+
+Each reply is ~%{ok: false, error: <word>, protocol_version: 2, msg_id, pane_id}~.
+None of the three is ever an answer about delivery: a client MUST NOT read any of
+them as ~delivered~ or ~queued~, and they never authorize the client to infer
+that bytes reached the pane.
+
+This consumer's closed refusal vocabulary is unchanged. ~queue_full~ is already
+in it, so a v2 ~queue_full~ reply about this send is the typed refusal
+~dispatch_refused_queue_full~, as it was before this subsection. ~payload_store_full~
+and ~payload_store_unavailable~ are not in it, so this consumer reports them as an
+untyped ~reply_not_ok~, never as ~absent~. Typing those two is a separate consumer
+change and is not made here.
+
 ** Reconcile replies
 :PROPERTIES:
 :CUSTOM_ID: reconcile-replies
