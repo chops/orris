@@ -8,7 +8,8 @@ defmodule AiOrchestrator.Dispatch.LocalPaneStatusV3RedTest do
     unsupported_protocol_version, or a valid version 3 ping lacking pane_identity) or `{:indeterminate, reason}`.
   - `LocalPane.status_v3/2` asks the capability first and reads nothing from a daemon that does not prove it.
 
-  GREEN-only functions are called through apply/3: they do not exist at the RED base.
+  The RED commit reached these GREEN-only functions through apply/3, since they did not exist at its base; from GREEN
+  on they are called directly.
   """
 
   use ExUnit.Case, async: true
@@ -33,9 +34,9 @@ defmodule AiOrchestrator.Dispatch.LocalPaneStatusV3RedTest do
 
   defp json(map, exit \\ 0), do: {"logger noise\n" <> Jason.encode!(map), exit}
 
-  defp status_v3(answer), do: apply(PaneClient, :status_v3, [@pane, opts(answer)])
-  defp capability(answer), do: apply(PaneClient, :identity_capability, [opts(answer)])
-  defp local(answer), do: apply(LocalPane, :status_v3, [@pane, opts(answer)])
+  defp status_v3(answer), do: PaneClient.status_v3(@pane, opts(answer))
+  defp capability(answer), do: PaneClient.identity_capability(opts(answer))
+  defp local(answer), do: LocalPane.status_v3(@pane, opts(answer))
 
   defp ping(fields), do: Map.merge(%{"ok" => true, "protocol_version" => 3, "pong" => "0.1.0"}, fields)
 
