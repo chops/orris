@@ -166,6 +166,65 @@ defmodule AiOrchestrator.Dispatch.PaneClient do
     end
   end
 
+  @doc """
+  One version 3 `status` read (NS-15.G.002 B1c; ipc-v3.org "Status"): `ap status <pane_ref> --protocol-version 3`.
+  The answer is the reply's own bytes for `AiOrchestrator.Dispatch.V3Status.decode/2` to type, a typed refusal included
+  at any exit status; output holding no JSON object is the undifferentiated ap failure, never the daemon's text.
+  """
+  @spec status_v3(String.t(), keyword()) :: {:ok, binary()} | {:error, map()}
+  def status_v3(pane_ref, opts \\ []) when is_binary(pane_ref) do
+    with {:ok, {output, exit_status}} <-
+           run_ap_raw(["status", pane_ref, "--protocol-version", "3"], Keyword.delete(opts, :input)) do
+      # success only at exit 0; at any other exit only a framed typed refusal (ok false with an error) is answered
+      case {decode_last_json(output), exit_status} do
+        {{:ok, %{} = reply}, 0} -> {:ok, Jason.encode!(reply)}
+        {{:ok, %{"ok" => false, "error" => error} = reply}, _exit} when is_binary(error) -> {:ok, Jason.encode!(reply)}
+        _other -> ap_failure(output, exit_status)
+      end
+    end
+  end
+
+  @doc """
+  Whether the daemon serves the version 3 identity core, from one `ap ping --protocol-version 3`:
+
+    * `:capable` -- ok, protocol_version 3, a valid capabilities list naming `pane_identity`;
+    * `:not_capable` -- PROVEN only: a typed refusal `unsupported_protocol_version`, or a valid version 3 ping whose
+      valid capabilities list lacks `pane_identity`;
+    * `{:indeterminate, reason}` -- anything else (an ap failure, no object, a missing or malformed list, an ok reply
+      at another version, any other refusal). An indeterminate answer is never read as either of the others.
+  """
+  @spec identity_capability(keyword()) :: :capable | :not_capable | {:indeterminate, String.t()}
+  def identity_capability(opts \\ []) do
+    case run_ap_raw(["ping", "--protocol-version", "3"], Keyword.delete(opts, :input)) do
+      {:ok, {output, exit_status}} -> output |> decode_last_json() |> capability(exit_status)
+      {:error, _reason} -> {:indeterminate, "ap_unavailable"}
+    end
+  rescue
+    _error -> {:indeterminate, "ap_unavailable"}
+  catch
+    :exit, _reason -> {:indeterminate, "ap_unavailable"}
+  end
+
+  # An ok answer counts only at exit 0; the proven typed refusal must name version 3 (the producer echoes the request).
+  defp capability({:ok, %{"ok" => true}}, exit_status) when exit_status != 0, do: {:indeterminate, "exit_status"}
+
+  defp capability({:ok, %{"ok" => true, "protocol_version" => 3, "capabilities" => tokens}}, 0) when is_list(tokens) do
+    cond do
+      not AiOrchestrator.Dispatch.valid_capabilities?(tokens) -> {:indeterminate, "capabilities_invalid"}
+      "pane_identity" in tokens -> :capable
+      true -> :not_capable
+    end
+  end
+
+  defp capability({:ok, %{"ok" => true, "protocol_version" => 3}}, 0), do: {:indeterminate, "capabilities_missing"}
+  defp capability({:ok, %{"ok" => true}}, 0), do: {:indeterminate, "protocol_version"}
+
+  defp capability({:ok, %{"ok" => false, "error" => "unsupported_protocol_version", "protocol_version" => 3}}, _exit),
+    do: :not_capable
+
+  defp capability({:ok, %{"ok" => false}}, _exit), do: {:indeterminate, "refused"}
+  defp capability(_no_object, _exit), do: {:indeterminate, "ap_failed"}
+
   defp status_reply({:ok, %{"ok" => false, "error" => code} = reply}, _output, _exit_status, pane_ref)
        when code in @typed_status_refusals do
     with :ok <- status_echo(reply, pane_ref), do: {:error, %{"reason" => code}}

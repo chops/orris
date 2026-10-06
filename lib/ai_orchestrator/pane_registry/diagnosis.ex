@@ -25,7 +25,8 @@ defmodule AiOrchestrator.PaneRegistry.Diagnosis do
     "unregistered" => ["pane_status_v1", "status_v3"],
     "contradictory" => ["status_v3"],
     "daemon_unavailable" => ["pane_status_v1", "status_v3"],
-    "live_holder" => ["file_registry_claim"]
+    "live_holder" => ["file_registry_claim"],
+    "quarantined" => ["status_v3"]
   }
   @attr_keys ~w(trigger pane_ref daemon_pane_id holder observed_daemon_state next_action)
 

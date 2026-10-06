@@ -8,23 +8,27 @@
 :PROPERTIES:
 :CUSTOM_ID: implementation-status
 :END:
-Specified, not implemented. Neither the consumer in this repository nor the
-producer (the ai-pair daemon, Orrisd) speaks version 3 yet, and no client may send
-a version 3 request until the daemon advertises the capability tokens below in a
-version 3 ~ping~. Version 2 (~ipc-v2.org~) is unchanged and stays the wire for
-every existing client; a daemon serves both versions side by side.
+The identity core below is implemented on both sides and paired (see
+"Pairing"): the producer (the ai-pair daemon, Orrisd, at the paired revision)
+serves it, and the consumer in this repository reads version 3 ~status~ for its
+claim checks (NS-15.G.002 B1c). ~cancel~ and ~subscribe~ remain specified and NOT
+implemented on either side. No client may send a version 3 request until the
+daemon advertises the capability tokens below in a version 3 ~ping~. Version 2
+(~ipc-v2.org~) is unchanged and stays the wire for every existing client; a daemon
+serves both versions side by side. An installed daemon older than the paired
+revision does not speak version 3; installing the paired pair is a separate,
+held step, and until then this consumer refuses identity-gated claims against
+such a daemon rather than downgrading them.
 
 The fixture bytes in ~test/fixtures/contracts/ipc/v3/~ are the version 3 shapes
 this repository pins, with their ~CONTRACT_HASH~ computed under the v1 hash rule
 (see ~ipc-v1.org~), checked by ~test/contracts/ipc_v3_contract_hash_test.exs~.
-They are written from this text, not frames captured from a daemon, and each
-belongs to one of the classes below. The producer owns the frames: when it
-implements the identity core it vendors this document verbatim and replaces each
-/core reply/ file with the byte-identical frame its real implementation produces,
-or this text changes first. A /client request/ file is never replaced; it becomes
-an exercised request as described under its class. An /example/ file is not
-replaced by that implementation and stays shape only. Until a pairing records
-produced frames, the set proves shape agreement only.
+Each belongs to one of the classes below. The /core reply/ files are the frames
+the paired producer emits from its real dispatch path (placeholders aside, and
+compared after decoding); the bytes here did not change at pairing. The two
+/client request/ files are exercised unchanged by the paired producer. The
+/example/ files are written from this text and stay shape only until the feature
+that would produce them is implemented and this text changes first.
 
 *** Identity core
 The first producer implements a bounded subset, the /identity core/: ~ping~,
@@ -61,12 +65,21 @@ What version 3 adds, and why each piece exists:
 :PROPERTIES:
 :CUSTOM_ID: pairing
 :END:
-Not yet paired. The producer vendors this document between ~BEGIN VENDORED~ /
-~END VENDORED~ markers when it adopts version 3, as it does for version 2, and the
-reciprocal ~paired_*~ block is added here in that re-pairing. Until then no
-statement in this file is a claim about any producer revision. A pairing of the
-identity core claims only the /core reply/ files and the /client request/ files it
-exercised; every /example/ file stays unclaimed.
+Paired for the identity core only (NS-15.G.002 B1c). The producer vendored this
+document at revision ~6bb62f3e~ between ~BEGIN VENDORED~ / ~END VENDORED~ markers
+and produces the frames below from its real dispatch path; this block is the
+reciprocal half. It claims only the /core reply/ files and the /client request/
+files that producer exercised; every /example/ file stays unclaimed.
+
+- paired_repository: =orrisd=
+- paired_revision: =0a6db8b4688813e625425a9792094b4bbdcd6a08=
+- paired_source_revision: =6bb62f3e47c48ebcb29cb5c8f8d590cc18fd2ba0=
+- paired_produced: =ping.ok.identity_core.json send.sent.json send.queued.json status.ok.json status.quarantined.json status.error.pane_not_found.json reconcile.queued.json reconcile.delivered.json status.error.pane_identity_unavailable.json send.error.pane_identity_unavailable.json reconcile.error.pane_identity_unavailable.json v2_reply.subscribe.unsupported_command.json v2_reply.cancel.unsupported_command.json=
+- paired_exercised_requests: =v2_request.subscribe.json v2_request.cancel.json=
+
+The producer compares decoded frames with these files after substituting the
+placeholders (~contract_v3_fixture_test.exs~ at the paired revision), so the bytes
+here are unchanged by the pairing.
 
 ** Framing and version
 :PROPERTIES:

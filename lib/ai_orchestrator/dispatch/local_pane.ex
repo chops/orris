@@ -194,6 +194,23 @@ defmodule AiOrchestrator.Dispatch.LocalPane do
     Keyword.get(opts, :pane_client, PaneClient).status(pane_ref, opts)
   end
 
+  @doc """
+  One version 3 status read for `pane_ref` (NS-15.G.002 B1c). Exporting this is what turns on PaneCheck's version 3
+  claim checks. The daemon's identity capability is asked first, and nothing is read from a daemon that does not
+  prove it: a PROVEN non-capable daemon answers `status_v3_unavailable` (the one answer claim time may take as
+  "no version 3"); an indeterminate capability answers `identity_capability_<reason>`, which is never a downgrade.
+  """
+  @spec status_v3(String.t(), keyword()) :: {:ok, binary()} | {:error, map()}
+  def status_v3(pane_ref, opts) when is_binary(pane_ref) do
+    pane_client = Keyword.get(opts, :pane_client, PaneClient)
+
+    case pane_client.identity_capability(opts) do
+      :capable -> pane_client.status_v3(pane_ref, opts)
+      :not_capable -> {:error, %{"reason" => "status_v3_unavailable"}}
+      {:indeterminate, reason} -> {:error, %{"reason" => "identity_capability_" <> reason}}
+    end
+  end
+
   # The declared capability is obtained from the daemon on this invocation. Unknown
   # well-formed wire capabilities are additive; Dispatch validates the result before
   # deciding whether its required capability is present.

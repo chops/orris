@@ -1,7 +1,7 @@
 defmodule AiOrchestrator.Dispatch.V3Status do
   @moduledoc """
   Decoder for a version 3 `status {pane_id}` reply (NS-15.G.005 B3b, docs/contracts/ipc-v3.org "Pane identity" and
-  "Status"). Consumer side only: no producer emits version 3 yet.
+  "Status"). The paired producer (Orrisd, the identity core) emits these replies; PaneClient.status_v3/2 reads them.
 
   - An ok status answers `{:ok, %{"state", "quarantined", "queue_depth", "pane_pid", "pane_identity"}}`, where
     `pane_identity` is exactly `%{"pane_id", "registration_id", "generation"}` and `generation` stays a string.

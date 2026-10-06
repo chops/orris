@@ -159,6 +159,9 @@ defmodule AiOrchestrator.Dispatch.LocalPaneArtifactFifoTest do
 
   defmodule IdlePane do
     @moduledoc false
+    # NS-15.G.002 B1c: this double serves no version 3 identity core (proven), so claim checks stay on version 1
+    def identity_capability(_opts), do: :not_capable
+
     def status(_pane_ref, _opts), do: {:ok, %{"state" => "idle", "pending_count" => 0}}
   end
 

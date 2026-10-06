@@ -49,6 +49,9 @@ defmodule AiOrchestrator.CLIPaneCheckRedTest do
     @moduledoc false
     alias AiOrchestrator.CLIPaneCheckRedTest.Witness
 
+    # NS-15.G.002 B1c: this double serves no version 3 identity core (proven), so claim checks stay on version 1
+    def identity_capability(_opts), do: :not_capable
+
     def status(pane_ref, opts) do
       Witness.bump(:status)
       {bytes, exit_status} = Witness.reply().(pane_ref)

@@ -31,7 +31,14 @@ defmodule AiOrchestrator.Prepare.PaneCheck do
       "code" => "inspect_identity_mismatch",
       "text" => "the daemon's pane identity differs from the claim's; inspect the pane registration, then retry"
     },
-    "live_holder" => %{"code" => "wait_for_holder", "text" => "wait for the holding run to release the pane"}
+    "live_holder" => %{"code" => "wait_for_holder", "text" => "wait for the holding run to release the pane"},
+    # NS-15.G.002 B1c: release of a quarantined pane is a held, separately reviewed step, so nothing here offers one
+    "quarantined" => %{
+      "code" => "quarantine_held",
+      "text" =>
+        "the daemon holds this pane quarantined after a restart; no release is available (release is a held, " <>
+          "separately reviewed step); do not retry until an operator review clears the pane"
+    }
   }
 
   @type refusal :: (-> map())
@@ -102,7 +109,9 @@ defmodule AiOrchestrator.Prepare.PaneCheck do
     end
   end
 
+  # after an identity match: dead, then quarantined (B1 design r5 precedence: mismatch > dead > quarantined)
   defp matched(%{"state" => "dead"} = status), do: {"dead", observed_v3(status)}
+  defp matched(%{"quarantined" => true} = status), do: {"quarantined", observed_v3(status)}
   defp matched(%{"state" => state}), do: {:healthy, "status_v3", state}
 
   defp observed_v3(status) do
@@ -132,25 +141,47 @@ defmodule AiOrchestrator.Prepare.PaneCheck do
     end
   end
 
+  # NS-15.G.002 B1c: a daemon PROVEN not to serve the identity core ("status_v3_unavailable", only from the dispatch's
+  # capability check) on the FIRST pane read leaves the claim a legacy one ({:ok, nil}), as before version 3 existed.
+  # That is the only downgrade: the same answer after an earlier pane read as capable, an indeterminate capability, and
+  # every other error or refusal refuse the run.
   defp read_identities(pane_refs, dispatch, registry, opts) do
     dispatch_opts = Keyword.get(opts, :dispatch_opts, [])
 
-    Enum.reduce_while(pane_refs, {:ok, %{}}, fn pane_ref, {:ok, identities} ->
+    pane_refs
+    |> Enum.with_index()
+    |> Enum.reduce_while({:ok, %{}}, fn {pane_ref, index}, {:ok, identities} ->
       case claim_time_status(dispatch, pane_ref, dispatch_opts) do
-        {:identity, identity} -> {:cont, {:ok, Map.put(identities, pane_ref, identity)}}
-        {trigger, observed} -> {:halt, {:refuse, fn -> preclaim(pane_ref, trigger, observed, registry, opts) end}}
+        {:identity, identity} ->
+          {:cont, {:ok, Map.put(identities, pane_ref, identity)}}
+
+        :not_capable when index == 0 ->
+          {:halt, {:ok, nil}}
+
+        :not_capable ->
+          refuse_preclaim(pane_ref, {"daemon_unavailable", unavailable("status_v3_unavailable")}, registry, opts)
+
+        refusal ->
+          refuse_preclaim(pane_ref, refusal, registry, opts)
       end
     end)
   end
 
+  defp refuse_preclaim(pane_ref, {trigger, observed}, registry, opts),
+    do: {:halt, {:refuse, fn -> preclaim(pane_ref, trigger, observed, registry, opts) end}}
+
   defp claim_time_status(dispatch, pane_ref, dispatch_opts) do
     case read_status_v3(dispatch, pane_ref, dispatch_opts) do
       {:ok, bytes} when is_binary(bytes) -> claim_time_identity(V3Status.decode(bytes, pane_ref))
+      {:error, %{"reason" => "status_v3_unavailable"}} -> :not_capable
       {:error, %{"reason" => reason}} when is_binary(reason) -> {"daemon_unavailable", unavailable(reason)}
       _invalid -> {"daemon_unavailable", unavailable("status_v3_invalid")}
     end
   end
 
+  # no prior identity to compare at claim time: a dead pane, then a quarantined one, refuses before any identity is kept
+  defp claim_time_identity({:ok, %{"state" => "dead"} = status}), do: {"dead", observed_v3(status)}
+  defp claim_time_identity({:ok, %{"quarantined" => true} = status}), do: {"quarantined", observed_v3(status)}
   defp claim_time_identity({:ok, %{"pane_identity" => identity}}), do: {:identity, identity}
   defp claim_time_identity(other), do: refused_v3(other)
 
@@ -165,6 +196,7 @@ defmodule AiOrchestrator.Prepare.PaneCheck do
   # a decoded version 3 answer without a usable identity, the same at claim time and after the claim
   defp refused_v3({:refused, "pane_not_found"}), do: {"unregistered", status_v3("not_found")}
   defp refused_v3({:refused, reason}), do: {"daemon_unavailable", unavailable(reason)}
+
   defp refused_v3({:error, :reply_identity, detail}), do: {"daemon_unavailable", unavailable("reply_identity:" <> detail)}
 
   defp status_v3(state), do: %{"source" => "status_v3", "observed_at" => now(), "state" => state}
@@ -222,7 +254,9 @@ defmodule AiOrchestrator.Prepare.PaneCheck do
   end
 
   defp classify({:ok, %{"state" => "dead"}}), do: {"dead", status_v1("dead")}
+
   defp classify({:ok, %{"state" => state}}) when is_binary(state) and state != "", do: {:healthy, "pane_status_v1", state}
+
   defp classify({:error, %{"reason" => "pane_dead"}}), do: {"dead", status_v1("dead")}
   defp classify({:error, %{"reason" => "pane_not_found"}}), do: {"unregistered", status_v1("not_found")}
 
@@ -276,7 +310,9 @@ defmodule AiOrchestrator.Prepare.PaneCheck do
   end
 
   # the triggers a healthy read verifies gone: only a version 3 read can verify an identity (contradictory)
-  defp verified_triggers("status_v3"), do: ["dead", "unregistered", "daemon_unavailable", "contradictory"]
+  defp verified_triggers("status_v3"),
+    do: ["dead", "unregistered", "daemon_unavailable", "contradictory", "quarantined"]
+
   defp verified_triggers("pane_status_v1"), do: ["dead", "unregistered", "daemon_unavailable"]
 
   defp unpersisted(persistence), do: fn -> %{"reason" => @refused, "persistence" => persistence} end

@@ -20,6 +20,9 @@ defmodule AiOrchestrator.Dispatch.LocalPaneTest do
        %{"ok" => true, "protocol_version" => 2, "status" => "sent", "msg_id" => opts[:message_id], "pane_id" => pane_ref}}
     end
 
+    # NS-15.G.002 B1c: this double serves no version 3 identity core (proven), so claim checks stay on version 1
+    def identity_capability(_opts), do: :not_capable
+
     def status(pane_ref, opts) do
       case Keyword.get(opts, :pane_status_reader) do
         nil -> {:ok, Keyword.get(opts, :pane_status, %{"state" => "idle", "pane_ref" => pane_ref, "pending_count" => 0})}
@@ -241,6 +244,9 @@ defmodule AiOrchestrator.Dispatch.LocalPaneTest do
            %{"ok" => true, "protocol_version" => 2, "outcome" => "absent", "msg_id" => message_id, "pane_id" => pane_ref}}
 
       def send(_pane_ref, _prompt, opts), do: {:ok, Keyword.fetch!(opts, :send_reply)}
+      # NS-15.G.002 B1c: this double serves no version 3 identity core (proven), so claim checks stay on version 1
+      def identity_capability(_opts), do: :not_capable
+
       def status(pane_ref, _opts), do: {:ok, %{"state" => "idle", "pane_ref" => pane_ref, "pending_count" => 0}}
       def capabilities(_opts), do: {:ok, ["delivery_reconcile"]}
     end

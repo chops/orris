@@ -79,6 +79,9 @@ defmodule AiOrchestrator.Run.DeliveryDeadlineBaselineTest do
     alias FakePaneClient, as: Fake
 
     def capabilities(opts), do: Fake.capabilities(opts)
+    # NS-15.G.002 B1c: this double serves no version 3 identity core (proven), so claim checks stay on version 1
+    def identity_capability(_opts), do: :not_capable
+
     def status(pane_ref, opts), do: Fake.status(pane_ref, opts)
 
     def reconcile(pane_ref, message_id, opts) do
@@ -188,6 +191,9 @@ defmodule AiOrchestrator.Run.DeliveryDeadlineBaselineTest do
     alias FakePaneClient, as: Fake
 
     def capabilities(opts), do: Fake.capabilities(opts)
+    # NS-15.G.002 B1c: this double serves no version 3 identity core (proven), so claim checks stay on version 1
+    def identity_capability(_opts), do: :not_capable
+
     def status(pane_ref, opts), do: Fake.status(pane_ref, opts)
 
     def reconcile(pane_ref, message_id, opts) do
@@ -260,6 +266,9 @@ defmodule AiOrchestrator.Run.DeliveryDeadlineBaselineTest do
     alias FakePaneClient, as: Fake
 
     def capabilities(opts), do: Fake.capabilities(opts)
+    # NS-15.G.002 B1c: this double serves no version 3 identity core (proven), so claim checks stay on version 1
+    def identity_capability(_opts), do: :not_capable
+
     def status(pane_ref, opts), do: Fake.status(pane_ref, opts)
     defdelegate reconcile(pane_ref, message_id, opts), to: AuthorityPane
 

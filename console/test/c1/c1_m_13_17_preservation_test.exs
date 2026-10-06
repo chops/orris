@@ -243,7 +243,7 @@ defmodule C1.MutationPreservationTest do
     # Also the NS-15.G.003 S1-C C3 delivery: three v2 store-refusal fixtures and their hash/pairing pins (test only).
     # Also the adapter-conformance fix: the reconcile-export row loads the adapter before function_exported?.
     # Also the NS-15.G.002 B1-K contract amendment: v3 identity core, pane_identity_unavailable, fixture classes.
-    # Also the NS-15.G.002 B1c RED rows: version 3 status read, capability classes, quarantine, pairing (test only).
+    # Also the NS-15.G.002 B1c delivery: the version 3 status read, capability classes, quarantine refusal, pairing.
     # Pin root entries so another core commit cannot silently pass. A later authorized core delivery must update
     # this snapshot explicitly in its review. Console files are outside the
     # snapshot, avoiding a self-referential commit id.
@@ -253,11 +253,11 @@ defmodule C1.MutationPreservationTest do
     040000 tree 184e6738fe4406a4c5ff36196d69979f7388fff6\tbin
     100644 blob cfbb9f900c6f1442d2552baa0063cff01b270413\tflake.lock
     100644 blob e3519e9f14713db05ba5a58213726b67b8ecc0f0\tflake.nix
-    040000 tree b8100d70d20a868a92df313762bc39bfd970f155\tlib
+    040000 tree d02afdb21851f51c01b2ca6165d8c7c1532e6fc9\tlib
     100644 blob 6f8544e74c5907bebfdba64381e9320b07fcd7e3\tmix.exs
     100644 blob 0575c59cd4c68075227b8e9f11476fd3fd9bc85e\tmix.lock
     040000 tree de1293b8faa71d7fd58a3418d1574c9b589af1d5\tnative
-    040000 tree 0f0c64d196868c5fa94b1c2b88eb46a7680c5f4c\ttest
+    040000 tree 45eaaa2d959e1936a0dc1eebee7025f9c9194302\ttest
     """
 
     {committed, 0} = System.cmd("git", ["ls-tree", "HEAD", "--"] ++ core_paths, cd: Harness.core_path())
