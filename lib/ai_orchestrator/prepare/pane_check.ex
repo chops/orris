@@ -310,8 +310,7 @@ defmodule AiOrchestrator.Prepare.PaneCheck do
   end
 
   # the triggers a healthy read verifies gone: only a version 3 read can verify an identity (contradictory)
-  defp verified_triggers("status_v3"),
-    do: ["dead", "unregistered", "daemon_unavailable", "contradictory", "quarantined"]
+  defp verified_triggers("status_v3"), do: ["dead", "unregistered", "daemon_unavailable", "contradictory", "quarantined"]
 
   defp verified_triggers("pane_status_v1"), do: ["dead", "unregistered", "daemon_unavailable"]
 
