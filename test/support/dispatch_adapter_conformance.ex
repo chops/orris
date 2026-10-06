@@ -244,6 +244,11 @@ defmodule AiOrchestrator.Test.DispatchAdapterConformance do
     quote do
       describe "#{inspect(@conformance_adapter)} conformance: the reconcile union" do
         test "reconcile/2 is exported by an adapter whose capability set declares delivery_reconcile" do
+          # function_exported?/3 answers false for a module not yet loaded, so load it
+          # first: otherwise this row depends on whether an earlier test happened to load
+          # the adapter (Orris main run 37434612609).
+          Code.ensure_loaded!(@conformance_adapter)
+
           assert function_exported?(@conformance_adapter, :reconcile, 2),
                  "declaring delivery_reconcile without implementing reconcile/2 is a capability the adapter cannot honour"
         end
