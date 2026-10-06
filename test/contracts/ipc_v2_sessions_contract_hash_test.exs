@@ -11,7 +11,7 @@ defmodule AiOrchestrator.Contracts.IpcV2SessionsContractHashTest do
   through `Delivery.dispatch`, so a sessions example placed there would be driven down the
   delivery route on vendoring, which is the wrong producer path. The consumer tests here
   select `send.*` and `reconcile.*` by glob and would not do that; the rationale is
-  cross-repository. The delivery fixtures (seventeen since the 2026-09-30 re-pairing) and
+  cross-repository. The delivery fixtures (twenty since the 2026-10-06 re-pairing) and
   the twelve sessions examples are two distinct inventories and are never merged.
 
   The adoption this module records is a NAMED HISTORICAL SNAPSHOT. At the producer
@@ -59,9 +59,9 @@ defmodule AiOrchestrator.Contracts.IpcV2SessionsContractHashTest do
   # the paired set, held here to the bytes of the NAMED producer snapshot the pairing block
   # names: this lane adopted a measured producer, it did not predict one
   @paired_dir Path.expand("../fixtures/contracts/ipc/v2", __DIR__)
-  @paired_hash "56682bc16bd07dadbd8aa43dfda9ef7ecc84674c1a091279f337b1b16c5ad77f"
+  @paired_hash "f23caceb6ae106238da82f35e469f022f18c24b1296c78c3f96021eb15dc8497"
   @paired_capabilities ["delivery_reconcile", "sessions_read"]
-  @paired_snapshot "b79863cdbffec41038e20996722c8cd6e9e3573f"
+  @paired_snapshot "ff96001878a94401948bb3999683bdfc84c31dff"
   # the snapshot the sessions examples were adopted at; it stays when the pairing moves
   @adopted_snapshot "7e5f5321821cbea7193bd966b39b357d9acf09bd"
 
@@ -254,7 +254,7 @@ defmodule AiOrchestrator.Contracts.IpcV2SessionsContractHashTest do
 
     # the twelve stay twelve: adoption did not move an example into the delivery inventory
     assert length(@expected_files) == 12
-    assert @paired_dir |> json_paths() |> length() == 17
+    assert @paired_dir |> json_paths() |> length() == 20
   end
 
   defp json_paths(dir), do: dir |> Path.join("*.json") |> Path.wildcard() |> Enum.sort()

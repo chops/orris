@@ -25,6 +25,11 @@ defmodule AiOrchestrator.Dispatch.IpcV2SendReplyTest do
     "send.duplicate.ambiguous.json" => {:error, "dispatch_reconcile_ambiguous"},
     "send.error.conflict.json" => {:error, "dispatch_refused_conflict"},
     "send.error.pane_quarantined.json" => {:error, "dispatch_refused_pane_quarantined"},
+    # NS-15.G.003 S1-C (Option A): queue_full is in the closed send vocabulary and is typed; the two
+    # payload-store words are not, so they stay the untyped reply_not_ok (never absent, never delivered).
+    "send.error.queue_full.json" => {:error, "dispatch_refused_queue_full"},
+    "send.error.payload_store_full.json" => {:error, "reply_not_ok"},
+    "send.error.payload_store_unavailable.json" => {:error, "reply_not_ok"},
     "send.error.missing_msg_id.json" => {:error, "dispatch_request_rejected"}
   }
 
