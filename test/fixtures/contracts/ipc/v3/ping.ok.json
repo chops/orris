@@ -1,1 +1,1 @@
-{"capabilities":["cancel","delivery_reconcile","pane_identity","release","sessions_read","subscribe"],"ok":true,"pong":"<version>","protocol_version":3}
+{"capabilities":["cancel","delivery_reconcile","pane_identity","quiesce","release","sessions_read","subscribe"],"ok":true,"pong":"<version>","protocol_version":3}

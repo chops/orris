@@ -1,0 +1,1 @@
+{"capabilities":["delivery_reconcile","pane_identity","quiesce","release","sessions_read"],"fence_id":"<fence_id>","ok":true,"pong":"<version>","protocol_version":3,"quiesced":true}

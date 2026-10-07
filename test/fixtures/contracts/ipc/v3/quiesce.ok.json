@@ -1,0 +1,1 @@
+{"fence_id":"<fence_id>","observation":{"effects":{"unresolved_holds":0,"version":1},"lineage":{"attested":true,"version":1},"pane_intent":{"live_panes":2,"version":"2.0"},"payloads":{"layouts":[1]},"receipts":{"pending":0,"queued":0,"versions":[1,2,3]},"session_marker":{"version":1}},"ok":true,"protocol_version":3,"quiesced":true}

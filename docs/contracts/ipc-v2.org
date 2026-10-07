@@ -261,6 +261,26 @@ and ~payload_store_unavailable~ are not in it, so this consumer reports them as 
 untyped ~reply_not_ok~, never as ~absent~. Typing those two is a separate consumer
 change and is not made here.
 
+*** Next paired send refusal: quiescing (specified 2026-10-07)
+:PROPERTIES:
+:CUSTOM_ID: next-paired-send-refusal-quiescing
+:END:
+Specified for NS-32.M.002 RB-3a; not implemented by any producer yet. While a daemon
+that implements the version 3 quiesce fence (~ipc-v3.org~, "Quiesce") holds a fence,
+it refuses a v2 ~send~ with ~%{ok: false, error: "quiescing", protocol_version: 2,
+msg_id, pane_id}~, before receipt admission and before any paste. The refusal admits
+no NEW receipt and never erases, changes or reclassifies a receipt that already exists
+for that ~msg_id~: a later reconcile answers whatever that pre-existing state answers
+(~absent~ only if there was no receipt before the refused send). Only such a daemon
+emits it. It is never an answer about delivery.
+
+Its fixture (~send.error.quiescing.json~) is not yet in the paired set: the
+twenty-file set, its count and its pins above are unchanged until a producer ships
+the refusal and this document re-pairs, as for the refusals in the previous
+subsection. Until then the bytes are shown by the version 3 example
+~v2_reply.send.quiescing.json~. This consumer's closed refusal vocabulary is
+unchanged: it reports ~quiescing~ as an untyped ~reply_not_ok~, never as ~absent~.
+
 ** Reconcile replies
 :PROPERTIES:
 :CUSTOM_ID: reconcile-replies

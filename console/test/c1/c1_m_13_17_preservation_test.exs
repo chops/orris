@@ -248,6 +248,8 @@ defmodule C1.MutationPreservationTest do
     # Also the NS-15.G.003 S3a reciprocal pairing: the release-capable ping is the paired core reply (test only).
     # Also the NS-32.M.001 RB-1K contract amendment: the build_identity token, object and example fixtures (test only).
     # Also the NS-32.M.001 RB-1 reciprocal pairing P1: the build-identity ping is a paired core reply (test only).
+    # Also the NS-32.M.002 RB-3a-K contract amendment: the specified quiesce and resume commands, the quiescing
+    # refusals and their example fixtures (test only).
     # Pin root entries so another core commit cannot silently pass. A later authorized core delivery must update
     # this snapshot explicitly in its review. Console files are outside the
     # snapshot, avoiding a self-referential commit id.
@@ -261,7 +263,7 @@ defmodule C1.MutationPreservationTest do
     100644 blob 6f8544e74c5907bebfdba64381e9320b07fcd7e3\tmix.exs
     100644 blob 0575c59cd4c68075227b8e9f11476fd3fd9bc85e\tmix.lock
     040000 tree de1293b8faa71d7fd58a3418d1574c9b589af1d5\tnative
-    040000 tree 51a1908f2561270164e2973aead35ca83982cc07\ttest
+    040000 tree fffdb464cc12594e2a6205aeca5b731e67662f99\ttest
     """
 
     {committed, 0} = System.cmd("git", ["ls-tree", "HEAD", "--"] ++ core_paths, cd: Harness.core_path())

@@ -10,7 +10,9 @@ defmodule AiOrchestrator.Contracts.IpcV3ContractHashTest do
   subscribe remain specified only. Release (NS-15.G.003 S3, Charles decisions 49 and 50) is
   implemented by the paired producer (S3a), whose ping is ping.ok.identity_core_release.json,
   or ping.ok.identity_core_release_build.json when it read a build identity record (RB-1);
-  this consumer does not send it, and its request and reply files remain examples. These
+  this consumer does not send it, and its request and reply files remain examples. Quiesce
+  and resume (NS-32.M.002 RB-3a) and the quiescing refusals of versions 1 to 3 are specified
+  only; all their files are examples. These
   rows check the fixture set, its agreement with the text and the paired block's claims;
   they run no daemon.
 
@@ -24,8 +26,8 @@ defmodule AiOrchestrator.Contracts.IpcV3ContractHashTest do
 
   @fixture_dir Path.expand("../fixtures/contracts/ipc/v3", __DIR__)
   @hash_path Path.join(@fixture_dir, "CONTRACT_HASH")
-  @pinned_hash "56cbc3257efa181fa4c9715528c4d02eb15dcadc4c101d373035c8032f65c592"
-  @expected_fixture_count 59
+  @pinned_hash "e85fba9b4e1f2ce4ffdab2c0450dc81fb93ca428c54fdedd8c2921f36760b882"
+  @expected_fixture_count 77
   @document Path.expand("../../docs/contracts/ipc-v3.org", __DIR__)
   @v2_dir Path.expand("../fixtures/contracts/ipc/v2", __DIR__)
 
@@ -52,11 +54,19 @@ defmodule AiOrchestrator.Contracts.IpcV3ContractHashTest do
     release.error.release_failed_requarantined.json release.error.release_unstarted.json
     v2_request.release.json v2_reply.release.unsupported_command.json
     ping.ok.identity_core_release_build.json ping.ok.identity_core_release_build_dirty.json
+    v3_request.quiesce.json quiesce.ok.json v3_request.resume.json resume.ok.json resume.error.fence_mismatch.json
+    quiesce.error.quiesce_busy.json quiesce.error.quiesce_timeout.json quiesce.error.observation_incomplete.json
+    quiesce.error.invalid_request.json ping.ok.quiesced.json
+    send.error.quiescing.json release.error.quiescing.json v2_reply.send.quiescing.json v1_reply.quiescing.json
+    v2_request.quiesce.json v2_reply.quiesce.unsupported_command.json
+    v2_request.resume.json v2_reply.resume.unsupported_command.json
   )
   @release_refusals ~w(
     pane_identity_unavailable effect_unresolved release_fence_unavailable release_stop_failed
-    release_failed_requarantined release_unstarted
+    release_failed_requarantined release_unstarted quiescing
   )
+  @quiesce_refusals ~w(quiesce_busy quiesce_timeout observation_incomplete invalid_request)
+  @observation_keys ~w(effects lineage pane_intent payloads receipts session_marker)
   # The identity-core classes; every file not named here is an example.
   @core_replies ~w(
     ping.ok.identity_core_release.json ping.ok.identity_core_release_build.json
@@ -117,6 +127,7 @@ defmodule AiOrchestrator.Contracts.IpcV3ContractHashTest do
 
       cond do
         String.starts_with?(name, "v2_") -> assert reply["protocol_version"] == 2, name
+        String.starts_with?(name, "v1_") -> refute Map.has_key?(reply, "protocol_version"), name
         String.starts_with?(name, "scenario.") -> refute Map.has_key?(reply, "protocol_version"), name
         true -> assert reply["protocol_version"] == 3, name
       end
@@ -160,7 +171,7 @@ defmodule AiOrchestrator.Contracts.IpcV3ContractHashTest do
   end
 
   test "each version 3 command named in a version 2 request is refused with a typed, echoing refusal" do
-    for cmd <- ["subscribe", "cancel", "release"] do
+    for cmd <- ["subscribe", "cancel", "release", "quiesce", "resume"] do
       request = decode("v2_request.#{cmd}.json")
       reply = decode("v2_reply.#{cmd}.unsupported_command.json")
 
@@ -226,12 +237,12 @@ defmodule AiOrchestrator.Contracts.IpcV3ContractHashTest do
     assert snap["max_epoch_at_snapshot"] == snap["epoch"]
   end
 
-  test "the identity-core classes partition the set: 14 core replies, 2 client requests, 43 examples" do
+  test "the identity-core classes partition the set: 14 core replies, 2 client requests, 61 examples" do
     examples = names() -- (@core_replies ++ @client_requests)
 
     assert length(Enum.uniq(@core_replies)) == 14
     assert length(Enum.uniq(@client_requests)) == 2
-    assert length(examples) == 43
+    assert length(examples) == 61
     assert Enum.sort(@core_replies ++ @client_requests ++ examples) == names()
 
     for name <- ["ping.ok.json", "ping.missing_tokens.json", "send.sent.no_pane_identity.json"] do
@@ -239,7 +250,8 @@ defmodule AiOrchestrator.Contracts.IpcV3ContractHashTest do
     end
 
     for name <- @core_replies ++ @client_requests,
-        prefix <- ~w(cancel. subscribe. event. subscription_lost. seq. scenario. release. v3_request.) do
+        prefix <-
+          ~w(cancel. subscribe. event. subscription_lost. seq. scenario. release. v3_request. quiesce. resume. v1_) do
       refute String.starts_with?(name, prefix), "#{name} is outside the identity core"
     end
 
@@ -315,12 +327,20 @@ defmodule AiOrchestrator.Contracts.IpcV3ContractHashTest do
              status.error.pane_identity_unavailable.json send.error.pane_identity_unavailable.json
              reconcile.error.pane_identity_unavailable.json ping.ok.identity_core_release.json
              v3_request.release.json release.released.json v2_request.release.json
-             v2_reply.release.unsupported_command.json) do
+             v2_reply.release.unsupported_command.json v3_request.quiesce.json quiesce.ok.json
+             v3_request.resume.json resume.ok.json resume.error.fence_mismatch.json ping.ok.quiesced.json
+             send.error.quiescing.json v2_reply.send.quiescing.json v1_reply.quiescing.json
+             v2_request.quiesce.json v2_reply.quiesce.unsupported_command.json v2_request.resume.json
+             v2_reply.resume.unsupported_command.json) do
       assert String.contains?(document, family), family
     end
 
     for refusal <- @release_refusals do
       assert String.contains?(document, "~release.error.#{refusal}.json~"), refusal
+    end
+
+    for refusal <- @quiesce_refusals do
+      assert String.contains?(document, "~quiesce.error.#{refusal}.json~"), refusal
     end
   end
 
@@ -411,5 +431,114 @@ defmodule AiOrchestrator.Contracts.IpcV3ContractHashTest do
 
     on_disk = for name <- names(), String.starts_with?(name, "release.error."), do: name
     assert Enum.sort(on_disk) == Enum.sort(Enum.map(@release_refusals, &"release.error.#{&1}.json"))
+  end
+
+  test "the quiesce request carries only the resume digest, and success carries the fence id and a six-key observation" do
+    assert decode("v3_request.quiesce.json") == %{
+             "cmd" => "quiesce",
+             "protocol_version" => 3,
+             "resume_hash" => "<resume_hash>"
+           }
+
+    reply = decode("quiesce.ok.json")
+    assert Enum.sort(Map.keys(reply)) == ~w(fence_id observation ok protocol_version quiesced)
+    assert reply["ok"] == true and reply["quiesced"] == true and reply["fence_id"] == "<fence_id>"
+
+    observation = reply["observation"]
+    assert Enum.sort(Map.keys(observation)) == @observation_keys
+
+    assert %{"versions" => versions, "queued" => queued, "pending" => pending} = observation["receipts"]
+    assert map_size(observation["receipts"]) == 3 and Enum.all?(versions, &is_integer/1)
+    assert is_integer(queued) and is_integer(pending)
+    assert %{"version" => intent, "live_panes" => live} = observation["pane_intent"]
+    assert map_size(observation["pane_intent"]) == 2 and is_binary(intent) and is_integer(live)
+    assert %{"version" => effects, "unresolved_holds" => holds} = observation["effects"]
+    assert map_size(observation["effects"]) == 2 and is_integer(effects) and is_integer(holds)
+    assert %{"version" => lineage, "attested" => attested} = observation["lineage"]
+    assert map_size(observation["lineage"]) == 2 and is_integer(lineage) and is_boolean(attested)
+    assert %{"layouts" => layouts} = observation["payloads"]
+    assert map_size(observation["payloads"]) == 1 and Enum.all?(layouts, &is_integer/1)
+    assert %{"version" => marker} = observation["session_marker"]
+    assert map_size(observation["session_marker"]) == 1 and is_integer(marker)
+  end
+
+  test "each quiesce refusal is typed and carries only its stated detail" do
+    details = %{"quiesce_timeout" => ["bound_ms"], "observation_incomplete" => ["dimension"]}
+
+    for refusal <- @quiesce_refusals do
+      reply = decode("quiesce.error.#{refusal}.json")
+      extra = Map.get(details, refusal, [])
+
+      assert Enum.sort(Map.keys(reply)) == Enum.sort(~w(error ok protocol_version) ++ extra), refusal
+      assert reply["ok"] == false and reply["error"] == refusal and reply["protocol_version"] == 3, refusal
+    end
+
+    assert is_integer(decode("quiesce.error.quiesce_timeout.json")["bound_ms"])
+    assert decode("quiesce.error.observation_incomplete.json")["dimension"] in @observation_keys
+
+    on_disk = for name <- names(), String.starts_with?(name, "quiesce.error."), do: name
+    assert Enum.sort(on_disk) == Enum.sort(Enum.map(@quiesce_refusals, &"quiesce.error.#{&1}.json"))
+  end
+
+  test "resume names the fence and the secret; success and the fence_mismatch refusal say nothing else" do
+    assert decode("v3_request.resume.json") == %{
+             "cmd" => "resume",
+             "fence_id" => "<fence_id>",
+             "protocol_version" => 3,
+             "resume_secret" => "<resume_secret>"
+           }
+
+    assert decode("resume.ok.json") == %{"ok" => true, "protocol_version" => 3, "resumed" => true}
+
+    assert decode("resume.error.fence_mismatch.json") == %{
+             "error" => "fence_mismatch",
+             "ok" => false,
+             "protocol_version" => 3
+           }
+  end
+
+  test "quiesced and fence_id appear together and only while quiesced; no ping carries the digest or the secret" do
+    for name <- names(), String.starts_with?(name, "ping."), decode(name)["protocol_version"] == 3 do
+      ping = decode(name)
+      assert Map.has_key?(ping, "quiesced") == Map.has_key?(ping, "fence_id"), name
+      refute Map.has_key?(ping, "resume_hash") or Map.has_key?(ping, "resume_secret"), name
+    end
+
+    quiesced = decode("ping.ok.quiesced.json")
+    plain = decode("ping.ok.identity_core_release.json")
+
+    assert quiesced["quiesced"] == true and quiesced["fence_id"] == "<fence_id>"
+
+    assert quiesced
+           |> Map.drop(["quiesced", "fence_id"])
+           |> Map.update!("capabilities", &(&1 -- ["quiesce"])) == plain
+
+    assert "quiesce" in decode("ping.ok.json")["capabilities"]
+    refute "quiesce" in plain["capabilities"]
+  end
+
+  test "the version 2 quiescing rule preserves an existing receipt rather than claiming a later absent" do
+    v2_text = File.read!(Path.expand("../../docs/contracts/ipc-v2.org", __DIR__))
+    [_, section] = String.split(v2_text, "*** Next paired send refusal: quiescing", parts: 2)
+    [section | _] = String.split(section, "\n** ", parts: 2)
+    words = section |> String.split() |> Enum.join(" ")
+
+    assert words =~ "admits no NEW receipt and never erases, changes or reclassifies a receipt that already exists"
+    assert words =~ "~absent~ only if there was no receipt before the refused send"
+    refute words =~ "so a later reconcile answers ~absent~"
+  end
+
+  test "the quiescing refusal has the shape of each protocol version" do
+    assert decode("send.error.quiescing.json") == %{
+             "error" => "quiescing",
+             "msg_id" => "<msg_id>",
+             "ok" => false,
+             "pane_id" => "<pane_id>",
+             "protocol_version" => 3
+           }
+
+    v2_shape = @v2_dir |> Path.join("send.error.pane_quarantined.json") |> File.read!() |> Jason.decode!()
+    assert decode("v2_reply.send.quiescing.json") == %{v2_shape | "error" => "quiescing"}
+    assert decode("v1_reply.quiescing.json") == %{"error" => "quiescing", "ok" => false}
   end
 end

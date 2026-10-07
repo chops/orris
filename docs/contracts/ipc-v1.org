@@ -68,6 +68,24 @@ Since 2026-09-30 its fixture is in the sixteen-file set, paired with Orrisd
 ~b79863cdbffec41038e20996722c8cd6e9e3573f~, whose v1 send path returns it for a
 quarantined pane.
 
+*** Next paired refusal: quiescing (specified 2026-10-07)
+:PROPERTIES:
+:CUSTOM_ID: next-paired-refusal-quiescing
+:END:
+Specified for NS-32.M.002 RB-3a; not implemented by any producer yet. While a daemon
+that implements the version 3 quiesce fence (~ipc-v3.org~, "Quiesce") holds a fence,
+it refuses a v1 ~send~, ~attach_pane~ or ~detach_pane~ with the v1 error shape
+~{ok: false, error: "quiescing"}~, before any paste, queue, registration or pane change.
+Only such a daemon emits it; for any other daemon this set is unchanged.
+
+Its fixture is not yet in the paired set: the sixteen-file set, its count and its
+~CONTRACT_HASH~ are unchanged until a producer ships the refusal and this document
+re-pairs, as was done for ~send.error.pane_quarantined.json~. Until then the bytes
+are shown by the version 3 example ~v1_reply.quiescing.json~.
+
+This consumer's closed v1 refusal vocabulary is unchanged: it reports ~quiescing~
+as an untyped refusal, never as delivered or queued.
+
 ~queued~ and ~queue_full~ are typed outcomes, not transport failures. Consumers
 must preserve the distinction. A later revision defines consumer behavior for each
 outcome (see ~ipc-v2.org~).
