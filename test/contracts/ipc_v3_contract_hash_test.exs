@@ -23,8 +23,8 @@ defmodule AiOrchestrator.Contracts.IpcV3ContractHashTest do
 
   @fixture_dir Path.expand("../fixtures/contracts/ipc/v3", __DIR__)
   @hash_path Path.join(@fixture_dir, "CONTRACT_HASH")
-  @pinned_hash "b6367efecc75bc1a5f414c4196647a06e274ef5262df1771633b83e452ad81d3"
-  @expected_fixture_count 57
+  @pinned_hash "56cbc3257efa181fa4c9715528c4d02eb15dcadc4c101d373035c8032f65c592"
+  @expected_fixture_count 59
   @document Path.expand("../../docs/contracts/ipc-v3.org", __DIR__)
   @v2_dir Path.expand("../fixtures/contracts/ipc/v2", __DIR__)
 
@@ -50,6 +50,7 @@ defmodule AiOrchestrator.Contracts.IpcV3ContractHashTest do
     release.error.release_fence_unavailable.json release.error.release_stop_failed.json
     release.error.release_failed_requarantined.json release.error.release_unstarted.json
     v2_request.release.json v2_reply.release.unsupported_command.json
+    ping.ok.identity_core_release_build.json ping.ok.identity_core_release_build_dirty.json
   )
   @release_refusals ~w(
     pane_identity_unavailable effect_unresolved release_fence_unavailable release_stop_failed
@@ -65,6 +66,7 @@ defmodule AiOrchestrator.Contracts.IpcV3ContractHashTest do
     v2_reply.subscribe.unsupported_command.json v2_reply.cancel.unsupported_command.json
   )
   @client_requests ~w(v2_request.subscribe.json v2_request.cancel.json)
+  @build_identity_pings ~w(ping.ok.identity_core_release_build.json ping.ok.identity_core_release_build_dirty.json)
   @identity_refusals ~w(
     status.error.pane_identity_unavailable.json send.error.pane_identity_unavailable.json
     reconcile.error.pane_identity_unavailable.json
@@ -222,12 +224,12 @@ defmodule AiOrchestrator.Contracts.IpcV3ContractHashTest do
     assert snap["max_epoch_at_snapshot"] == snap["epoch"]
   end
 
-  test "the identity-core classes partition the set: 13 core replies, 2 client requests, 42 examples" do
+  test "the identity-core classes partition the set: 13 core replies, 2 client requests, 44 examples" do
     examples = names() -- (@core_replies ++ @client_requests)
 
     assert length(Enum.uniq(@core_replies)) == 13
     assert length(Enum.uniq(@client_requests)) == 2
-    assert length(examples) == 42
+    assert length(examples) == 44
     assert Enum.sort(@core_replies ++ @client_requests ++ examples) == names()
 
     for name <- ["ping.ok.json", "ping.missing_tokens.json", "send.sent.no_pane_identity.json"] do
@@ -328,6 +330,46 @@ defmodule AiOrchestrator.Contracts.IpcV3ContractHashTest do
     refute "subscribe" in tokens
     refute "release" in decode("ping.ok.identity_core.json")["capabilities"]
     assert "release" in decode("ping.ok.json")["capabilities"]
+  end
+
+  test "build_identity is present exactly when its token is, in every version 3 ping fixture" do
+    for name <- names(), String.starts_with?(name, "ping."), decode(name)["protocol_version"] == 3 do
+      ping = decode(name)
+      advertised? = "build_identity" in ping["capabilities"]
+      assert advertised? == Map.has_key?(ping, "build_identity"), name
+    end
+
+    assert Map.has_key?(decode("ping.ok.identity_core_release_build.json"), "build_identity")
+    refute Map.has_key?(decode("ping.ok.identity_core_release.json"), "build_identity")
+  end
+
+  test "a build_identity object has exactly its eight typed keys" do
+    for name <- @build_identity_pings do
+      identity = decode(name)["build_identity"]
+
+      assert Enum.sort(Map.keys(identity)) ==
+               ~w(build_id clean ipc_protocols name rollback_eligible source_nar_hash source_revision version),
+             name
+
+      assert is_binary(identity["name"]) and is_binary(identity["version"]), name
+      assert is_boolean(identity["clean"]) and is_boolean(identity["rollback_eligible"]), name
+      assert identity["build_id"] =~ ~r/\A[0-9a-f]{64}\z/, name
+      assert String.starts_with?(identity["source_nar_hash"], "sha256-"), name
+      assert is_list(identity["ipc_protocols"]) and Enum.all?(identity["ipc_protocols"], &is_integer/1), name
+      assert is_nil(identity["source_revision"]) or identity["source_revision"] =~ ~r/\A[0-9a-f]{40}\z/, name
+    end
+  end
+
+  test "rollback_eligible is true exactly for a clean build with a 40-hex source revision" do
+    for name <- @build_identity_pings do
+      identity = decode(name)["build_identity"]
+      revision = identity["source_revision"]
+      expected = identity["clean"] == true and is_binary(revision) and revision =~ ~r/\A[0-9a-f]{40}\z/
+      assert identity["rollback_eligible"] == expected, name
+    end
+
+    assert decode("ping.ok.identity_core_release_build.json")["build_identity"]["rollback_eligible"] == true
+    assert decode("ping.ok.identity_core_release_build_dirty.json")["build_identity"]["rollback_eligible"] == false
   end
 
   test "the release request names only the pane, and success carries the identity and matched/held counts" do

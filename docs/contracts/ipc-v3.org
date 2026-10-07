@@ -113,6 +113,27 @@ here are unchanged by the pairing.
   2 meaning. A client MUST NOT send a command whose token is absent and fails closed
   instead (~ping.missing_tokens.json~). Unknown well-formed extra tokens are
   admissible.
+- ~build_identity~ is an informational token: it names no command. A daemon
+  advertises it in its version 3 ~ping~ only when it read a valid identity record of
+  its own build, and then the ~ping~ also carries a ~build_identity~ object; without
+  a valid record both the token and the object are omitted (there is no typed
+  "unavailable" value). The object has exactly these keys:
+  - ~name~ and ~version~: strings;
+  - ~source_revision~: 40 lowercase hex, or ~null~ when the build was not made from a
+    clean revision;
+  - ~clean~: boolean;
+  - ~source_nar_hash~: a string beginning ~sha256-~;
+  - ~build_id~: 64 lowercase hex, the sha256 of the build's canonical INPUT identity
+    (name, version, source NAR hash, lock-file hash, pinned dependency hash, target
+    system, release name, IPC protocols, in that order), never a digest of the built
+    artifact; a client compares it byte for byte and does not interpret it;
+  - ~ipc_protocols~: a list of integers;
+  - ~rollback_eligible~: true exactly when ~clean~ is true and ~source_revision~ is 40
+    lowercase hex.
+  A client MUST NOT treat a missing ~build_identity~ as an identity. The example
+  values in ~ping.ok.identity_core_release_build.json~ (eligible) and
+  ~ping.ok.identity_core_release_build_dirty.json~ (not eligible) are synthetic; a real
+  daemon reports its own build. Version 1 and 2 ~ping~ are unchanged.
 - A version 2 request naming a command that exists only in version 3 (~subscribe~,
   ~cancel~, ~status~ or ~release~) is refused by the daemon with ~unsupported_command~ in a
   version 2 reply that echoes ~cmd~ and any ~msg_id~ / ~pane_id~ the request carried.
@@ -389,7 +410,7 @@ until they are, no implementation may claim conformance.
 | Fixture                                          | Class          | Shows                                                                     |
 |--------------------------------------------------+----------------+---------------------------------------------------------------------------|
 | ~ping.ok.identity_core.json~                     | example        | version 3 ping of an identity-core daemon without ~release~               |
-| ~ping.ok.json~                                   | example        | version 3 ping with all tokens                                            |
+| ~ping.ok.json~                                   | example        | version 3 ping with all command tokens                                    |
 | ~ping.missing_tokens.json~                       | example        | a daemon without the version 3 tokens; the client fails closed            |
 | ~send.sent.json~, ~send.queued.json~             | core reply     | version 2 send replies plus ~pane_identity~                               |
 | ~send.error.pane_identity_unavailable.json~      | core reply     | send refused: no complete pane identity                                   |
@@ -408,6 +429,8 @@ until they are, no implementation may claim conformance.
 | ~v2_reply.subscribe.unsupported_command.json~    | core reply     | its typed version 2 refusal                                               |
 | ~v2_reply.cancel.unsupported_command.json~       | core reply     | its typed version 2 refusal                                               |
 | ~ping.ok.identity_core_release.json~             | core reply     | the paired producer's ping: identity core plus ~release~                  |
+| ~ping.ok.identity_core_release_build.json~       | example        | that ping plus ~build_identity~ of a clean, rollback-eligible build       |
+| ~ping.ok.identity_core_release_build_dirty.json~ | example        | that ping plus ~build_identity~ of a dirty build, not rollback-eligible   |
 | ~v3_request.release.json~                        | example        | version 3 request for ~release~                                           |
 | ~release.released.json~                          | example        | release succeeded: ~pane_identity~ and counts of matched and held sends   |
 | ~release.error.*.json~                           | example        | the six release refusals                                                  |
