@@ -49,7 +49,10 @@ that implements only the identity core advertises ~pane_identity~ and neither
 ~cancel~ nor ~subscribe~, so no client sends them. ~ping.ok.identity_core.json~ is
 the ping of such a daemon without ~release~ (an example since S3a); the paired
 producer also implements ~release~ and answers ~ping.ok.identity_core_release.json~,
-a core reply.
+a core reply. Since NS-32.M.001 RB-1 the paired producer also reports its build
+identity: when it read a valid record it answers
+~ping.ok.identity_core_release_build.json~ instead, also a core reply; without one it
+still answers ~ping.ok.identity_core_release.json~, so both are core replies.
 
 Every fixture belongs to exactly one class:
 - /core reply/: a reply the identity-core producer emits byte for byte
@@ -81,22 +84,28 @@ What version 3 adds, and why each piece exists:
 :CUSTOM_ID: pairing
 :END:
 Paired for the identity core only (NS-15.G.002 B1c), re-paired after the producer
-implemented ~release~ (NS-15.G.003 S3a). The producer vendored this document at
-revision ~2d3d1b9a~ between ~BEGIN VENDORED~ / ~END VENDORED~ markers and produces
-the frames below from its real dispatch path; this block is the reciprocal half. It
-claims only the /core reply/ files and the /client request/ files that producer
+implemented ~release~ (NS-15.G.003 S3a), and again after it reported its build identity
+(NS-32.M.001 RB-1). At the paired revision the producer has vendored this document as
+of revision ~816f411f~, which is before this re-pairing, between ~BEGIN VENDORED~ /
+~END VENDORED~ markers. It produces every claimed frame from its real dispatch path, in
+two test files: ~contract_v3_fixture_test.exs~ compares the 13 core replies it claims
+(all except ~ping.ok.identity_core_release_build.json~) and exercises the client
+requests; ~build_identity_v3_test.exs~ separately compares
+~ping.ok.identity_core_release_build.json~, and the dirty example, given the record. The
+producer's re-vendoring of this text and its consolidation to 14 claimed core replies
+are pending (pairing P2). This block is the reciprocal half. It claims only the /core reply/ files and the /client request/ files that producer
 exercised; every /example/ file stays unclaimed, including every release-command reply
 (not yet compared by a producer fixture test) and every release-command request (not
 yet exercised by one).
 
 - paired_repository: =orrisd=
-- paired_revision: =e14408565eead221d4c8dcb06975fb5a2a50597a=
-- paired_source_revision: =2d3d1b9a6d301b116be70968f9dfb781e274f121=
-- paired_produced: =ping.ok.identity_core_release.json send.sent.json send.queued.json status.ok.json status.quarantined.json status.error.pane_not_found.json reconcile.queued.json reconcile.delivered.json status.error.pane_identity_unavailable.json send.error.pane_identity_unavailable.json reconcile.error.pane_identity_unavailable.json v2_reply.subscribe.unsupported_command.json v2_reply.cancel.unsupported_command.json=
+- paired_revision: =8ff1381799a9a5c029f2ed4c83e487ac6a242eb4=
+- paired_source_revision: =816f411fd547115fd748a0e8584a8c3a972b5e7a=
+- paired_produced: =ping.ok.identity_core_release.json ping.ok.identity_core_release_build.json send.sent.json send.queued.json status.ok.json status.quarantined.json status.error.pane_not_found.json reconcile.queued.json reconcile.delivered.json status.error.pane_identity_unavailable.json send.error.pane_identity_unavailable.json reconcile.error.pane_identity_unavailable.json v2_reply.subscribe.unsupported_command.json v2_reply.cancel.unsupported_command.json=
 - paired_exercised_requests: =v2_request.subscribe.json v2_request.cancel.json=
 
 The producer compares decoded frames with these files after substituting the
-placeholders (~contract_v3_fixture_test.exs~ at the paired revision), so the bytes
+placeholders (the two test files named above, at the paired revision), so the bytes
 here are unchanged by the pairing.
 
 ** Framing and version
@@ -133,7 +142,9 @@ here are unchanged by the pairing.
   A client MUST NOT treat a missing ~build_identity~ as an identity. The example
   values in ~ping.ok.identity_core_release_build.json~ (eligible) and
   ~ping.ok.identity_core_release_build_dirty.json~ (not eligible) are synthetic; a real
-  daemon reports its own build. Version 1 and 2 ~ping~ are unchanged.
+  daemon reports its own build. The eligible one is a core reply: the paired producer's
+  real dispatch path, given that record, emits exactly it. The dirty one stays an
+  example. Version 1 and 2 ~ping~ are unchanged.
 - A version 2 request naming a command that exists only in version 3 (~subscribe~,
   ~cancel~, ~status~ or ~release~) is refused by the daemon with ~unsupported_command~ in a
   version 2 reply that echoes ~cmd~ and any ~msg_id~ / ~pane_id~ the request carried.
@@ -429,7 +440,7 @@ until they are, no implementation may claim conformance.
 | ~v2_reply.subscribe.unsupported_command.json~    | core reply     | its typed version 2 refusal                                               |
 | ~v2_reply.cancel.unsupported_command.json~       | core reply     | its typed version 2 refusal                                               |
 | ~ping.ok.identity_core_release.json~             | core reply     | the paired producer's ping: identity core plus ~release~                  |
-| ~ping.ok.identity_core_release_build.json~       | example        | that ping plus ~build_identity~ of a clean, rollback-eligible build       |
+| ~ping.ok.identity_core_release_build.json~       | core reply     | that ping plus ~build_identity~ of a clean, rollback-eligible build       |
 | ~ping.ok.identity_core_release_build_dirty.json~ | example        | that ping plus ~build_identity~ of a dirty build, not rollback-eligible   |
 | ~v3_request.release.json~                        | example        | version 3 request for ~release~                                           |
 | ~release.released.json~                          | example        | release succeeded: ~pane_identity~ and counts of matched and held sends   |

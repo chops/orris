@@ -8,7 +8,8 @@ defmodule AiOrchestrator.Contracts.IpcV3ContractHashTest do
 
   The identity core is implemented on both sides and paired (NS-15.G.002 B1c); cancel and
   subscribe remain specified only. Release (NS-15.G.003 S3, Charles decisions 49 and 50) is
-  implemented by the paired producer (S3a), whose ping is ping.ok.identity_core_release.json;
+  implemented by the paired producer (S3a), whose ping is ping.ok.identity_core_release.json,
+  or ping.ok.identity_core_release_build.json when it read a build identity record (RB-1);
   this consumer does not send it, and its request and reply files remain examples. These
   rows check the fixture set, its agreement with the text and the paired block's claims;
   they run no daemon.
@@ -58,7 +59,8 @@ defmodule AiOrchestrator.Contracts.IpcV3ContractHashTest do
   )
   # The identity-core classes; every file not named here is an example.
   @core_replies ~w(
-    ping.ok.identity_core_release.json send.sent.json send.queued.json
+    ping.ok.identity_core_release.json ping.ok.identity_core_release_build.json
+    send.sent.json send.queued.json
     status.ok.json status.quarantined.json status.error.pane_not_found.json
     reconcile.queued.json reconcile.delivered.json
     status.error.pane_identity_unavailable.json send.error.pane_identity_unavailable.json
@@ -224,12 +226,12 @@ defmodule AiOrchestrator.Contracts.IpcV3ContractHashTest do
     assert snap["max_epoch_at_snapshot"] == snap["epoch"]
   end
 
-  test "the identity-core classes partition the set: 13 core replies, 2 client requests, 44 examples" do
+  test "the identity-core classes partition the set: 14 core replies, 2 client requests, 43 examples" do
     examples = names() -- (@core_replies ++ @client_requests)
 
-    assert length(Enum.uniq(@core_replies)) == 13
+    assert length(Enum.uniq(@core_replies)) == 14
     assert length(Enum.uniq(@client_requests)) == 2
-    assert length(examples) == 44
+    assert length(examples) == 43
     assert Enum.sort(@core_replies ++ @client_requests ++ examples) == names()
 
     for name <- ["ping.ok.json", "ping.missing_tokens.json", "send.sent.no_pane_identity.json"] do
@@ -341,6 +343,18 @@ defmodule AiOrchestrator.Contracts.IpcV3ContractHashTest do
 
     assert Map.has_key?(decode("ping.ok.identity_core_release_build.json"), "build_identity")
     refute Map.has_key?(decode("ping.ok.identity_core_release.json"), "build_identity")
+  end
+
+  test "the build-identity core reply is the no-record core ping plus its token and object, nothing else" do
+    build = decode("ping.ok.identity_core_release_build.json")
+    plain = decode("ping.ok.identity_core_release.json")
+
+    assert "ping.ok.identity_core_release_build.json" in @core_replies
+    refute "ping.ok.identity_core_release_build_dirty.json" in @core_replies
+
+    assert build
+           |> Map.delete("build_identity")
+           |> Map.update!("capabilities", &(&1 -- ["build_identity"])) == plain
   end
 
   test "a build_identity object has exactly its eight typed keys" do
