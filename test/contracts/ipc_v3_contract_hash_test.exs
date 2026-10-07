@@ -6,9 +6,12 @@ defmodule AiOrchestrator.Contracts.IpcV3ContractHashTest do
   the version 2 projection of a cancelled receipt. This repository pins the fixture bytes
   and CONTRACT_HASH under the v1 rule (sha256 over filename NUL bytes NUL, byte-sorted).
 
-  The identity core is implemented on both sides and paired (NS-15.G.002 B1c); cancel,
-  subscribe and release (NS-15.G.003 S3, Charles decisions 49 and 50) remain specified only. These rows check the fixture set, its agreement with the
-  text and the paired block's claims; they run no daemon.
+  The identity core is implemented on both sides and paired (NS-15.G.002 B1c); cancel and
+  subscribe remain specified only. Release (NS-15.G.003 S3, Charles decisions 49 and 50) is
+  implemented by the paired producer (S3a), whose ping is ping.ok.identity_core_release.json;
+  this consumer does not send it, and its request and reply files remain examples. These
+  rows check the fixture set, its agreement with the text and the paired block's claims;
+  they run no daemon.
 
   The identity core (ping, status, send and reconcile at version 3, the
   pane_identity_unavailable refusal and the version 2 refusals) splits the set into core
@@ -54,7 +57,7 @@ defmodule AiOrchestrator.Contracts.IpcV3ContractHashTest do
   )
   # The identity-core classes; every file not named here is an example.
   @core_replies ~w(
-    ping.ok.identity_core.json send.sent.json send.queued.json
+    ping.ok.identity_core_release.json send.sent.json send.queued.json
     status.ok.json status.quarantined.json status.error.pane_not_found.json
     reconcile.queued.json reconcile.delivered.json
     status.error.pane_identity_unavailable.json send.error.pane_identity_unavailable.json
@@ -267,7 +270,7 @@ defmodule AiOrchestrator.Contracts.IpcV3ContractHashTest do
     assert Enum.sort(String.split(declared.("paired_exercised_requests"))) == Enum.sort(@client_requests)
   end
 
-  test "an identity-core daemon advertises pane_identity and neither cancel nor subscribe" do
+  test "an identity-core daemon without release (example) advertises pane_identity and neither cancel nor subscribe" do
     tokens = decode("ping.ok.identity_core.json")["capabilities"]
 
     assert "pane_identity" in tokens

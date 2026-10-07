@@ -12,8 +12,17 @@ The identity core below is implemented on both sides and paired (see
 "Pairing"): the producer (the ai-pair daemon, Orrisd, at the paired revision)
 serves it, and the consumer in this repository reads version 3 ~status~ for its
 claim checks (NS-15.G.002 B1c). ~cancel~ and ~subscribe~ remain specified and NOT
-implemented on either side. ~release~ (NS-15.G.003 S3, below) is specified and NOT
-implemented on either side; its files are examples. No client may send a version 3 request until the
+implemented on either side. ~release~ (NS-15.G.003 S3, below) is implemented by the
+producer at the paired revision (NS-15.G.003 S3a), which advertises it in its durable
+version 3 ~ping~ (~ping.ok.identity_core_release.json~, the paired ping); this consumer
+does not send it. Every release-command request and reply file (~v3_request.release.json~,
+~v2_request.release.json~, ~release.released.json~, ~release.error.*.json~ and
+~v2_reply.release.unsupported_command.json~) is an example and unclaimed: a
+release-command reply becomes claimable only once a producer test obtains it from the
+real dispatch path and compares it with the file, and a release-command request only
+once a producer test sends it
+unchanged through the real dispatch path and receives its paired reply; in both cases
+this text changes first. No client may send a version 3 request until the
 daemon advertises the capability tokens below in a version 3 ~ping~. Version 2
 (~ipc-v2.org~) is unchanged and stays the wire for every existing client; a daemon
 serves both versions side by side. An installed daemon older than the paired
@@ -37,7 +46,10 @@ The first producer implements a bounded subset, the /identity core/: ~ping~,
 ~pane_identity_unavailable~ refusal, and the version 2 refusal of version 3
 commands. ~cancel~ and ~subscribe~ stay specified and are not part of it; a daemon
 that implements only the identity core advertises ~pane_identity~ and neither
-~cancel~ nor ~subscribe~ (~ping.ok.identity_core.json~), so no client sends them.
+~cancel~ nor ~subscribe~, so no client sends them. ~ping.ok.identity_core.json~ is
+the ping of such a daemon without ~release~ (an example since S3a); the paired
+producer also implements ~release~ and answers ~ping.ok.identity_core_release.json~,
+a core reply.
 
 Every fixture belongs to exactly one class:
 - /core reply/: a reply the identity-core producer emits byte for byte
@@ -68,16 +80,19 @@ What version 3 adds, and why each piece exists:
 :PROPERTIES:
 :CUSTOM_ID: pairing
 :END:
-Paired for the identity core only (NS-15.G.002 B1c). The producer vendored this
-document at revision ~6bb62f3e~ between ~BEGIN VENDORED~ / ~END VENDORED~ markers
-and produces the frames below from its real dispatch path; this block is the
-reciprocal half. It claims only the /core reply/ files and the /client request/
-files that producer exercised; every /example/ file stays unclaimed.
+Paired for the identity core only (NS-15.G.002 B1c), re-paired after the producer
+implemented ~release~ (NS-15.G.003 S3a). The producer vendored this document at
+revision ~2d3d1b9a~ between ~BEGIN VENDORED~ / ~END VENDORED~ markers and produces
+the frames below from its real dispatch path; this block is the reciprocal half. It
+claims only the /core reply/ files and the /client request/ files that producer
+exercised; every /example/ file stays unclaimed, including every release-command reply
+(not yet compared by a producer fixture test) and every release-command request (not
+yet exercised by one).
 
 - paired_repository: =orrisd=
-- paired_revision: =0a6db8b4688813e625425a9792094b4bbdcd6a08=
-- paired_source_revision: =6bb62f3e47c48ebcb29cb5c8f8d590cc18fd2ba0=
-- paired_produced: =ping.ok.identity_core.json send.sent.json send.queued.json status.ok.json status.quarantined.json status.error.pane_not_found.json reconcile.queued.json reconcile.delivered.json status.error.pane_identity_unavailable.json send.error.pane_identity_unavailable.json reconcile.error.pane_identity_unavailable.json v2_reply.subscribe.unsupported_command.json v2_reply.cancel.unsupported_command.json=
+- paired_revision: =e14408565eead221d4c8dcb06975fb5a2a50597a=
+- paired_source_revision: =2d3d1b9a6d301b116be70968f9dfb781e274f121=
+- paired_produced: =ping.ok.identity_core_release.json send.sent.json send.queued.json status.ok.json status.quarantined.json status.error.pane_not_found.json reconcile.queued.json reconcile.delivered.json status.error.pane_identity_unavailable.json send.error.pane_identity_unavailable.json reconcile.error.pane_identity_unavailable.json v2_reply.subscribe.unsupported_command.json v2_reply.cancel.unsupported_command.json=
 - paired_exercised_requests: =v2_request.subscribe.json v2_request.cancel.json=
 
 The producer compares decoded frames with these files after substituting the
@@ -181,7 +196,8 @@ here are unchanged by the pairing.
 :PROPERTIES:
 :CUSTOM_ID: release
 :END:
-Specified, not implemented (NS-15.G.003 S3; Charles decisions 49 and 50). A daemon
+Specified (NS-15.G.003 S3; Charles decisions 49 and 50) and implemented by the
+producer at the paired revision (S3a); this consumer does not send it. A daemon
 advertises ~release~ in its version 3 ~ping~ only when it implements it, in durable
 mode (~ping.ok.identity_core_release.json~); a client MUST NOT send it otherwise.
 
@@ -372,7 +388,7 @@ until they are, no implementation may claim conformance.
 :END:
 | Fixture                                          | Class          | Shows                                                                     |
 |--------------------------------------------------+----------------+---------------------------------------------------------------------------|
-| ~ping.ok.identity_core.json~                     | core reply     | version 3 ping of an identity-core daemon: no ~cancel~ or ~subscribe~     |
+| ~ping.ok.identity_core.json~                     | example        | version 3 ping of an identity-core daemon without ~release~               |
 | ~ping.ok.json~                                   | example        | version 3 ping with all tokens                                            |
 | ~ping.missing_tokens.json~                       | example        | a daemon without the version 3 tokens; the client fails closed            |
 | ~send.sent.json~, ~send.queued.json~             | core reply     | version 2 send replies plus ~pane_identity~                               |
@@ -391,7 +407,7 @@ until they are, no implementation may claim conformance.
 | ~v2_request.cancel.json~                         | client request | version 2 request for ~cancel~                                            |
 | ~v2_reply.subscribe.unsupported_command.json~    | core reply     | its typed version 2 refusal                                               |
 | ~v2_reply.cancel.unsupported_command.json~       | core reply     | its typed version 2 refusal                                               |
-| ~ping.ok.identity_core_release.json~             | example        | version 3 ping of an identity-core daemon that also implements ~release~  |
+| ~ping.ok.identity_core_release.json~             | core reply     | the paired producer's ping: identity core plus ~release~                  |
 | ~v3_request.release.json~                        | example        | version 3 request for ~release~                                           |
 | ~release.released.json~                          | example        | release succeeded: ~pane_identity~ and counts of matched and held sends   |
 | ~release.error.*.json~                           | example        | the six release refusals                                                  |
