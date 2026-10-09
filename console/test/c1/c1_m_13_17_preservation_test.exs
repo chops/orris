@@ -252,6 +252,8 @@ defmodule C1.MutationPreservationTest do
     # refusals and their example fixtures (test only).
     # Also the NS-32.M.002 RB-3a-P P1 RED rows: local and historically paired v1/v2 inventories, the 26/6/47 v3
     # classes and the pairing receipt rows (test only).
+    # Also the NS-32.M.002 RB-3a-P P1 GREEN delivery: the consumer-local quiescing fixtures, the two admitted pings,
+    # the 79-file v3 set and the documents (test and docs only).
     # Pin root entries so another core commit cannot silently pass. A later authorized core delivery must update
     # this snapshot explicitly in its review. Console files are outside the
     # snapshot, avoiding a self-referential commit id.
@@ -265,7 +267,7 @@ defmodule C1.MutationPreservationTest do
     100644 blob 6f8544e74c5907bebfdba64381e9320b07fcd7e3\tmix.exs
     100644 blob 0575c59cd4c68075227b8e9f11476fd3fd9bc85e\tmix.lock
     040000 tree de1293b8faa71d7fd58a3418d1574c9b589af1d5\tnative
-    040000 tree 8145e8e758d674510107953773c84d6b6859c35e\ttest
+    040000 tree 36a17e4b41a60bc98352884295e92efd46ef1a68\ttest
     """
 
     {committed, 0} = System.cmd("git", ["ls-tree", "HEAD", "--"] ++ core_paths, cd: Harness.core_path())

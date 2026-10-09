@@ -16,18 +16,28 @@ implemented on either side. ~release~ (NS-15.G.003 S3, below) is implemented by 
 producer at the paired revision (NS-15.G.003 S3a), which advertises it in its durable
 version 3 ~ping~ (~ping.ok.identity_core_release.json~, the paired ping); this consumer
 does not send it. Every release-command request and reply file (~v3_request.release.json~,
-~v2_request.release.json~, ~release.released.json~, ~release.error.*.json~ and
-~v2_reply.release.unsupported_command.json~) is an example and unclaimed: a
+~v2_request.release.json~, ~release.released.json~, the six other ~release.error.*.json~
+refusals and ~v2_reply.release.unsupported_command.json~) is an example and unclaimed: a
 release-command reply becomes claimable only once a producer test obtains it from the
 real dispatch path and compares it with the file, and a release-command request only
 once a producer test sends it
 unchanged through the real dispatch path and receives its paired reply; in both cases
-this text changes first. ~quiesce~ and ~resume~ (NS-32.M.002 RB-3a, below) are specified and NOT
-implemented on either side; every file of theirs, and every ~quiescing~ refusal file, is
-an example. No client may send a version 3 request until the
+this text changes first. The one exception is ~release.error.quiescing.json~, the
+quiescing refusal of ~release~, which is a claimed core reply (see "Quiesce").
+~quiesce~ and ~resume~ (NS-32.M.002 RB-3a, below) are implemented by the producer
+(Orrisd, RB-3a). By the reviewed producer evidence at
+~e9d64b4afa2cac9bf69113d4d9bec7ca76ad8829~ (see "Pairing"), the claimed ~quiesce~,
+~resume~ and ~quiescing~ replies and the two admitted durable pings
+(~ping.ok.identity_core_release_quiesce.json~ and
+~ping.ok.identity_core_release_build_quiesce.json~) are core replies, and the four
+~quiesce~ and ~resume~ requests are exercised client requests; ~quiesce.ok.json~,
+~ping.ok.quiesced.json~, ~v2_reply.send.quiescing.json~ and ~v1_reply.quiescing.json~
+stay examples. This consumer sends neither ~quiesce~ nor ~resume~ (the sole client is
+the producer's generation operator), and no installed daemon is claimed: installation
+is a separate, held step. No client may send a version 3 request until the
 daemon advertises the capability tokens below in a version 3 ~ping~. Version 2
 (~ipc-v2.org~) stays the wire for every existing client, unchanged except for its one
-specified additive refusal ~quiescing~ (see "Quiesce"; version 1 likewise); a daemon
+additive refusal ~quiescing~ (see "Quiesce"; version 1 likewise); a daemon
 serves both versions side by side. An installed daemon older than the paired
 revision does not speak version 3; installing the paired pair is a separate,
 held step, and until then this consumer refuses identity-gated claims against
@@ -38,7 +48,7 @@ this repository pins, with their ~CONTRACT_HASH~ computed under the v1 hash rule
 (see ~ipc-v1.org~), checked by ~test/contracts/ipc_v3_contract_hash_test.exs~.
 Each belongs to one of the classes below. The /core reply/ files are the frames
 the paired producer emits from its real dispatch path (placeholders aside, and
-compared after decoding); the bytes here did not change at pairing. The two
+compared after decoding); the bytes here did not change at pairing. The six
 /client request/ files are exercised unchanged by the paired producer. The
 /example/ files are written from this text and stay shape only until the feature
 that would produce them is implemented and this text changes first.
@@ -55,7 +65,11 @@ producer also implements ~release~ and answers ~ping.ok.identity_core_release.js
 a core reply. Since NS-32.M.001 RB-1 the paired producer also reports its build
 identity: when it read a valid record it answers
 ~ping.ok.identity_core_release_build.json~ instead, also a core reply; without one it
-still answers ~ping.ok.identity_core_release.json~, so both are core replies.
+still answers ~ping.ok.identity_core_release.json~, so both are core replies. Since
+NS-32.M.002 RB-3a the paired producer with an admission answers
+~ping.ok.identity_core_release_quiesce.json~ (with a build record,
+~ping.ok.identity_core_release_build_quiesce.json~), both core replies; the existing two
+are its pings for durable dispatch without admission.
 
 Every fixture belongs to exactly one class:
 - /core reply/: a reply the identity-core producer emits byte for byte
@@ -66,7 +80,7 @@ Every fixture belongs to exactly one class:
   to the real dispatch path and receives its paired reply.
 - /example/: shape only, including every ~cancel~, ~subscribe~, event, loss and
   sequence file, the full-token ~ping.ok.json~ (aspirational: it lists every command token
-  this text defines, including the specified-only ~quiesce~, and no daemon at the paired
+  this text defines, including ~quiesce~ and ~resume~, and no daemon at the paired
   revision answers it), the client-side
   ~ping.missing_tokens.json~, and the negative ~send.sent.no_pane_identity.json~,
   which a correct daemon never emits. An example stays an example until the
@@ -92,29 +106,35 @@ What version 3 adds, and why each piece exists:
 :CUSTOM_ID: pairing
 :END:
 Paired for the identity core only (NS-15.G.002 B1c), re-paired after the producer
-implemented ~release~ (NS-15.G.003 S3a), and again after it reported its build identity
-(NS-32.M.001 RB-1). At the paired revision the producer has vendored this document as
-of revision ~816f411f~, which is before this re-pairing, between ~BEGIN VENDORED~ /
-~END VENDORED~ markers. It produces every claimed frame from its real dispatch path, in
-two test files: ~contract_v3_fixture_test.exs~ compares the 13 core replies it claims
-(all except ~ping.ok.identity_core_release_build.json~) and exercises the client
-requests; ~build_identity_v3_test.exs~ separately compares
-~ping.ok.identity_core_release_build.json~, and the dirty example, given the record. The
-producer's re-vendoring of this text and its consolidation to 14 claimed core replies
-are pending (pairing P2). This block is the reciprocal half. It claims only the /core reply/ files and the /client request/ files that producer
-exercised; every /example/ file stays unclaimed, including every release-command reply
-(not yet compared by a producer fixture test) and every release-command request (not
-yet exercised by one).
+implemented ~release~ (NS-15.G.003 S3a), after it reported its build identity
+(NS-32.M.001 RB-1), and again after it implemented ~quiesce~ and ~resume~ (NS-32.M.002
+RB-3a-P P1). At the paired revision ~e9d64b4afa2cac9bf69113d4d9bec7ca76ad8829~ the
+producer still vendors the 77-file set of this document's fixtures as of revision
+~d5de930f~. It produces every claimed frame from its real dispatch path: it compares the
+14 earlier claims in ~contract_v3_fixture_test.exs~ (~@paired_claims~, 14 asserted there)
+and exercises the client requests; it compares the nine exact quiesce, resume and
+quiescing replies in ~quiesce_v3_red_test.exs~; and it compares
+~quiesce.error.quiesce_timeout.json~ and the two admitted pings in
+~rb3a_pairing_p2w_test.exs~, the pings against its candidates, whose SHA256s are pinned
+below and equal the files here. Re-vendoring of this 79-file set is pending (RB-3a-P
+P2). This block is the reciprocal half. It claims only the /core reply/ files and the
+/client request/ files that producer exercised; every /example/ file stays unclaimed,
+including every release-command reply other than ~release.error.quiescing.json~ (not
+yet compared by a producer fixture test) and every release-command request (not yet
+exercised by one).
 
 - paired_repository: =orrisd=
-- paired_revision: =8ff1381799a9a5c029f2ed4c83e487ac6a242eb4=
-- paired_source_revision: =816f411fd547115fd748a0e8584a8c3a972b5e7a=
-- paired_produced: =ping.ok.identity_core_release.json ping.ok.identity_core_release_build.json send.sent.json send.queued.json status.ok.json status.quarantined.json status.error.pane_not_found.json reconcile.queued.json reconcile.delivered.json status.error.pane_identity_unavailable.json send.error.pane_identity_unavailable.json reconcile.error.pane_identity_unavailable.json v2_reply.subscribe.unsupported_command.json v2_reply.cancel.unsupported_command.json=
-- paired_exercised_requests: =v2_request.subscribe.json v2_request.cancel.json=
+- paired_revision: =e9d64b4afa2cac9bf69113d4d9bec7ca76ad8829=
+- paired_source_revision: =d5de930f4f068dc47f654e2d7db08c38ef82b777=
+- paired_produced: =ping.ok.identity_core_release.json ping.ok.identity_core_release_build.json send.sent.json send.queued.json status.ok.json status.quarantined.json status.error.pane_not_found.json reconcile.queued.json reconcile.delivered.json status.error.pane_identity_unavailable.json send.error.pane_identity_unavailable.json reconcile.error.pane_identity_unavailable.json v2_reply.subscribe.unsupported_command.json v2_reply.cancel.unsupported_command.json ping.ok.identity_core_release_quiesce.json ping.ok.identity_core_release_build_quiesce.json quiesce.error.invalid_request.json quiesce.error.observation_incomplete.json quiesce.error.quiesce_busy.json quiesce.error.quiesce_timeout.json resume.ok.json resume.error.fence_mismatch.json send.error.quiescing.json release.error.quiescing.json v2_reply.quiesce.unsupported_command.json v2_reply.resume.unsupported_command.json=
+- paired_exercised_requests: =v2_request.subscribe.json v2_request.cancel.json v3_request.quiesce.json v3_request.resume.json v2_request.quiesce.json v2_request.resume.json=
+- paired_vendoring: =pending=
+- paired_candidate_quiesce_sha256: =4c837bffcf13b243ddddf6e4159b79028f9901abad1434cd51c78587d8a906f1=
+- paired_candidate_build_quiesce_sha256: =2cbdeaaf240fdff75efa4994dbec8cdcbb3ae337e6165517b8efc24cd43d1af0=
 
 The producer compares decoded frames with these files after substituting the
-placeholders (the two test files named above, at the paired revision), so the bytes
-here are unchanged by the pairing.
+placeholders (the test files named above, at the paired revision), so the bytes here
+are unchanged by the pairing.
 
 ** Framing and version
 :PROPERTIES:
@@ -294,8 +314,10 @@ mode (~ping.ok.identity_core_release.json~); a client MUST NOT send it otherwise
 :PROPERTIES:
 :CUSTOM_ID: quiesce
 :END:
-Specified (NS-32.M.002 RB-3a) and NOT implemented on either side; every file named here
-is an example. Its only client is the producer's own generation operator; this consumer
+Specified (NS-32.M.002 RB-3a) and implemented by the producer (Orrisd, RB-3a; see
+"Implementation status" and "Pairing"). The claimed files are core replies or client
+requests as the example set below lists them; ~quiesce.ok.json~ and
+~ping.ok.quiesced.json~ stay examples. Its only client is the producer's own generation operator; this consumer
 does not send it. A daemon advertises ~quiesce~ in its version 3 ~ping~ only when it
 implements both ~quiesce~ and ~resume~, in durable mode; a client MUST NOT send either
 otherwise.
@@ -351,11 +373,12 @@ otherwise.
   - version 3 ~send~: ~send.error.quiescing.json~, echoing ~msg_id~ and ~pane_id~;
   - version 3 ~release~: ~release.error.quiescing.json~, echoing ~pane_id~;
   - version 2 ~send~: the rule is owned by ~ipc-v2.org~ ("Next paired send refusal:
-    quiescing"); ~v2_reply.send.quiescing.json~ here is an example of its bytes until the
-    version 2 paired set carries the fixture;
+    quiescing"), whose local set now carries ~send.error.quiescing.json~ (pairing pending
+    RB-3a-P P2); ~v2_reply.send.quiescing.json~ here stays an example of those bytes;
   - version 1 ~send~, ~attach_pane~ and ~detach_pane~: the rule is owned by ~ipc-v1.org~
-    ("Next paired refusal: quiescing"); ~v1_reply.quiescing.json~ here is an example of its
-    bytes until the version 1 paired set carries the fixture.
+    ("Next paired refusal: quiescing"), whose local set now carries
+    ~send.error.quiescing.json~ (pairing pending RB-3a-P P2); ~v1_reply.quiescing.json~
+    here stays an example of those bytes.
 - Version 2 refuses ~quiesce~ and ~resume~ with ~unsupported_command~ (~v2_request.quiesce.json~ /
   ~v2_reply.quiesce.unsupported_command.json~, ~v2_request.resume.json~ /
   ~v2_reply.resume.unsupported_command.json~).
@@ -500,57 +523,69 @@ until they are, no implementation may claim conformance.
 :PROPERTIES:
 :CUSTOM_ID: example-set
 :END:
-| Fixture                                          | Class          | Shows                                                                     |
-|--------------------------------------------------+----------------+---------------------------------------------------------------------------|
-| ~ping.ok.identity_core.json~                     | example        | version 3 ping of an identity-core daemon without ~release~               |
-| ~ping.ok.json~                                   | example        | aspirational ping with every token this text defines, incl. ~quiesce~     |
-| ~ping.missing_tokens.json~                       | example        | a daemon without the version 3 tokens; the client fails closed            |
-| ~send.sent.json~, ~send.queued.json~             | core reply     | version 2 send replies plus ~pane_identity~                               |
-| ~send.error.pane_identity_unavailable.json~      | core reply     | send refused: no complete pane identity                                   |
-| ~send.sent.no_pane_identity.json~                | example        | a reply the client MUST refuse for missing identity (never emitted)       |
-| ~send.duplicate.cancelled.json~                  | example        | duplicate of a cancelled send                                             |
-| ~status.ok.json~, ~status.quarantined.json~      | core reply     | per-pane status: live and quarantined                                     |
-| ~status.error.pane_not_found.json~               | core reply     | status refused: unknown pane                                              |
-| ~status.error.pane_identity_unavailable.json~    | core reply     | status refused: no complete pane identity                                 |
-| ~reconcile.queued.json~                          | core reply     | version 2 reconcile outcome ~queued~ plus ~pane_identity~                 |
-| ~reconcile.delivered.json~                       | core reply     | version 2 reconcile outcome ~delivered~ plus ~pane_identity~              |
-| ~reconcile.error.pane_identity_unavailable.json~ | core reply     | reconcile refused: no complete pane identity                              |
-| ~cancel.*.json~                                  | example        | the five cancel outcomes                                                  |
-| ~reconcile.cancelled.json~                       | example        | the sixth reconcile outcome                                               |
-| ~v2_request.subscribe.json~                      | client request | version 2 request for ~subscribe~                                         |
-| ~v2_request.cancel.json~                         | client request | version 2 request for ~cancel~                                            |
-| ~v2_reply.subscribe.unsupported_command.json~    | core reply     | its typed version 2 refusal                                               |
-| ~v2_reply.cancel.unsupported_command.json~       | core reply     | its typed version 2 refusal                                               |
-| ~ping.ok.identity_core_release.json~             | core reply     | the paired producer's ping: identity core plus ~release~                  |
-| ~ping.ok.identity_core_release_build.json~       | core reply     | that ping plus ~build_identity~ of a clean, rollback-eligible build       |
-| ~ping.ok.identity_core_release_build_dirty.json~ | example        | that ping plus ~build_identity~ of a dirty build, not rollback-eligible   |
-| ~v3_request.release.json~                        | example        | version 3 request for ~release~                                           |
-| ~release.released.json~                          | example        | release succeeded: ~pane_identity~ and counts of matched and held sends   |
-| ~release.error.*.json~                           | example        | the seven release refusals (six, and ~quiescing~)                         |
-| ~v2_request.release.json~                        | example        | version 2 request for ~release~                                           |
-| ~v2_reply.release.unsupported_command.json~      | example        | its typed version 2 refusal                                               |
-| ~v3_request.quiesce.json~                        | example        | version 3 request for ~quiesce~ with the resume digest                    |
-| ~quiesce.ok.json~                                | example        | quiesce succeeded: ~fence_id~ and the six-key observation                 |
-| ~quiesce.error.*.json~                           | example        | the four quiesce refusals                                                 |
-| ~v3_request.resume.json~                         | example        | version 3 request for ~resume~ with the fence and secret                  |
-| ~resume.ok.json~                                 | example        | resume succeeded: admission open again                                    |
-| ~resume.error.fence_mismatch.json~               | example        | resume refused; a held fence stays held                                   |
-| ~ping.ok.quiesced.json~                          | example        | version 3 ping while a fence is held                                      |
-| ~send.error.quiescing.json~                      | example        | version 3 send refused while quiesced                                     |
-| ~release.error.quiescing.json~                   | example        | version 3 release refused while quiesced                                  |
-| ~v2_reply.send.quiescing.json~                   | example        | version 2 send refused while quiesced                                     |
-| ~v1_reply.quiescing.json~                        | example        | version 1 send, attach or detach refused while quiesced                   |
-| ~v2_request.quiesce.json~                        | example        | version 2 request for ~quiesce~                                           |
-| ~v2_reply.quiesce.unsupported_command.json~      | example        | its typed version 2 refusal                                               |
-| ~v2_request.resume.json~                         | example        | version 2 request for ~resume~                                            |
-| ~v2_reply.resume.unsupported_command.json~       | example        | its typed version 2 refusal                                               |
-| ~scenario.cancelled.*.json~                      | example        | a cancelled receipt read through version 2 reconcile and send             |
-| ~subscribe.pane.snapshot.json~                   | example        | per-pane snapshot                                                         |
-| ~subscribe.all.*.json~                           | example        | all-panes snapshots: ordinary, empty, with a detached entry, unknown state |
-| ~event.*.json~                                   | example        | one of each event kind                                                    |
-| ~subscription_lost.*.json~                       | example        | the two loss frames                                                       |
-| ~seq.close_no_frame.*.json~                      | example        | frames then close with no final frame: overflow, restart, snapshot timeout |
-| ~seq.race.*.json~                                | example        | attach, detach, detach-then-reattach, owner exit before the read          |
+| Fixture                                            | Class          | Shows                                                                      |
+|----------------------------------------------------+----------------+----------------------------------------------------------------------------|
+| ~ping.ok.identity_core.json~                       | example        | version 3 ping of an identity-core daemon without ~release~                |
+| ~ping.ok.json~                                     | example        | aspirational ping with every token this text defines, incl. ~quiesce~      |
+| ~ping.missing_tokens.json~                         | example        | a daemon without the version 3 tokens; the client fails closed             |
+| ~send.sent.json~                                   | core reply     | version 2 send reply ~sent~ plus ~pane_identity~                           |
+| ~send.queued.json~                                 | core reply     | version 2 send reply ~queued~ plus ~pane_identity~                         |
+| ~send.error.pane_identity_unavailable.json~        | core reply     | send refused: no complete pane identity                                    |
+| ~send.sent.no_pane_identity.json~                  | example        | a reply the client MUST refuse for missing identity (never emitted)        |
+| ~send.duplicate.cancelled.json~                    | example        | duplicate of a cancelled send                                              |
+| ~status.ok.json~                                   | core reply     | per-pane status: live                                                      |
+| ~status.quarantined.json~                          | core reply     | per-pane status: quarantined                                               |
+| ~status.error.pane_not_found.json~                 | core reply     | status refused: unknown pane                                               |
+| ~status.error.pane_identity_unavailable.json~      | core reply     | status refused: no complete pane identity                                  |
+| ~reconcile.queued.json~                            | core reply     | version 2 reconcile outcome ~queued~ plus ~pane_identity~                  |
+| ~reconcile.delivered.json~                         | core reply     | version 2 reconcile outcome ~delivered~ plus ~pane_identity~               |
+| ~reconcile.error.pane_identity_unavailable.json~   | core reply     | reconcile refused: no complete pane identity                               |
+| ~cancel.*.json~                                    | example        | the five cancel outcomes                                                   |
+| ~reconcile.cancelled.json~                         | example        | the sixth reconcile outcome                                                |
+| ~v2_request.subscribe.json~                        | client request | version 2 request for ~subscribe~                                          |
+| ~v2_request.cancel.json~                           | client request | version 2 request for ~cancel~                                             |
+| ~v2_reply.subscribe.unsupported_command.json~      | core reply     | its typed version 2 refusal                                                |
+| ~v2_reply.cancel.unsupported_command.json~         | core reply     | its typed version 2 refusal                                                |
+| ~ping.ok.identity_core_release.json~               | core reply     | the paired producer's ping: identity core plus ~release~                   |
+| ~ping.ok.identity_core_release_build.json~         | core reply     | that ping plus ~build_identity~ of a clean, rollback-eligible build        |
+| ~ping.ok.identity_core_release_build_dirty.json~   | example        | that ping plus ~build_identity~ of a dirty build, not rollback-eligible    |
+| ~ping.ok.identity_core_release_quiesce.json~       | core reply     | the release ping plus ~quiesce~: durable dispatch with an admission        |
+| ~ping.ok.identity_core_release_build_quiesce.json~ | core reply     | the build-identity ping plus ~quiesce~: a build record and an admission    |
+| ~v3_request.release.json~                          | example        | version 3 request for ~release~                                            |
+| ~release.released.json~                            | example        | release succeeded: ~pane_identity~ and counts of matched and held sends    |
+| ~release.error.pane_identity_unavailable.json~     | example        | release refused: the pane identity could not be proven                     |
+| ~release.error.effect_unresolved.json~             | example        | release refused: the pane is held after an unresolved paste                |
+| ~release.error.release_fence_unavailable.json~     | example        | release refused: the pane's lock is held or a paste is in flight           |
+| ~release.error.release_stop_failed.json~           | example        | release refused: the quarantined pane could not be stopped                 |
+| ~release.error.release_failed_requarantined.json~  | example        | release refused: restart failed, the pane is quarantined again             |
+| ~release.error.release_unstarted.json~             | example        | release refused: neither pane could be started                             |
+| ~v2_request.release.json~                          | example        | version 2 request for ~release~                                            |
+| ~v2_reply.release.unsupported_command.json~        | example        | its typed version 2 refusal                                                |
+| ~v3_request.quiesce.json~                          | client request | version 3 request for ~quiesce~ with the resume digest                     |
+| ~quiesce.ok.json~                                  | example        | quiesce succeeded: ~fence_id~ and the six-key observation                  |
+| ~quiesce.error.quiesce_busy.json~                  | core reply     | quiesce refused: a fence is already held                                   |
+| ~quiesce.error.quiesce_timeout.json~               | core reply     | quiesce refused: the work in flight did not drain within ~bound_ms~        |
+| ~quiesce.error.observation_incomplete.json~        | core reply     | quiesce refused: an owner failed or timed out (~dimension~)                |
+| ~quiesce.error.invalid_request.json~               | core reply     | quiesce refused: ~resume_hash~ missing or malformed                        |
+| ~v3_request.resume.json~                           | client request | version 3 request for ~resume~ with the fence and secret                   |
+| ~resume.ok.json~                                   | core reply     | resume succeeded: admission open again                                     |
+| ~resume.error.fence_mismatch.json~                 | core reply     | resume refused; a held fence stays held                                    |
+| ~ping.ok.quiesced.json~                            | example        | version 3 ping while a fence is held                                       |
+| ~send.error.quiescing.json~                        | core reply     | version 3 send refused while quiesced                                      |
+| ~release.error.quiescing.json~                     | core reply     | version 3 release refused while quiesced                                   |
+| ~v2_reply.send.quiescing.json~                     | example        | version 2 send refused while quiesced                                      |
+| ~v1_reply.quiescing.json~                          | example        | version 1 send, attach or detach refused while quiesced                    |
+| ~v2_request.quiesce.json~                          | client request | version 2 request for ~quiesce~                                            |
+| ~v2_reply.quiesce.unsupported_command.json~        | core reply     | its typed version 2 refusal                                                |
+| ~v2_request.resume.json~                           | client request | version 2 request for ~resume~                                             |
+| ~v2_reply.resume.unsupported_command.json~         | core reply     | its typed version 2 refusal                                                |
+| ~scenario.cancelled.*.json~                        | example        | a cancelled receipt read through version 2 reconcile and send              |
+| ~subscribe.pane.snapshot.json~                     | example        | per-pane snapshot                                                          |
+| ~subscribe.all.*.json~                             | example        | all-panes snapshots: ordinary, empty, with a detached entry, unknown state |
+| ~event.*.json~                                     | example        | one of each event kind                                                     |
+| ~subscription_lost.*.json~                         | example        | the two loss frames                                                        |
+| ~seq.close_no_frame.*.json~                        | example        | frames then close with no final frame: overflow, restart, snapshot timeout |
+| ~seq.race.*.json~                                  | example        | attach, detach, detach-then-reattach, owner exit before the read           |
 
 A ~seq.*~ file is a sequence: ~frames~ in order, then ~then~ ~close~.
 
