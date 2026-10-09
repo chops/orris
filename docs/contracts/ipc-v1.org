@@ -63,6 +63,7 @@ repository pins; it does not add fields to the wire.
 | ~send.error.send_timeout.json~           | The pane state machine missed the configured call deadline; ~<detail>~ is diagnostic text. |
 | ~send.error.paste_failed.json~           | Synchronous tmux paste failed; ~<detail>~ is diagnostic text and is not machine-readable.  |
 | ~send.error.pane_quarantined.json~       | A registered, live pane quarantined after boot restoration refused the send before it was pasted or queued; not terminal, not a request error. |
+| ~send.error.quiescing.json~              | The admission refusal while a daemon holds a quiesce fence; the same bytes answer ~send~, ~attach_pane~ and ~detach_pane~; untyped, carries no ~pane_id~. |
 
 Since 2026-09-30 its fixture is in the sixteen-file set, paired with Orrisd
 ~b79863cdbffec41038e20996722c8cd6e9e3573f~, whose v1 send path returns it for a
@@ -72,16 +73,22 @@ quarantined pane.
 :PROPERTIES:
 :CUSTOM_ID: next-paired-refusal-quiescing
 :END:
-Specified for NS-32.M.002 RB-3a; not implemented by any producer yet. While a daemon
+Specified for NS-32.M.002 RB-3a. The producer implements the quiesce fence (Orrisd,
+RB-3a; see ~ipc-v3.org~, "Pairing", for the reviewed version 3 evidence), and a producer
+test that obtains this version 1 refusal from its real dispatch path is pending
+(RB-3a-P P2). While a daemon
 that implements the version 3 quiesce fence (~ipc-v3.org~, "Quiesce") holds a fence,
 it refuses a v1 ~send~, ~attach_pane~ or ~detach_pane~ with the v1 error shape
 ~{ok: false, error: "quiescing"}~, before any paste, queue, registration or pane change.
 Only such a daemon emits it; for any other daemon this set is unchanged.
 
-Its fixture is not yet in the paired set: the sixteen-file set, its count and its
-~CONTRACT_HASH~ are unchanged until a producer ships the refusal and this document
-re-pairs, as was done for ~send.error.pane_quarantined.json~. Until then the bytes
-are shown by the version 3 example ~v1_reply.quiescing.json~.
+Its fixture ~send.error.quiescing.json~ is in this consumer's local set: seventeen
+files, whose ~CONTRACT_HASH~ is ~5361313977d1abbd24fbb88333d5c1465234c8668c112ec4f51869ebd5b6a43c~.
+The sixteen-file set paired with Orrisd ~b79863cdbffec41038e20996722c8cd6e9e3573f~ keeps
+its bytes and its hash ~e809de8ea47339c1d6cffca65cc6dee1dc09d99d8f7b242e00296cc1f7f51a88~,
+and the reciprocal pairing of the seventeenth file is pending until the producer ships
+it (RB-3a-P P2), as was done for ~send.error.pane_quarantined.json~. The version 3
+example ~v1_reply.quiescing.json~ shows the same bytes.
 
 This consumer's closed v1 refusal vocabulary is unchanged: it reports ~quiescing~
 as an untyped refusal, never as delivered or queued.

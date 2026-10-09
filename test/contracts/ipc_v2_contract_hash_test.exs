@@ -8,13 +8,20 @@ defmodule AiOrchestrator.Contracts.IpcV2ContractHashTest do
   NUL, byte-sorted). The v1 set is pinned separately. These tests verify the fixtures;
   they do not establish the capabilities of an installed daemon.
 
-  The third row is the consumer half of the paired-revision requirement: the producer
+  The directory is this consumer's LOCAL set: twenty-one files. Twenty of them are the
+  set the producer snapshot named below ships and pairs; they are held here, by name, to
+  the bytes and hash that snapshot measured. The twenty-first, send.error.quiescing.json
+  (the admission refusal, untyped `reply_not_ok`), is consumer-local and its reciprocal
+  pairing is pending the producer re-vendoring (RB-3a-P P2). The local set and the
+  historically paired subset are pinned separately so that neither can pass as the other.
+
+  The document row is the consumer half of the paired-revision requirement: the producer
   vendors `docs/contracts/ipc-v2.org` verbatim and pins the consumer revision it took,
   and this row holds the reciprocal block in that document to the producer revision,
-  the two digests and the fixture hash THESE fixtures produce. It cannot read the
-  producer repository -- this gate has no access to it -- so what it detects is a
-  change made here: the pairing block being dropped, edited, or left naming a fixture
-  hash the fixture set no longer produces.
+  the two digests and the hash of the HISTORICALLY PAIRED twenty, and separately to the
+  consumer's local set and its pending status. It cannot read the producer repository --
+  this gate has no access to it -- so what it detects is a change made here: the pairing
+  block being dropped, edited, or left naming a fixture hash a set no longer produces.
 
   `@paired_revision` names a NAMED HISTORICAL SNAPSHOT of the producer, never the
   producer's current head, and `@paired_document_sha256` is that snapshot's whole-document
@@ -36,8 +43,23 @@ defmodule AiOrchestrator.Contracts.IpcV2ContractHashTest do
 
   @fixture_dir Path.expand("../fixtures/contracts/ipc/v2", __DIR__)
   @hash_path Path.join(@fixture_dir, "CONTRACT_HASH")
-  @pinned_hash "f23caceb6ae106238da82f35e469f022f18c24b1296c78c3f96021eb15dc8497"
-  @expected_fixture_count 20
+  # The local set: every *.json in the directory. CONTRACT_HASH pins this set.
+  @local_hash "908783b6db5e4f129ad6514e59b2aed046ed1fe9868b6f95ee1af72caa7f4f9a"
+  @local_fixture_count 21
+
+  # The historically paired subset: exactly these twenty files, as the named producer snapshot measured them.
+  @paired_hash "f23caceb6ae106238da82f35e469f022f18c24b1296c78c3f96021eb15dc8497"
+  @paired_fixture_count 20
+  @paired_files ~w(
+    ping.ok.json reconcile.absent.json reconcile.absent.not_delivered.json reconcile.ambiguous.json
+    reconcile.conflict.json reconcile.delivered.json reconcile.error.missing_payload_hash.json reconcile.queued.json
+    send.duplicate.ambiguous.json send.duplicate.delivered.json send.duplicate.pending.json send.duplicate.queued.json
+    send.error.conflict.json send.error.missing_msg_id.json send.error.pane_quarantined.json
+    send.error.payload_store_full.json send.error.payload_store_unavailable.json send.error.queue_full.json
+    send.queued.json send.sent.json
+  )
+  # Consumer-local until the producer ships them; pairing pending (RB-3a-P P2).
+  @consumer_local_files ~w(send.error.quiescing.json)
 
   @document Path.expand("../../docs/contracts/ipc-v2.org", __DIR__)
   @paired_revision "ff96001878a94401948bb3999683bdfc84c31dff"
@@ -46,17 +68,30 @@ defmodule AiOrchestrator.Contracts.IpcV2ContractHashTest do
   @vendored_source_sha256 "ff75187917ead27923d2368aa86336a4036208fc9f465c240af6e1201936a5e1"
   @toolchain_source Path.expand("../../bin/verify", __DIR__)
 
-  test "the IPC v2 fixture set matches the pinned cross-repository hash" do
+  test "the local IPC v2 fixture set matches its pinned hash" do
     paths = @fixture_dir |> Path.join("*.json") |> Path.wildcard() |> Enum.sort()
 
-    assert length(paths) == @expected_fixture_count, "IPC v2 fixture set is missing or incomplete"
+    assert length(paths) == @local_fixture_count, "IPC v2 fixture set is missing or incomplete"
     assert File.regular?(@hash_path), "IPC v2 CONTRACT_HASH is missing"
 
-    payload = Enum.map(paths, fn path -> [Path.basename(path), 0, File.read!(path), 0] end)
-    actual = :sha256 |> :crypto.hash(payload) |> Base.encode16(case: :lower)
+    assert contract_hash(paths) == @local_hash
+    assert @hash_path |> File.read!() |> String.trim() == @local_hash
+  end
 
-    assert actual == @pinned_hash
-    assert @hash_path |> File.read!() |> String.trim() == @pinned_hash
+  test "the twenty historically paired IPC v2 fixtures keep the named snapshot's bytes" do
+    assert length(@paired_files) == @paired_fixture_count
+    paths = Enum.map(@paired_files, &Path.join(@fixture_dir, &1))
+
+    for path <- paths, do: assert(File.regular?(path), Path.basename(path))
+
+    assert contract_hash(paths) == @paired_hash
+  end
+
+  test "the local set is exactly the paired twenty plus the consumer-local files" do
+    names = @fixture_dir |> Path.join("*.json") |> Path.wildcard() |> Enum.map(&Path.basename/1) |> Enum.sort()
+
+    assert MapSet.disjoint?(MapSet.new(@paired_files), MapSet.new(@consumer_local_files))
+    assert names == Enum.sort(@paired_files ++ @consumer_local_files)
   end
 
   test "every v2 reply names its protocol version and a duplicate is a flag, not a status" do
@@ -75,7 +110,7 @@ defmodule AiOrchestrator.Contracts.IpcV2ContractHashTest do
     end
   end
 
-  test "the contract document names the producer copy it is paired with, and the fixture hash both repositories pin" do
+  test "the contract document names the producer copy it is paired with, the paired hash and the local set" do
     document = File.read!(@document)
 
     assert declared(document, "paired_repository") == "orrisd"
@@ -89,10 +124,17 @@ defmodule AiOrchestrator.Contracts.IpcV2ContractHashTest do
     assert declared(document, "vendored_source_revision") == @vendored_source_revision
     assert declared(document, "vendored_source_sha256") == @vendored_source_sha256
 
-    # the document is a THIRD pin on the fixture hash, beside the CONTRACT_HASH file and this module's constant:
-    # a rotation that moved the fixtures, that file and this constant together but left the document fails here
-    assert declared(document, "paired_fixture_contract_hash") == @pinned_hash
-    assert declared(document, "paired_fixture_count") == Integer.to_string(@expected_fixture_count)
+    # the paired_fixture_* keys describe the HISTORICALLY PAIRED twenty, never the local set: the document is a
+    # second pin on the paired hash beside this module's constant, so a silent change of either fails here
+    assert declared(document, "paired_fixture_contract_hash") == @paired_hash
+    assert declared(document, "paired_fixture_count") == Integer.to_string(@paired_fixture_count)
+
+    # the consumer_* keys describe the LOCAL set the CONTRACT_HASH file pins, and its pairing stays pending until the
+    # producer ships the consumer-local files: a third pin on the local hash beside that file and this constant
+    assert declared(document, "consumer_fixture_contract_hash") == @local_hash
+    assert declared(document, "consumer_fixture_count") == Integer.to_string(@local_fixture_count)
+    assert declared(document, "consumer_local_fixtures") == Enum.join(@consumer_local_files, " ")
+    assert declared(document, "pairing_status") == "pending"
   end
 
   # Both products refuse to verify on anything but one Elixir/OTP pair, and each carries that pair as a literal in
@@ -121,6 +163,16 @@ defmodule AiOrchestrator.Contracts.IpcV2ContractHashTest do
       [[_line, value]] -> value
       other -> flunk("#{name} is not pinned exactly once in #{@toolchain_source}: #{inspect(other)}")
     end
+  end
+
+  # name NUL bytes NUL for each path, in byte-sorted file name order
+  defp contract_hash(paths) do
+    payload =
+      paths
+      |> Enum.sort_by(&Path.basename/1)
+      |> Enum.map(fn path -> [Path.basename(path), 0, File.read!(path), 0] end)
+
+    :sha256 |> :crypto.hash(payload) |> Base.encode16(case: :lower)
   end
 
   # `- key: ~value~` in the paired block; exactly one such line per key, so a duplicated or removed key fails here

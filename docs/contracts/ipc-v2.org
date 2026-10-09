@@ -24,19 +24,30 @@ runtime through the capability preflight, never assumed.
 
 Status: the fixture bytes in ~test/fixtures/contracts/ipc/v2/~ are the v2 reply
 shapes this repository pins, with their ~CONTRACT_HASH~ computed under the v1 hash
-rule (see ~ipc-v1.org~). The v1 set and its hash are untouched; v1 remains the wire
+rule (see ~ipc-v1.org~). That ~CONTRACT_HASH~ pins this consumer's local set
+(twenty-one files); the twenty historically paired files keep their bytes and the
+hash ~f23caceb…~ (see "Paired producer copy"). The v1 local set likewise gained its
+seventeenth file and a new ~CONTRACT_HASH~ (~5361313…~), while its sixteen
+historically paired files keep their bytes and ~e809de8e…~. v1 remains the wire
 until a client asks for version 2.
 
 ** Paired producer copy
 :PROPERTIES:
 :CUSTOM_ID: paired-producer-copy
 :END:
-The producer of these frames vendors this document VERBATIM, so that the daemon
-that emits the frames ships the contract text it emits them against instead of a
-restatement that drifts silently. The producer copy carries its own pairing
-block naming the consumer revision it was taken from; this block is the
-reciprocal half, so each repository names the other rather than only one
-direction being recorded.
+The producer of these frames vendored this document VERBATIM at the HISTORICAL
+snapshot the block below names (~paired_revision~ ~ff960018~, whose whole document
+digests to ~9a273558…~, taking this file at ~bbd416fb~ / ~ff751879…~), so that the
+daemon that emits the frames ships the contract text it emits them against instead
+of a restatement that drifts silently. The producer copy carries its own pairing
+block naming the consumer revision it was taken from; this block is the reciprocal
+half of THAT snapshot, so each repository names the other rather than only one
+direction being recorded. Since then this consumer document has changed (the
+consumer keys below, the quiescing text and the local twenty-first fixture); the
+producer has not vendored the changed document or the local twenty-one (that is
+RB-3a-P P2, which vendors the reviewed consumer commit), and the reciprocal receipt
+update naming that P2 commit is pending (RB-3a-P P1-R). No current byte equality,
+current producer twenty-one inventory or completed re-pairing is claimed.
 
 - paired_repository: ~orrisd~ (the ai-pair daemon; the producer of v2 frames)
 - paired_path: ~docs/contracts/ipc-v2.org~
@@ -47,8 +58,18 @@ direction being recorded.
 - paired_fixture_dir: ~test/fixtures/contracts/ipc/v2/~
 - paired_fixture_contract_hash: ~f23caceb6ae106238da82f35e469f022f18c24b1296c78c3f96021eb15dc8497~
 - paired_fixture_count: ~20~
+- consumer_fixture_contract_hash: ~908783b6db5e4f129ad6514e59b2aed046ed1fe9868b6f95ee1af72caa7f4f9a~
+- consumer_fixture_count: ~21~
+- consumer_local_fixtures: ~send.error.quiescing.json~
+- pairing_status: ~pending~
 - paired_elixir: ~1.20.4~
 - paired_otp: ~29.0.5~
+
+The ~paired_fixture_*~ keys describe the twenty files the named producer snapshot
+ships: the historically paired subset, still byte-identical here. The ~consumer_*~
+keys describe this consumer's local directory and its ~CONTRACT_HASH~.
+~pairing_status~ stays ~pending~ until the producer ships the consumer-local file and
+this block re-pairs (RB-3a-P P2, then P1-R).
 
 ~paired_elixir~ and ~paired_otp~ are the toolchain BOTH products pin. Each
 repository already refuses to verify on anything else -- ~bin/verify~ here and
@@ -124,9 +145,15 @@ repositories, and ~paired_fixture_contract_hash~ moved from
 above. Statements of a seventeen-file inventory elsewhere in this document describe
 the pairings before this one and are left standing as the history they recorded.
 
-What the control here can see: that this document still names the paired
-revision, the paired digests, and the fixture hash the fixtures in this
-repository actually produce. What it CANNOT see is a change made in the producer
+On 2026-10-09 (RB-3a-P P1) this consumer added ~send.error.quiescing.json~ to its
+local directory: twenty-one files, local hash ~908783b6…~. The paired twenty and
+every pin above are unchanged, the pairing has not moved, and ~pairing_status~ is
+~pending~.
+
+What the control here can see: that this document still names the historical
+paired revision, its digests and the hash of the historically paired twenty, and,
+separately, the local set's hash, count and consumer-local files with
+~pairing_status~ ~pending~. What it CANNOT see is a change made in the producer
 repository, because this gate has no access to it -- the same stated limit the
 producer copy records in the other direction. A pairing that has gone stale is
 found by reading the two blocks, not by either gate.
@@ -265,7 +292,9 @@ change and is not made here.
 :PROPERTIES:
 :CUSTOM_ID: next-paired-send-refusal-quiescing
 :END:
-Specified for NS-32.M.002 RB-3a; not implemented by any producer yet. While a daemon
+Specified for NS-32.M.002 RB-3a. The producer implements the quiesce fence (Orrisd,
+RB-3a; see ~ipc-v3.org~, "Pairing"), and a producer test that obtains this version 2
+refusal from its real dispatch path is pending (RB-3a-P P2). While a daemon
 that implements the version 3 quiesce fence (~ipc-v3.org~, "Quiesce") holds a fence,
 it refuses a v2 ~send~ with ~%{ok: false, error: "quiescing", protocol_version: 2,
 msg_id, pane_id}~, before receipt admission and before any paste. The refusal admits
@@ -274,12 +303,13 @@ for that ~msg_id~: a later reconcile answers whatever that pre-existing state an
 (~absent~ only if there was no receipt before the refused send). Only such a daemon
 emits it. It is never an answer about delivery.
 
-Its fixture (~send.error.quiescing.json~) is not yet in the paired set: the
-twenty-file set, its count and its pins above are unchanged until a producer ships
-the refusal and this document re-pairs, as for the refusals in the previous
-subsection. Until then the bytes are shown by the version 3 example
-~v2_reply.send.quiescing.json~. This consumer's closed refusal vocabulary is
-unchanged: it reports ~quiescing~ as an untyped ~reply_not_ok~, never as ~absent~.
+Its fixture (~send.error.quiescing.json~) is in this consumer's local set (twenty-one
+files), outside the paired twenty, whose pins above are unchanged; its reciprocal
+pairing is pending until the producer ships the refusal and this document re-pairs
+(RB-3a-P P2), as for the refusals in the previous subsection. The version 3 example
+~v2_reply.send.quiescing.json~ shows the same bytes. This consumer's closed refusal
+vocabulary is unchanged: it reports ~quiescing~ as an untyped ~reply_not_ok~, never as
+~absent~.
 
 ** Reconcile replies
 :PROPERTIES:
@@ -313,7 +343,9 @@ are the PAIRED set: byte-identical with the producer snapshot the pairing block
 above names, with ~ping.ok.json~ advertising ~delivery_reconcile~ and
 ~sessions_read~. The sessions reply examples remain in a separate directory
 with their own hash and controls. They are adopted at the named producer
-snapshot, but are not part of the paired v2 delivery set (twenty files since 2026-10-06); this
+snapshot, but are not part of the paired v2 delivery set (twenty files since 2026-10-06; the
+consumer's local delivery directory, which also holds the consumer-local
+~send.error.quiescing.json~, has twenty-one since 2026-10-09); this
 document moves neither inventory nor the pairing block.
 
 *** What ~sessions~ answers
