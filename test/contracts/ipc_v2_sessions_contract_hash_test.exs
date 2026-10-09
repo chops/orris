@@ -60,6 +60,9 @@ defmodule AiOrchestrator.Contracts.IpcV2SessionsContractHashTest do
   # names: this lane adopted a measured producer, it did not predict one
   @paired_dir Path.expand("../fixtures/contracts/ipc/v2", __DIR__)
   @paired_hash "f23caceb6ae106238da82f35e469f022f18c24b1296c78c3f96021eb15dc8497"
+  # the paired subset is the v2 directory minus exactly these consumer-local files, whose
+  # reciprocal pairing is pending the producer re-vendoring (RB-3a-P P2)
+  @consumer_local_files ~w(send.error.quiescing.json)
   @paired_capabilities ["delivery_reconcile", "sessions_read"]
   @paired_snapshot "ff96001878a94401948bb3999683bdfc84c31dff"
   # the snapshot the sessions examples were adopted at; it stays when the pairing moves
@@ -89,7 +92,10 @@ defmodule AiOrchestrator.Contracts.IpcV2SessionsContractHashTest do
   # snapshot's bytes. It is still exact rather than shaped: a token added here without a
   # producer snapshot that emits it fails, which is the same control pointed at the new pair.
   test "the paired set is byte-identical with the named producer snapshot, ping included" do
-    assert contract_hash(@paired_dir) == @paired_hash
+    local = @paired_dir |> json_paths() |> Enum.map(&Path.basename/1)
+    for name <- @consumer_local_files, do: assert(name in local, name)
+
+    assert paths_hash(paired_paths()) == @paired_hash
 
     ping = @paired_dir |> Path.join("ping.ok.json") |> File.read!() |> Jason.decode!()
 
@@ -252,9 +258,11 @@ defmodule AiOrchestrator.Contracts.IpcV2SessionsContractHashTest do
     assert declared(document, "sessions_example_status") == "adopted"
     assert declared(document, "sessions_example_adopted_at") == @adopted_snapshot
 
-    # the twelve stay twelve: adoption did not move an example into the delivery inventory
+    # the twelve stay twelve: adoption did not move an example into the delivery inventory;
+    # the delivery directory holds the paired twenty plus the consumer-local files
     assert length(@expected_files) == 12
-    assert @paired_dir |> json_paths() |> length() == 20
+    assert length(paired_paths()) == 20
+    assert @paired_dir |> json_paths() |> length() == 21
   end
 
   defp json_paths(dir), do: dir |> Path.join("*.json") |> Path.wildcard() |> Enum.sort()
@@ -312,10 +320,17 @@ defmodule AiOrchestrator.Contracts.IpcV2SessionsContractHashTest do
 
   # the v1 rule, restated in ipc-v2.org: byte-sorted filenames, each followed by a NUL, its
   # exact bytes and another NUL
-  defp contract_hash(dir) do
-    payload = dir |> json_paths() |> Enum.map(&[Path.basename(&1), 0, File.read!(&1), 0])
+  defp contract_hash(dir), do: paths_hash(json_paths(dir))
+
+  defp paths_hash(paths) do
+    payload = Enum.map(paths, &[Path.basename(&1), 0, File.read!(&1), 0])
 
     :sha256 |> :crypto.hash(payload) |> Base.encode16(case: :lower)
+  end
+
+  # the paired subset: the delivery directory without the consumer-local files, still byte-sorted
+  defp paired_paths do
+    Enum.reject(json_paths(@paired_dir), &(Path.basename(&1) in @consumer_local_files))
   end
 
   # `- key: ~value~`; exactly one such line per key, so a duplicated or removed key fails

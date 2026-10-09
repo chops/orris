@@ -10,26 +10,33 @@ defmodule AiOrchestrator.Contracts.IpcV3ContractHashTest do
   subscribe remain specified only. Release (NS-15.G.003 S3, Charles decisions 49 and 50) is
   implemented by the paired producer (S3a), whose ping is ping.ok.identity_core_release.json,
   or ping.ok.identity_core_release_build.json when it read a build identity record (RB-1);
-  this consumer does not send it, and its request and reply files remain examples. Quiesce
-  and resume (NS-32.M.002 RB-3a) and the quiescing refusals of versions 1 to 3 are specified
-  only; all their files are examples. These
-  rows check the fixture set, its agreement with the text and the paired block's claims;
-  they run no daemon.
+  this consumer does not send it, and its request and reply files remain examples except the
+  claimed release.error.quiescing.json. Quiesce and resume (NS-32.M.002 RB-3a) are implemented
+  by the producer (Orrisd); the reviewed producer witnesses (W, Orrisd e9d64b4a) support the
+  claimed quiesce/resume/quiescing replies and the two admitted durable pings
+  ping.ok.identity_core_release_quiesce.json and ping.ok.identity_core_release_build_quiesce.json,
+  whose bytes equal the reviewed W candidates. This consumer issues neither quiesce nor resume
+  (the sole client is the producer's generation operator); quiesce.ok.json stays an example,
+  and no installed daemon is claimed. The producer vendors the 77-file set at d5de930f, so
+  vendoring of this 79-file set is pending (RB-3a-P P2). These rows check the fixture set, its
+  agreement with the text and the paired block's claims; they run no daemon.
 
   The identity core (ping, status, send and reconcile at version 3, the
-  pane_identity_unavailable refusal and the version 2 refusals) splits the set into core
-  replies, client requests and examples; every file is in exactly one class, and only the
-  core replies (and exercised client requests) may later be claimed by a pairing.
+  pane_identity_unavailable refusal and the version 2 refusals) and the claimed quiesce,
+  resume and quiescing replies split the set into 26 core replies, 6 client requests and 47
+  examples; every file is in exactly one class, and only the core replies (and exercised
+  client requests) may be claimed by a pairing.
   """
 
   use ExUnit.Case, async: true
 
   @fixture_dir Path.expand("../fixtures/contracts/ipc/v3", __DIR__)
   @hash_path Path.join(@fixture_dir, "CONTRACT_HASH")
-  @pinned_hash "e85fba9b4e1f2ce4ffdab2c0450dc81fb93ca428c54fdedd8c2921f36760b882"
-  @expected_fixture_count 77
+  @pinned_hash "e86bca9b1464621d3e110b85f2d208df2b3abc030270f9a53e5cdc4f070f3800"
+  @expected_fixture_count 79
   @document Path.expand("../../docs/contracts/ipc-v3.org", __DIR__)
   @v2_dir Path.expand("../fixtures/contracts/ipc/v2", __DIR__)
+  @v1_dir Path.expand("../fixtures/contracts/ipc/v1", __DIR__)
 
   # Every fixture file is named here exactly once, in one of two classes, so a new file cannot pass unclassified.
   @with_identity ~w(
@@ -54,6 +61,7 @@ defmodule AiOrchestrator.Contracts.IpcV3ContractHashTest do
     release.error.release_failed_requarantined.json release.error.release_unstarted.json
     v2_request.release.json v2_reply.release.unsupported_command.json
     ping.ok.identity_core_release_build.json ping.ok.identity_core_release_build_dirty.json
+    ping.ok.identity_core_release_quiesce.json ping.ok.identity_core_release_build_quiesce.json
     v3_request.quiesce.json quiesce.ok.json v3_request.resume.json resume.ok.json resume.error.fence_mismatch.json
     quiesce.error.quiesce_busy.json quiesce.error.quiesce_timeout.json quiesce.error.observation_incomplete.json
     quiesce.error.invalid_request.json ping.ok.quiesced.json
@@ -76,9 +84,37 @@ defmodule AiOrchestrator.Contracts.IpcV3ContractHashTest do
     status.error.pane_identity_unavailable.json send.error.pane_identity_unavailable.json
     reconcile.error.pane_identity_unavailable.json
     v2_reply.subscribe.unsupported_command.json v2_reply.cancel.unsupported_command.json
+    ping.ok.identity_core_release_quiesce.json ping.ok.identity_core_release_build_quiesce.json
+    quiesce.error.invalid_request.json quiesce.error.observation_incomplete.json quiesce.error.quiesce_busy.json
+    quiesce.error.quiesce_timeout.json resume.ok.json resume.error.fence_mismatch.json
+    send.error.quiescing.json release.error.quiescing.json
+    v2_reply.quiesce.unsupported_command.json v2_reply.resume.unsupported_command.json
   )
-  @client_requests ~w(v2_request.subscribe.json v2_request.cancel.json)
-  @build_identity_pings ~w(ping.ok.identity_core_release_build.json ping.ok.identity_core_release_build_dirty.json)
+  @client_requests ~w(
+    v2_request.subscribe.json v2_request.cancel.json v3_request.quiesce.json v3_request.resume.json
+    v2_request.quiesce.json v2_request.resume.json
+  )
+  # The only core/client names a refused identity-core prefix may admit: the claimed quiesce, resume and quiescing
+  # replies and the two version 3 requests (RB-3a-P P1). Any other match is a promotion this list never reviewed.
+  @guard_exceptions ~w(
+    quiesce.error.invalid_request.json quiesce.error.observation_incomplete.json quiesce.error.quiesce_busy.json
+    quiesce.error.quiesce_timeout.json resume.ok.json resume.error.fence_mismatch.json release.error.quiescing.json
+    v3_request.quiesce.json v3_request.resume.json
+  )
+  @guard_prefixes ~w(
+    cancel. subscribe. event. subscription_lost. seq. scenario. release. v3_request. quiesce. resume. v1_
+  )
+  # The reviewed producer witness candidates (RB-3a-P P2-W, Orrisd e9d64b4a) these core pings copy byte for byte.
+  @w_revision "e9d64b4afa2cac9bf69113d4d9bec7ca76ad8829"
+  @w_candidates %{
+    "ping.ok.identity_core_release_quiesce.json" => "4c837bffcf13b243ddddf6e4159b79028f9901abad1434cd51c78587d8a906f1",
+    "ping.ok.identity_core_release_build_quiesce.json" =>
+      "2cbdeaaf240fdff75efa4994dbec8cdcbb3ae337e6165517b8efc24cd43d1af0"
+  }
+  @build_identity_pings ~w(
+    ping.ok.identity_core_release_build.json ping.ok.identity_core_release_build_dirty.json
+    ping.ok.identity_core_release_build_quiesce.json
+  )
   @identity_refusals ~w(
     status.error.pane_identity_unavailable.json send.error.pane_identity_unavailable.json
     reconcile.error.pane_identity_unavailable.json
@@ -237,24 +273,32 @@ defmodule AiOrchestrator.Contracts.IpcV3ContractHashTest do
     assert snap["max_epoch_at_snapshot"] == snap["epoch"]
   end
 
-  test "the identity-core classes partition the set: 14 core replies, 2 client requests, 61 examples" do
+  test "the identity-core classes partition the set: 26 core replies, 6 client requests, 47 examples" do
     examples = names() -- (@core_replies ++ @client_requests)
 
-    assert length(Enum.uniq(@core_replies)) == 14
-    assert length(Enum.uniq(@client_requests)) == 2
-    assert length(examples) == 61
+    assert length(Enum.uniq(@core_replies)) == 26
+    assert length(Enum.uniq(@client_requests)) == 6
+    assert length(examples) == 47
     assert Enum.sort(@core_replies ++ @client_requests ++ examples) == names()
+  end
 
-    for name <- ["ping.ok.json", "ping.missing_tokens.json", "send.sent.no_pane_identity.json"] do
-      assert name in examples, name
-    end
+  # pure lists, no fixture read: runs on its own so the guard is checked even when the set is incomplete
+  test "only the reviewed quiesce, resume and quiescing names pass the identity-core prefix guard" do
+    claimed = @core_replies ++ @client_requests
+    matched = Enum.filter(claimed, fn name -> Enum.any?(@guard_prefixes, &String.starts_with?(name, &1)) end)
 
-    for name <- @core_replies ++ @client_requests,
-        prefix <-
-          ~w(cancel. subscribe. event. subscription_lost. seq. scenario. release. v3_request. quiesce. resume. v1_) do
+    assert Enum.sort(matched) == Enum.sort(@guard_exceptions)
+
+    for name <- claimed -- @guard_exceptions, prefix <- @guard_prefixes do
       refute String.starts_with?(name, prefix), "#{name} is outside the identity core"
     end
 
+    for name <- ["ping.ok.json", "ping.missing_tokens.json", "send.sent.no_pane_identity.json"] do
+      refute name in claimed, name
+    end
+  end
+
+  test "no core reply is a cancelled outcome" do
     for name <- @core_replies do
       reply = decode(name)
       refute reply["outcome"] == "cancelled" or reply["status"] == "cancelled", name
@@ -272,6 +316,29 @@ defmodule AiOrchestrator.Contracts.IpcV3ContractHashTest do
     for name <- @client_requests, do: assert(named?.(name, "client request"), name)
   end
 
+  test "no file name has rows of two classes, and no glob row covers a core reply or client request" do
+    rows = @document |> File.read!() |> String.split("\n") |> Enum.filter(&String.starts_with?(&1, "|"))
+    classes = ["core reply", "client request", "example"]
+
+    named =
+      for row <- rows,
+          [_, name] <- Regex.scan(~r/~([^~]+\.json)~/, row),
+          class <- classes,
+          row =~ ~r/\|\s*#{class}\s*\|/,
+          do: {name, class}
+
+    for {name, entries} <- Enum.group_by(named, &elem(&1, 0), &elem(&1, 1)) do
+      assert length(Enum.uniq(entries)) == 1, "#{name} has rows of classes #{inspect(Enum.uniq(entries))}"
+    end
+
+    globs = for {name, _class} <- named, String.contains?(name, "*"), do: name
+
+    for glob <- globs, name <- @core_replies ++ @client_requests do
+      pattern = ~r/\A#{glob |> Regex.escape() |> String.replace("\\*", "[^~|]*")}\z/
+      refute name =~ pattern, "#{glob} covers the claimed #{name}"
+    end
+  end
+
   test "the pairing block claims exactly the core replies and the client requests, at one producer revision" do
     document = File.read!(@document)
 
@@ -281,9 +348,21 @@ defmodule AiOrchestrator.Contracts.IpcV3ContractHashTest do
     end
 
     assert declared.("paired_repository") == "orrisd"
-    assert Regex.match?(~r/\A[0-9a-f]{40}\z/, declared.("paired_revision"))
+    assert declared.("paired_revision") == @w_revision
+    assert declared.("paired_source_revision") == "d5de930f4f068dc47f654e2d7db08c38ef82b777"
     assert Enum.sort(String.split(declared.("paired_produced"))) == Enum.sort(@core_replies)
     assert Enum.sort(String.split(declared.("paired_exercised_requests"))) == Enum.sort(@client_requests)
+    assert declared.("paired_vendoring") == "pending"
+
+    # the claimed admitted pings are the reviewed W candidates, byte for byte
+    for {key, name} <- [
+          {"paired_candidate_quiesce_sha256", "ping.ok.identity_core_release_quiesce.json"},
+          {"paired_candidate_build_quiesce_sha256", "ping.ok.identity_core_release_build_quiesce.json"}
+        ] do
+      bytes = @fixture_dir |> Path.join(name) |> File.read!()
+      assert declared.(key) == Map.fetch!(@w_candidates, name), key
+      assert :sha256 |> :crypto.hash(bytes) |> Base.encode16(case: :lower) == Map.fetch!(@w_candidates, name), name
+    end
   end
 
   test "an identity-core daemon without release (example) advertises pane_identity and neither cancel nor subscribe" do
@@ -331,7 +410,8 @@ defmodule AiOrchestrator.Contracts.IpcV3ContractHashTest do
              v3_request.resume.json resume.ok.json resume.error.fence_mismatch.json ping.ok.quiesced.json
              send.error.quiescing.json v2_reply.send.quiescing.json v1_reply.quiescing.json
              v2_request.quiesce.json v2_reply.quiesce.unsupported_command.json v2_request.resume.json
-             v2_reply.resume.unsupported_command.json) do
+             v2_reply.resume.unsupported_command.json ping.ok.identity_core_release_quiesce.json
+             ping.ok.identity_core_release_build_quiesce.json) do
       assert String.contains?(document, family), family
     end
 
@@ -375,6 +455,20 @@ defmodule AiOrchestrator.Contracts.IpcV3ContractHashTest do
     assert build
            |> Map.delete("build_identity")
            |> Map.update!("capabilities", &(&1 -- ["build_identity"])) == plain
+  end
+
+  test "each admitted durable ping is its claimed counterpart plus the quiesce token, nothing else" do
+    for {quiesce, counterpart} <- [
+          {"ping.ok.identity_core_release_quiesce.json", "ping.ok.identity_core_release.json"},
+          {"ping.ok.identity_core_release_build_quiesce.json", "ping.ok.identity_core_release_build.json"}
+        ] do
+      ping = decode(quiesce)
+
+      assert quiesce in @core_replies and counterpart in @core_replies, quiesce
+      assert "quiesce" in ping["capabilities"], quiesce
+      refute Map.has_key?(ping, "quiesced") or Map.has_key?(ping, "fence_id"), quiesce
+      assert Map.update!(ping, "capabilities", &(&1 -- ["quiesce"])) == decode(counterpart), quiesce
+    end
   end
 
   test "a build_identity object has exactly its eight typed keys" do
@@ -540,5 +634,11 @@ defmodule AiOrchestrator.Contracts.IpcV3ContractHashTest do
     v2_shape = @v2_dir |> Path.join("send.error.pane_quarantined.json") |> File.read!() |> Jason.decode!()
     assert decode("v2_reply.send.quiescing.json") == %{v2_shape | "error" => "quiescing"}
     assert decode("v1_reply.quiescing.json") == %{"error" => "quiescing", "ok" => false}
+
+    # the owning v1 and v2 sets hold exactly these example bytes as their own send.error.quiescing.json
+    for {dir, example} <- [{@v1_dir, "v1_reply.quiescing.json"}, {@v2_dir, "v2_reply.send.quiescing.json"}] do
+      owned = dir |> Path.join("send.error.quiescing.json") |> File.read!()
+      assert owned == @fixture_dir |> Path.join(example) |> File.read!(), example
+    end
   end
 end

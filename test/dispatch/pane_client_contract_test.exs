@@ -33,7 +33,10 @@ defmodule AiOrchestrator.Dispatch.PaneClientContractTest do
     "send.error.oversize.json" => {:send, :request_error},
     "send.error.send_timeout.json" => {:send, :typed_refusal},
     "send.error.paste_failed.json" => {:send, :typed_refusal},
-    "send.error.pane_quarantined.json" => {:send, :typed_refusal}
+    "send.error.pane_quarantined.json" => {:send, :typed_refusal},
+    # the admission refusal (RB-3a): the same bytes answer send, attach_pane and detach_pane, carry no
+    # pane_id and stay outside the closed v1 refusal vocabulary, so it is untyped, never a typed refusal
+    "send.error.quiescing.json" => {:send, :untyped_refusal}
   }
 
   @states ~w(idle busy dialog dead unknown)
@@ -103,6 +106,12 @@ defmodule AiOrchestrator.Dispatch.PaneClientContractTest do
     assert is_binary(decoded["error"])
   end
 
+  defp assert_outcome_shape(:untyped_refusal, decoded) do
+    assert decoded["ok"] == false
+    assert is_binary(decoded["error"])
+    assert decoded |> Map.keys() |> Enum.sort() == ~w(error ok)
+  end
+
   test "pane_status.ok carries the documented dynamic fields and state placeholder" do
     fixture = Jason.decode!(File.read!(Path.join(@fixture_dir, "pane_status.ok.json")))
 
@@ -114,6 +123,16 @@ defmodule AiOrchestrator.Dispatch.PaneClientContractTest do
   test "send.queued carries a queue_reason from the documented closed set" do
     fixture = Jason.decode!(File.read!(Path.join(@fixture_dir, "send.queued.json")))
     assert fixture["status"] == "queued" and fixture["queue_reason"] in @queue_reasons
+  end
+
+  test "the contract names the quiescing refusal file for send, attach_pane and detach_pane, untyped" do
+    doc = File.read!(Path.expand("../../docs/contracts/ipc-v1.org", __DIR__))
+    [_, section] = String.split(doc, "*** Next paired refusal: quiescing", parts: 2)
+    [section | _] = String.split(section, "\n** ", parts: 2)
+
+    for word <- ~w(~send.error.quiescing.json~ ~send~ ~attach_pane~ ~detach_pane~ untyped) do
+      assert String.contains?(section, word), word
+    end
   end
 
   test "the state and queue_reason vocabularies are documented in the vendored contract" do

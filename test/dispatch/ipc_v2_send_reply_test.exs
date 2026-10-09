@@ -30,6 +30,9 @@ defmodule AiOrchestrator.Dispatch.IpcV2SendReplyTest do
     "send.error.queue_full.json" => {:error, "dispatch_refused_queue_full"},
     "send.error.payload_store_full.json" => {:error, "reply_not_ok"},
     "send.error.payload_store_unavailable.json" => {:error, "reply_not_ok"},
+    # NS-32.M.002 RB-3a: quiescing (the admission refusal) is outside the closed send vocabulary too, so it
+    # stays the untyped reply_not_ok -- never absent, never delivered, never a typed refusal.
+    "send.error.quiescing.json" => {:error, "reply_not_ok"},
     "send.error.missing_msg_id.json" => {:error, "dispatch_request_rejected"}
   }
 
